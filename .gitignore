@@ -1,0 +1,17 @@
+/build
+/libdependencies
+/.cache
+/.idea
+/.vs
+/.vscode
+/.vim
+/cmake-build-debug
+/subproject
+/out
+/logs
+
+*.DS_Store
+CMakeSettings.json
+*.user
+*.xml
+/home/xiang/Videos/2025-05-18 06-27-15.mkv
