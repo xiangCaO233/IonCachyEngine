@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/home/xiang/Documents/coding/cpp/IonCachyEngin/build",
+  "command": "/usr/bin/c++ -g -std=gnu++20 -fmodules-ts -fmodule-mapper=CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o.modmap -MD -fdeps-format=p1689r5 -x c++ -o CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o -c /home/xiang/Documents/coding/cpp/IonCachyEngin/src/main.cpp",
+  "file": "/home/xiang/Documents/coding/cpp/IonCachyEngin/src/main.cpp",
+  "output": "CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o"
+}
+]
