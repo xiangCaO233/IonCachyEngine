@@ -1,7 +1,0 @@
-# ninja log v7
-1	59	1751044976754182355	CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o.ddi	8a3bc6c297371308
-59	64	1751044976818220988	CMakeFiles/testIonCachyEngin.dir/CXX.dd	f4726884295af3ef
-59	64	1751044976818220988	/home/xiang/Documents/coding/cpp/IonCachyEngin/build/CMakeFiles/testIonCachyEngin.dir/CXXModules.json	f4726884295af3ef
-59	64	1751044976818220988	CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o.modmap	f4726884295af3ef
-65	585	1751044976818220988	CMakeFiles/testIonCachyEngin.dir/src/main.cpp.o	5a04f3cc8ee4e87c
-586	618	1751044977339212149	testIonCachyEngin	9d2a34fc23f38b87
