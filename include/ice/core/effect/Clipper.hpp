@@ -1,0 +1,22 @@
+#ifndef ICE_CLIPPER_HPP
+#define ICE_CLIPPER_HPP
+
+#include <ice/core/effect/IEffectNode.hpp>
+
+namespace ice {
+class Clipper : public IEffectNode {
+   public:
+    // 构造Clipper
+    explicit Clipper(std::shared_ptr<IAudioNode> input);
+    // 析构Clipper
+    ~Clipper() override = default;
+
+   protected:
+    // 应用效果
+    void apply_effect(AudioBuffer& output, const AudioBuffer& input,
+                      uint32_t frameCount) override;
+};
+
+}  // namespace ice
+
+#endif  // ICE_CLIPPER_HPP
