@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "ice/manage/AudioPool.hpp"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
@@ -148,6 +150,12 @@ int main(int argc, char* argv[]) {
     av_packet_free(&packet);
     avcodec_free_context(&codec_context);
     avformat_close_input(&format);
+
+    // test
+    ice::AudioPool audiopool;
+    auto& track1 = audiopool.load(
+        "/home/xiang/Documents/music game maps/Mind Enhancement - "
+        "PIKASONIC/Mind Enhancement - PIKASONIC.mp3");
 
     return 0;
 }

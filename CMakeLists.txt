@@ -3,8 +3,11 @@ cmake_minimum_required(VERSION 3.31)
 project(IonCachyEngin)
 
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
+# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
 # 日志库
 find_package(spdlog REQUIRED)
@@ -30,9 +33,14 @@ endif(WIN32)
 
 # set(LIB_SOURCES )
 set(SOURCES
-    src/ice/core/SourceNode.cpp src/ice/core/MixBus.cpp
-    src/ice/core/effect/IEffectNode.cpp src/ice/core/effect/Clipper.cpp
-    src/ice/manage/AudioBuffer.cpp src/main.cpp)
+    src/ice/core/SourceNode.cpp
+    src/ice/core/MixBus.cpp
+    src/ice/core/effect/IEffectNode.cpp
+    src/ice/core/effect/Clipper.cpp
+    src/ice/manage/AudioBuffer.cpp
+    src/ice/manage/AudioTrack.cpp
+    src/ice/manage/AudioPool.cpp
+    src/main.cpp)
 
 include_directories(include)
 

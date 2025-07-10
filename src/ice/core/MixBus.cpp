@@ -2,6 +2,7 @@
 
 namespace ice {
 void MixBus::process(AudioBuffer& buffer, uint32_t frame_count) {
+    // 先清空buffer
     buffer.clear();
     // 拉取全部来源数据
     for (const auto& source : sources) {
