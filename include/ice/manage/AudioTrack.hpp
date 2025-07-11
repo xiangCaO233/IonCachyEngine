@@ -36,12 +36,13 @@ class AudioTrack {
     // 将解码请求转发给其持有的解码器策略
     inline size_t read(AudioBuffer& buffer, size_t start_frame,
                        size_t frame_count) const {
-        return decoder->decode(buffer.raw_ptrs(), start_frame, frame_count);
+        return decoder->decode(buffer.raw_ptrs(), buffer.afmt.channels,
+                               start_frame, frame_count);
     }
 
    private:
     // 私有构造函数，强制使用工厂方法
-    explicit AudioTrack(std::string p);
+    AudioTrack(std::string_view p, CachingStrategy strategy);
 
     // 音频路径
     std::string file_path;

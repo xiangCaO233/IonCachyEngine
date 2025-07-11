@@ -40,6 +40,8 @@ set(SOURCES
     src/ice/manage/AudioBuffer.cpp
     src/ice/manage/AudioTrack.cpp
     src/ice/manage/AudioPool.cpp
+    src/ice/manage/dec/CachyDecoder.cpp
+    src/ice/manage/dec/StreamingDecoder.cpp
     src/main.cpp)
 
 include_directories(include)

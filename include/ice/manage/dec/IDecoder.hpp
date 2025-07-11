@@ -7,15 +7,18 @@
 namespace ice {
 class AudioTrack;
 class IDecoder {
+    std::string_view file_path;
+
    public:
     // 构造IDecoder
-    IDecoder() = default;
+    explicit IDecoder(std::string_view file) : file_path(file) {};
+
     // 析构IDecoder
     virtual ~IDecoder() = default;
 
-    // 解码数据到缓冲区的接口
-    virtual size_t decode(float** buffer, size_t start_frame,
-                          size_t frame_count) = 0;
+    // 转移数据到缓冲区的接口
+    virtual size_t decode(float** buffer, uint16_t num_channels,
+                          size_t start_frame, size_t frame_count) = 0;
 };
 
 }  // namespace ice
