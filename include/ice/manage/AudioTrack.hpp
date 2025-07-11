@@ -19,7 +19,7 @@ enum class CachingStrategy {
 
 class AudioTrack {
    public:
-    // 工厂方法，现在接受一个缓存策略
+    // 工厂方法
     [[nodiscard]] static std::shared_ptr<AudioTrack> create(
         std::string_view path, CachingStrategy strategy);
 
@@ -36,7 +36,7 @@ class AudioTrack {
     // 将解码请求转发给其持有的解码器策略
     inline size_t read(AudioBuffer& buffer, size_t start_frame,
                        size_t frame_count) const {
-        return decoder->decode(buffer, start_frame, frame_count);
+        return decoder->decode(buffer.raw_ptrs(), start_frame, frame_count);
     }
 
    private:
