@@ -11,15 +11,16 @@
 namespace ice {
 class AudioBuffer {
    public:
-    AudioFormat afmt;
+    AudioDataFormat afmt;
     using ChannelData = std::vector<float>;
 
     // 构造AudioBuffer
     // 指定格式和帧数
     AudioBuffer(const AudioBuffer& cp) = delete;
     AudioBuffer() = default;
-    AudioBuffer(const AudioFormat& format, size_t num_frames = 0);
-    void resize(const AudioFormat& format, size_t num_frames);
+
+    AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
+    void resize(const AudioDataFormat& format, size_t num_frames);
 
     // 清理样本为 0
     inline void clear() {

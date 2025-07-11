@@ -4,12 +4,12 @@
 namespace ice {
 // 构造AudioBuffer
 // 指定声道数和帧数
-AudioBuffer::AudioBuffer(const AudioFormat &format, size_t num_frames)
+AudioBuffer::AudioBuffer(const AudioDataFormat &format, size_t num_frames)
     : afmt(format) {
     data = std::vector<ChannelData>(afmt.channels, ChannelData(num_frames));
 }
 
-void AudioBuffer::resize(const AudioFormat &format, size_t num_frames) {
+void AudioBuffer::resize(const AudioDataFormat &format, size_t num_frames) {
     afmt = format;
     // 调整外层 vector 的大小（即声道数）
     data.resize(afmt.channels);
