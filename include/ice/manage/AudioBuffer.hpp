@@ -2,74 +2,247 @@
 #define ICE_AUDIOBUFFER_HPP
 
 #include <cstddef>
-#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <malloc.h>
+// 适用于 Microsoft Visual C++
+#define ICE_RESTRICT __declspec(restrict)
+#else
+// 适用于 GCC 和 Clang
+#define ICE_RESTRICT __restrict__
+#include <mm_malloc.h>
+#endif
+
+// 分配器
+template <typename T, size_t Alignment>
+class AlignedAllocator {
+   public:
+    using value_type = T;
+    using pointer = T*;
+    using const_pointer = const T*;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = std::size_t;
+    using difference_type = std::ptrdiff_t;
+
+    template <typename U>
+    struct rebind {
+        using other = AlignedAllocator<U, Alignment>;
+    };
+
+    AlignedAllocator() noexcept {}
+    template <typename U>
+    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+    pointer allocate(size_type n) {
+        if (n > std::size_t(-1) / sizeof(T)) {
+            throw std::bad_alloc();
+        }
+        if (auto p =
+                static_cast<pointer>(_mm_malloc(n * sizeof(T), Alignment))) {
+            return p;
+        }
+        throw std::bad_alloc();
+    }
+
+    void deallocate(pointer p, size_type) noexcept { _mm_free(p); }
+
+    // 这些是C++11及以后标准所必需的
+    friend bool operator==(const AlignedAllocator&,
+                           const AlignedAllocator&) noexcept {
+        return true;
+    }
+    friend bool operator!=(const AlignedAllocator&,
+                           const AlignedAllocator&) noexcept {
+        return false;
+    }
+};
+
 #include "ice/manage/AudioFormat.hpp"
+
+// 包含所有SIMD指令集的头文件
+#include <immintrin.h>
 
 namespace ice {
 class AudioBuffer {
    public:
+    static constexpr size_t SIMD_ALIGNMENT = 32;  // For AVX2
+    static constexpr size_t SIMD_VECTOR_SIZE =
+        8;  // 8 floats in a __m256 register
+
     AudioDataFormat afmt;
-    using ChannelData = std::vector<float>;
 
-    // 构造AudioBuffer
-    // 指定格式和帧数
-    AudioBuffer(const AudioBuffer& cp) = delete;
+    // 构造与生命周期管理
     AudioBuffer() = default;
-
     AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
-    void resize(const AudioDataFormat& format, size_t num_frames);
 
-    // 清理样本为 0
+    // 禁用拷贝，但实现高效的移动
+    AudioBuffer(const AudioBuffer&) = delete;
+    AudioBuffer& operator=(const AudioBuffer&) = delete;
+    AudioBuffer(AudioBuffer&& other) noexcept;
+    AudioBuffer& operator=(AudioBuffer&& other) noexcept;
+
+    inline void resize(const AudioDataFormat& format, size_t num_frames) {
+        afmt = format;
+        _original_num_frames = num_frames;
+
+        if (afmt.channels == 0 || num_frames == 0) {
+            _contiguous_buffer.clear();
+            channel_pointers_.clear();
+            _aligned_num_frames = 0;
+            return;
+        }
+
+        // 同样，计算对齐后的帧数
+        _aligned_num_frames =
+            (num_frames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
+
+        // 一次性分配所有内存
+        const size_t total_floats = afmt.channels * _aligned_num_frames;
+        _contiguous_buffer.resize(total_floats);
+
+        // 更新内部指针
+        sync_pointers();
+    }
+
     inline void clear() {
-        for (auto& channel_data : _data) {
-            std::fill(channel_data.begin(), channel_data.end(), 0.0f);
+        if (!_contiguous_buffer.empty()) {
+            // 对于浮点数0,memset是安全且通常最快的
+            std::memset(_contiguous_buffer.data(), 0,
+                        _contiguous_buffer.size() * sizeof(float));
         }
     }
 
     // 数据访问
-    inline auto raw_ptrs() {
-        return _data.empty() ? nullptr : channel_pointers_.data();
+    inline float** raw_ptrs() {
+        return channel_pointers_.empty() ? nullptr : channel_pointers_.data();
     }
-    // 常量重载
-    inline auto raw_ptrs() const {
-        return reinterpret_cast<const float* const*>(
-            _data.empty() ? nullptr : channel_pointers_.data());
-    }
-
-    inline auto num_frames() const {
-        return _data.empty() ? 0 : _data[0].size();
+    inline const float* const* raw_ptrs() const {
+        return channel_pointers_.empty()
+                   ? nullptr
+                   : reinterpret_cast<const float* const*>(
+                         channel_pointers_.data());
     }
 
+    inline size_t num_frames() const { return _original_num_frames; }
+    inline size_t num_channels() const { return afmt.channels; }
+    inline size_t aligned_frames_per_channel() const {
+        return _aligned_num_frames;
+    }
+
+    // 假设 src 是 [L0, R0, L1, R1, ...]
+    // dest_channels 是 this->raw_ptrs()
+    inline void write_interleaved_naive(const float* src, size_t num_frames) {
+        float** dest_channels = this->raw_ptrs();
+        float* dest_L = dest_channels[0];
+        float* dest_R = dest_channels[1];
+        for (size_t i = 0; i < num_frames; ++i) {
+            dest_L[i] = src[i * 2 + 0];  // 写入左声道
+            dest_R[i] = src[i * 2 + 1];  // 写入右声道
+        }
+    }
+    inline void write_interleaved_stereo(const float* src) {
+        // 假设 afmt.channels == 2 且缓冲区大小匹配
+        float** dest = this->raw_ptrs();
+        const size_t aligned_frames = this->aligned_frames_per_channel();
+
+        // 我们一次处理8个浮点数（4帧），所以循环步长为4
+        for (size_t i = 0; i < aligned_frames; i += 4) {
+            // 1. 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
+            // 我们一次加载两个 __m128 来组成一个 __m256
+            __m256 interleaved_vec = _mm256_loadu_ps(
+                src + i * 2);  // 使用 unaligned load，因为源不保证对齐
+
+            // 2. 解交错 - 这是核心技巧
+            // 目标:
+            //   - 一个寄存器包含 [L0, L1, L2, L3, ?, ?, ?, ?]
+            //   - 另一个寄存器包含 [R0, R1, R2, R3, ?, ?, ?, ?]
+            //
+            // 使用 _mm256_shuffle_ps, 控制码 0b11011000 (0xD8)
+            // 它将源向量的元素按 [2,0,3,1]
+            // 的模式重排，分别在低128位和高128位通道内 [L0,R0,L1,R1,
+            // L2,R2,L3,R3] -> [L0,L1,R0,R1, L2,L3,R2,R3]
+            __m256 shuffled =
+                _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
+
+            // 3. 使用 _mm256_permute2f128_ps 跨128位通道重排
+            // 控制码 0b00100000 (0x20)
+            // 它将 shuffled 的低128位和高128位组合成最终的左声道向量
+            // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [L0,L1,L2,L3]
+            __m256 left_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x20);
+
+            // 控制码 0b00110001 (0x31)
+            // 它将 shuffled 的高128位和低128位组合成最终的右声道向量
+            // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [R0,R1,R2,R3]
+            __m256 right_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x31);
+
+            // 4. 将解交错后的向量写入各自的对齐内存中
+            _mm256_store_ps(dest[0] + i, left_vec);
+            _mm256_store_ps(dest[1] + i, right_vec);
+        }
+    }
+
+    // 核心操作
     inline void operator+=(const AudioBuffer& other) {
         if (afmt != other.afmt || num_frames() != other.num_frames()) {
-            throw std::runtime_error("用于混合的AudioBuffer格式不匹配");
+            throw std::runtime_error("AudioBuffer format mismatch for mixing.");
         }
-        auto frames = num_frames();
-        for (uint16_t ch = 0; ch < afmt.channels; ++ch) {
-            // 获取第 ch 声道的 float* 起始指针
-            float* dest_channel = this->raw_ptrs()[ch];
-            // 另一个buffer只读
-            const float* src_channel = other.raw_ptrs()[ch];
 
-            // 在这个声道上进行紧凑循环
-            for (size_t i = 0; i < frames; ++i) {
-                dest_channel[i] += src_channel[i];
+        // 使用 ICE_RESTRICT 告知编译器指针不重叠，允许更激进的优化
+        float* const* ICE_RESTRICT all_dest_channels = this->raw_ptrs();
+        const float* const* ICE_RESTRICT all_src_channels = other.raw_ptrs();
+
+        const size_t aligned_frames = this->aligned_frames_per_channel();
+        const uint16_t channels = this->num_channels();
+
+        // 循环结构保持不变，但现在它操作在连续内存上，缓存效率极高
+        for (uint16_t ch = 0; ch < channels; ++ch) {
+            float* ICE_RESTRICT dest = all_dest_channels[ch];
+            const float* ICE_RESTRICT src = all_src_channels[ch];
+
+            for (size_t i = 0; i < aligned_frames; i += SIMD_VECTOR_SIZE) {
+                __m256 dest_vec = _mm256_load_ps(dest + i);
+                __m256 src_vec = _mm256_load_ps(src + i);
+                __m256 result_vec = _mm256_add_ps(dest_vec, src_vec);
+                _mm256_store_ps(dest + i, result_vec);
             }
         }
     }
 
-   protected:
-    // 缓冲区本体
-    std::vector<ChannelData> _data;
-    // 指针管理
+    // 指向连续内存块中各个声道的起始位置
     std::vector<float*> channel_pointers_;
 
-    // 同步指针管理
-    void sync_pointers();
+   private:
+    // 使用 using 提高可读性
+    using AlignedFloatVector =
+        std::vector<float, AlignedAllocator<float, SIMD_ALIGNMENT>>;
+
+    // 单一连续内存块
+    AlignedFloatVector _contiguous_buffer;
+
+    size_t _original_num_frames = 0;
+    size_t _aligned_num_frames = 0;
+
+    // 内部辅助函数，用于根据 _contiguous_buffer 更新指针
+    inline void sync_pointers() {
+        if (afmt.channels == 0) {
+            channel_pointers_.clear();
+            return;
+        }
+
+        channel_pointers_.resize(afmt.channels);
+        float* base_ptr = _contiguous_buffer.data();
+        for (uint16_t i = 0; i < afmt.channels; ++i) {
+            // 指针指向连续内存块的正确偏移位置
+            channel_pointers_[i] = base_ptr + i * _aligned_num_frames;
+        }
+    }
 };
+
 }  // namespace ice
 
 #endif  // ICE_AUDIOBUFFER_HPP

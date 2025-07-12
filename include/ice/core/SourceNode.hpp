@@ -2,7 +2,6 @@
 #define ICE_SOURCENODE_HPP
 
 #include <atomic>
-#include <cstddef>
 #include <memory>
 
 #include "ice/core/IAudioNode.hpp"
@@ -24,7 +23,7 @@ class SourceNode : public IAudioNode {
     std::shared_ptr<AudioTrack> track;
 
     // 播放位置
-    std::atomic<size_t> playback_pos;
+    std::atomic<double> playback_pos;
 
     // 音源音量
     std::atomic<float> volume;

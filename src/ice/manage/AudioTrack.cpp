@@ -6,20 +6,26 @@
 namespace ice {
 // 工厂方法
 [[nodiscard]] std::shared_ptr<AudioTrack> AudioTrack::create(
-    std::string_view path, CachingStrategy strategy) {
-    return std::shared_ptr<AudioTrack>(new AudioTrack(path, strategy));
+    std::string_view path, IDecoderFactory& decoder_factory,
+    CachingStrategy strategy) {
+    return std::shared_ptr<AudioTrack>(
+        new AudioTrack(path, decoder_factory, strategy));
 };
 
 // 私有构造函数，强制使用工厂方法
-AudioTrack::AudioTrack(std::string_view path, CachingStrategy strategy)
+AudioTrack::AudioTrack(std::string_view path, IDecoderFactory& decoder_factory,
+                       CachingStrategy strategy)
     : file_path(path) {
+    // 先探测一下文件格式
+    size_t total_frames_probe = 0;
+    decoder_factory.probe(this->file_path, this->format, total_frames_probe);
     switch (strategy) {
         case CachingStrategy::CACHY: {
-            decoder = std::make_unique<CachyDecoder>(path);
+            decoder = CachyDecoder::create(path, decoder_factory);
             break;
         }
         case CachingStrategy::STREAMING: {
-            decoder = std::make_unique<StreamingDecoder>(path);
+            decoder = StreamingDecoder::create(path, decoder_factory);
             break;
         }
     }

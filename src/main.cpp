@@ -1,11 +1,12 @@
 #include <fmt/base.h>
 #include <fmt/printf.h>
 
+#include <chrono>
 #include <ice/tool/AllocationTracker.hpp>
 #include <iostream>
-#include <string>
-#include <vector>
 
+#include "ice/manage/AudioBuffer.hpp"
+#include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
 
 extern "C" {
@@ -26,6 +27,61 @@ extern "C" {
     }
 
 void test() {
+    // std::vector<std::vector<float>> dest(2, std::vector<float>(16777216,
+    // 0.f)); std::vector<std::vector<float>> src(2,
+    // std::vector<float>(16777216, .5f)); auto pre =
+    // std::chrono::high_resolution_clock::now(); for (int ch = 0; ch < 2; ++ch)
+    // {
+    //     for (size_t i = 0; i < 16777216; ++i) {
+    //         dest[ch][i] += src[ch][i];
+    //     }
+    // }
+    // auto after = std::chrono::high_resolution_clock::now();
+    // std::cout << "no optimize res" << std::endl;
+    // fmt::print("add restime:{}ns\n",
+    //            std::chrono::duration_cast<std::chrono::nanoseconds>(after -
+    //            pre)
+    //                .count());
+
+    ice::AudioDataFormat format;
+    ice::AudioBuffer buffer1(format, 16777216);
+    ice::AudioBuffer buffer2(format, 16777216);
+
+    // std::cout << "buffer1" << std::endl;
+    // for (auto& channels_ptr : buffer1.channel_pointers_) {
+    //     for (int i = 0; i < buffer1.num_frames(); ++i) {
+    //         channels_ptr[i] =
+    //             std::numbers::pi_v<float> / buffer1.num_frames() * i;
+    //         std::cout << channels_ptr[i] << ",";
+    //     }
+    //     std::cout << std::endl;
+    // }
+
+    // std::cout << "buffer2" << std::endl;
+    // for (auto& channels_ptr : buffer2.channel_pointers_) {
+    //     for (int i = 0; i < buffer2.num_frames(); ++i) {
+    //         channels_ptr[i] = std::numbers::pi_v<float> /
+    //         buffer2.num_frames() *
+    //                           (buffer2.num_frames() - i);
+    //         std::cout << channels_ptr[i] << ",";
+    //     }
+    //     std::cout << std::endl;
+    // }
+    auto pre = std::chrono::high_resolution_clock::now();
+    buffer1 += buffer2;
+    auto after = std::chrono::high_resolution_clock::now();
+
+    // for (auto& channels_ptr : buffer1.channel_pointers_) {
+    //     for (int i = 0; i < buffer1.num_frames(); ++i) {
+    //         std::cout << channels_ptr[i] << ",";
+    //     }
+    //     std::cout << std::endl;
+    // }
+    std::cout << "optimize res" << std::endl;
+    fmt::print("add restime:{}ns\n",
+               std::chrono::duration_cast<std::chrono::nanoseconds>(after - pre)
+                   .count());
+
     auto file1 =
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
         "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
@@ -164,9 +220,9 @@ int main(int argc, char* argv[]) {
     // av_packet_free(&packet);
     // avcodec_free_context(&codec_context);
     // avformat_close_input(&format);
+
     ice::reset_allocation_counters();
     test();
     ice::print_allocation_stats();
-
     return 0;
 }

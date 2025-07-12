@@ -9,8 +9,13 @@
 #include <unordered_map>
 
 #include "ice/manage/AudioTrack.hpp"
+#include "ice/manage/dec/IDecoderFactory.hpp"
 
 namespace ice {
+enum class CodecBackend {
+    FFMPEG,
+    COREAUDIO,
+};
 // 透明的哈希结构体。
 // 能对 std::string, const char*, std::string_view进行哈希，
 // 无需创建 std::string 对象
@@ -32,10 +37,12 @@ class AudioPool {
    private:
     // 读写锁--可同时读,写时不可读不可写
     mutable std::shared_mutex pool_mutex;
+    // 解码器工厂实现
+    std::unique_ptr<IDecoderFactory> decoder_factory;
 
    public:
     // 构造AudioPool
-    AudioPool();
+    explicit AudioPool(CodecBackend codec_backend);
     // 析构AudioPool
     virtual ~AudioPool() = default;
 
@@ -71,14 +78,13 @@ class AudioPool {
                 // 另一个线程提前写入完成,直接返回它的节果
                 return sp;
             } else {
-                // 资源已过期，需要移除
+                // 资源过期,移除
                 pool.erase(it);
             }
         }
-        // ---- 确认需要加载,执行昂贵操作 ----
-        // 此时我们独占了写锁,可以安全地创建和插入新资源
-        // 模拟昂贵的加载过程
-        auto new_data = AudioTrack::create(sv_name, strategy);
+        // 需要加载
+        // 独占写锁,创建资源
+        auto new_data = AudioTrack::create(sv_name, *decoder_factory, strategy);
 
         // C++20 map::emplace的键类型必须是key_type,所以需要构造string
         pool.emplace(std::string(sv_name), new_data);
