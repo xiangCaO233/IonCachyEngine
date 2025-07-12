@@ -5,6 +5,11 @@ project(IonCachyEngin)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 添加avx指令集编译选项
+add_compile_options(-mavx2)
+
+set(CMAKE_BUILD_TYPE Release)
+
 # 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
