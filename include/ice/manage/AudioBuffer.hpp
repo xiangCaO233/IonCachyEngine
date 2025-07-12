@@ -1,12 +1,77 @@
 #ifndef ICE_AUDIOBUFFER_HPP
 #define ICE_AUDIOBUFFER_HPP
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <stdexcept>
+#include <ice/manage/AudioFormat.hpp>
 #include <vector>
 
+namespace ice {
+#ifdef __APPLE__
+class AudioBuffer {
+   public:
+    // --- Public 接口与你的优化版本完全一致 ---
+    AudioDataFormat afmt;
+    // 构造与生命周期
+    AudioBuffer() = default;
+    AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
+    // 删除拷贝，实现移动
+    AudioBuffer(const AudioBuffer&) = delete;
+    AudioBuffer& operator=(const AudioBuffer&) = delete;
+    AudioBuffer(AudioBuffer&& other) noexcept;
+    AudioBuffer& operator=(AudioBuffer&& other) noexcept;
+    // 核心功能
+    void resize(const AudioDataFormat& format, size_t num_frames);
+    void clear() {
+        for (auto& channel_data : _data) {
+            std::fill(channel_data.begin(), channel_data.end(), 0.0f);
+        }
+    }
+    // 数据访问 (提供与优化版本相同的接口)
+    float** raw_ptrs() {
+        return channel_pointers_.empty() ? nullptr : channel_pointers_.data();
+    }
+    const float* const* raw_ptrs() const {
+        return channel_pointers_.empty()
+                   ? nullptr
+                   : reinterpret_cast<const float* const*>(
+                         channel_pointers_.data());
+    }
+    // 信息查询
+    size_t num_frames() const { return _data.empty() ? 0 : _data[0].size(); }
+    size_t num_channels() const { return afmt.channels; }
+    // 核心操作：使用纯标量循环
+    void operator+=(const AudioBuffer& other) {
+        if (afmt != other.afmt || num_frames() != other.num_frames()) {
+            throw std::runtime_error(
+                "AudioBuffer_Baseline format mismatch for mixing.");
+        }
+        const size_t frames = num_frames();
+        const uint16_t channels = num_channels();
+        for (uint16_t ch = 0; ch < channels; ++ch) {
+            float* dest = this->raw_ptrs()[ch];
+            const float* src = other.raw_ptrs()[ch];
+            // **基准实现：纯粹的、未优化的标量循环**
+            for (size_t i = 0; i < frames; ++i) {
+                dest[i] += src[i];
+            }
+        }
+    }
+
+   private:
+    // **内部实现：朴素的 SoA (结构数组)**
+    // 使用默认分配器，不保证对齐
+    using ChannelData = std::vector<float>;
+    // // 1. 每个声道都是一个独立的std::vector，内存不连续
+    std::vector<ChannelData> _data;
+    // 2. 依然需要指针数组以匹配接口
+    std::vector<float*> channel_pointers_;
+    // 内部辅助函数
+    void sync_pointers();
+};
+#else
 #if defined(_MSC_VER)
 #include <malloc.h>
 // 适用于 Microsoft Visual C++
@@ -67,7 +132,6 @@ class AlignedAllocator {
 // 包含所有SIMD指令集的头文件
 #include <immintrin.h>
 
-namespace ice {
 class AudioBuffer {
    public:
     static constexpr size_t SIMD_ALIGNMENT = 32;  // For AVX2
@@ -219,7 +283,7 @@ class AudioBuffer {
    private:
     // 使用 using 提高可读性
     using AlignedFloatVector =
-        std::vector<float, AlignedAllocator<float, SIMD_ALIGNMENT>>;
+        std::vector<float, AlignedAllocator<float, SIMD_ALIGNMENT> >;
 
     // 单一连续内存块
     AlignedFloatVector _contiguous_buffer;
@@ -242,7 +306,7 @@ class AudioBuffer {
         }
     }
 };
-
+#endif  //__APPLE__
 }  // namespace ice
 
 #endif  // ICE_AUDIOBUFFER_HPP

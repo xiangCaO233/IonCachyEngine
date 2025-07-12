@@ -6,7 +6,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 添加avx指令集编译选项
-add_compile_options(-mavx2)
+if(APPLE)
+
+else()
+  add_compile_options(-mavx2)
+endif(APPLE)
 
 set(CMAKE_BUILD_TYPE Release)
 
