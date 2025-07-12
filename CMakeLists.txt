@@ -47,6 +47,9 @@ set(SOURCES
     src/ice/manage/AudioPool.cpp
     src/ice/manage/dec/CachyDecoder.cpp
     src/ice/manage/dec/StreamingDecoder.cpp
+    src/ice/manage/dec/ffmpeg/FFmpegDecoderFactory.cpp
+    src/ice/manage/dec/ffmpeg/FFmpegDecoderInstance.cpp
+    src/ice/thread/ThreadPool.cpp
     src/main.cpp)
 
 include_directories(include)

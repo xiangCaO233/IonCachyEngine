@@ -22,10 +22,9 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
                                      "failed");
         }
 
-        // 探测文件以获取原始格式信息
-        AudioDataFormat format;
-        size_t total_frames;
-        factory.probe(path_str, format, total_frames);
+        // 获取原始文件格式信息
+        auto format = worker->get_format();
+        size_t total_frames = worker->get_total_frames();
 
         // 预分配内存
         std::vector<std::vector<float>> pcm(format.channels);

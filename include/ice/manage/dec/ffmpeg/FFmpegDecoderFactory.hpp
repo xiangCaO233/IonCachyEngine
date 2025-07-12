@@ -2,8 +2,10 @@
 #define ICE_FFMPEGDECODERFACTORY_HPP
 
 #include <ice/manage/dec/IDecoderFactory.hpp>
+#include <memory>
 
 namespace ice {
+class FFmpegDecoderInstance;
 class FFmpegDecoderFactory : public IDecoderFactory {
    public:
     // 探测文件元信息的通用接口

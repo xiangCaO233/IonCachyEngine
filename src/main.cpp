@@ -17,15 +17,6 @@ extern "C" {
 #include <libavutil/mem.h>
 }
 
-#define AVCALL_CHECK(func)                                         \
-    if (int ret = func < 0) {                                      \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];                     \
-        av_strerror(ret, errbuf, sizeof(errbuf));                  \
-        std::cerr << "at " << std::string(#func) << ": " << errbuf \
-                  << std::endl;                                    \
-        return ret;                                                \
-    }
-
 void test() {
     // std::vector<std::vector<float>> dest(2, std::vector<float>(16777216,
     // 0.f)); std::vector<std::vector<float>> src(2,
@@ -88,7 +79,7 @@ void test() {
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
     // test
-    ice::AudioPool audiopool;
+    ice::AudioPool audiopool(ice::CodecBackend::FFMPEG);
     auto track1 = audiopool.get_or_load(file1);
     track1 = audiopool.get_or_load(file1);
     auto track2 = audiopool.get_or_load(file2);
