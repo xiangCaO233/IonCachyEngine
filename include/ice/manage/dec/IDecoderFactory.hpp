@@ -18,6 +18,7 @@ class IDecoderFactory {
     // 探测文件元信息的通用接口
     virtual void probe(std::string_view file_path, AudioDataFormat& format,
                        size_t& total_frames) const = 0;
+
     // 创建解码器实例接口
     virtual std::unique_ptr<IDecoderInstance> create_instance(
         std::string_view file_path) const = 0;

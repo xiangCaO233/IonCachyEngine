@@ -4,7 +4,6 @@
 #include <memory>
 
 #include "ice/execptions/load_error.hpp"
-#include "ice/thread/ThreadPool.hpp"
 
 namespace ice {
 // 构造函数只保存 future
@@ -13,7 +12,8 @@ CachyDecoder::CachyDecoder(std::future<DecodedData> future_data)
 
 // 创建并提交异步任务
 std::unique_ptr<CachyDecoder> CachyDecoder::create(
-    std::string_view path, std::shared_ptr<IDecoderFactory> factory) {
+    std::string_view path, ThreadPool& thread_pool,
+    std::shared_ptr<IDecoderFactory> factory) {
     // 创建一个解码任务的lambda
     auto decode_task = [factory,
                         path_str = std::string(path)]() -> DecodedData {
@@ -66,23 +66,23 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
     };
 
     // 将任务提交到全局线程池，并获取一个future
-    auto future_result = ThreadPool::tpool.enqueue(decode_task);
+    auto future_result = thread_pool.enqueue(decode_task);
 
     // 返回持有此future的CachyDecoder
     return std::unique_ptr<CachyDecoder>(
         new CachyDecoder(std::move(future_result)));
 }
 
-// get_data()：当第一次需要数据时，阻塞等待 future 完成
+// 当第一次需要数据时,阻塞等待 future 完成
 const CachyDecoder::DecodedData& CachyDecoder::get_data() const {
     std::call_once(data_ready_flag_, [this]() {
         try {
-            // .get() 会阻塞，且只能调用一次
+            // future.get() 阻塞,只能调用一次
             // 会等到解码完成
             data_cache_ = future_data_.get();
         } catch (const std::exception& e) {
             // 解码失败
-            // 放一个空的数据
+            // 放置空数据
             data_cache_ = DecodedData{};
         }
     });
@@ -116,7 +116,7 @@ size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
         const float* src = data.pcm_data[ch].data() + start_frame;
         // 目标指针:从传入的指针数组中获取
         float* dest = buffer[ch];
-        // 直接块拷贝内存
+        // 块拷贝内存
         memcpy(dest, src, frames_to_copy * sizeof(float));
     }
     // 返回实际处理的帧数

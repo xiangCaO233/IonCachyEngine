@@ -10,6 +10,7 @@
 
 #include "ice/manage/AudioTrack.hpp"
 #include "ice/manage/dec/IDecoderFactory.hpp"
+#include "ice/thread/ThreadPool.hpp"
 
 namespace ice {
 enum class CodecBackend {
@@ -43,7 +44,7 @@ class AudioPool {
     // 载入文件到音频池
     template <std::convertible_to<std::string_view> StringLike>
     [[nodiscard]] std::shared_ptr<AudioTrack> get_or_load(
-        const StringLike& file,
+        ThreadPool& thread_pool, const StringLike& file,
         CachingStrategy strategy = CachingStrategy::CACHY) {
         std::string_view sv_name(file);
         // 使用共享锁,允许多个线程同时读取
@@ -78,7 +79,8 @@ class AudioPool {
         }
         // 需要加载
         // 独占写锁,创建资源
-        auto new_data = AudioTrack::create(sv_name, decoder_factory, strategy);
+        auto new_data =
+            AudioTrack::create(sv_name, thread_pool, decoder_factory, strategy);
 
         // C++20 map::emplace的键类型必须是key_type,所以需要构造string
         pool.emplace(std::string(sv_name), new_data);

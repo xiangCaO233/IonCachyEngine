@@ -9,7 +9,7 @@ class AudioTrack;
 class IDecoder {
    public:
     // 构造IDecoder
-    explicit IDecoder() {};
+    explicit IDecoder() = default;
 
     // 析构IDecoder
     virtual ~IDecoder() = default;

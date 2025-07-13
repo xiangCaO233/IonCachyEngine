@@ -12,69 +12,6 @@
 namespace ice {
 class ThreadPool {
    public:
-    // 单例模式
-    static ThreadPool tpool;
-
-    // 提交任务到任务队列 (通用版本，接受任何可调用对象)
-    // F: 可调用对象的类型 (如 lambda, 函数指针, std::function)
-    // Args: 可调用对象的参数类型
-    // 返回一个 std::future<ResultType>，允许异步获取任务结果
-    // (本简化版不直接使用其返回值)
-    template <class F, class... Args>
-    auto enqueue(F&& f, Args&&... args)
-        -> std::future<typename std::invoke_result<F, Args...>::type>
-    // C++17 invoke_result
-    // C++11/14: std::result_of<F(Args...)>::type
-    {
-        // 获取任务的返回类型
-        using return_type = typename std::invoke_result<F, Args...>::type;
-
-        // 创建一个 std::packaged_task，它包装了原始任务 f 和其参数 args
-        // std::packaged_task 可以与 std::future 关联，用于获取异步任务的结果
-        auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...));
-        // std::bind 用于将函数 f 和其参数 args 绑定为一个无参数的可调用对象
-        // std::forward 用于完美转发参数，保持其原始的左值/右值属性
-
-        // 获取与 packaged_task 关联的 future 对象
-        std::future<return_type> res = task_ptr->get_future();
-
-        {
-            // _临界区开始：向任务队列添加任务
-            std::unique_lock<std::mutex> lock(queue_mutex);
-
-            // 如果线程池已停止，则不允许再添加新任务
-            if (stop) {
-                throw std::runtime_error("enqueue on stopped TaskExecutor");
-            }
-
-            // 将 packaged_task (通过 lambda 包装) 添加到任务队列
-            // 工作线程将执行这个 lambda，从而执行 packaged_task
-            tasks.emplace([task_ptr]() { (*task_ptr)(); });
-            // 临界区结束
-        }
-
-        // 通知一个等待的工作线程，有新任务可执行
-        condition.notify_one();
-
-        // 返回 future 对象，调用者可以用它来等待结果或检查异常
-        return res;
-    }
-
-    // 一个简化的 enqueue 版本，用于不关心返回值的 void() 任务
-    void enqueue_void(std::function<void()> task_func) {
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            if (stop) {
-                throw std::runtime_error(
-                    "enqueue_void on stopped TaskExecutor");
-            }
-            tasks.emplace(std::move(task_func));
-        }
-        condition.notify_one();
-    }
-
-   private:
     // 构造ThreadPool
     ThreadPool(int32_t num_threads = 0) {
         // 至少需要一个线程
@@ -168,6 +105,66 @@ class ThreadPool {
             }
         }
     }
+    // 提交任务到任务队列 (通用版本，接受任何可调用对象)
+    // F: 可调用对象的类型 (如 lambda, 函数指针, std::function)
+    // Args: 可调用对象的参数类型
+    // 返回一个 std::future<ResultType>，允许异步获取任务结果
+    // (本简化版不直接使用其返回值)
+    template <class F, class... Args>
+    auto enqueue(F&& f, Args&&... args)
+        -> std::future<typename std::invoke_result<F, Args...>::type>
+    // C++17 invoke_result
+    // C++11/14: std::result_of<F(Args...)>::type
+    {
+        // 获取任务的返回类型
+        using return_type = typename std::invoke_result<F, Args...>::type;
+
+        // 创建一个 std::packaged_task，它包装了原始任务 f 和其参数 args
+        // std::packaged_task 可以与 std::future 关联，用于获取异步任务的结果
+        auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+        // std::bind 用于将函数 f 和其参数 args 绑定为一个无参数的可调用对象
+        // std::forward 用于完美转发参数，保持其原始的左值/右值属性
+
+        // 获取与 packaged_task 关联的 future 对象
+        std::future<return_type> res = task_ptr->get_future();
+
+        {
+            // _临界区开始：向任务队列添加任务
+            std::unique_lock<std::mutex> lock(queue_mutex);
+
+            // 如果线程池已停止，则不允许再添加新任务
+            if (stop) {
+                throw std::runtime_error("enqueue on stopped TaskExecutor");
+            }
+
+            // 将 packaged_task (通过 lambda 包装) 添加到任务队列
+            // 工作线程将执行这个 lambda，从而执行 packaged_task
+            tasks.emplace([task_ptr]() { (*task_ptr)(); });
+            // 临界区结束
+        }
+
+        // 通知一个等待的工作线程，有新任务可执行
+        condition.notify_one();
+
+        // 返回 future 对象，调用者可以用它来等待结果或检查异常
+        return res;
+    }
+
+    // 一个简化的 enqueue 版本，用于不关心返回值的 void() 任务
+    void enqueue_void(std::function<void()> task_func) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            if (stop) {
+                throw std::runtime_error(
+                    "enqueue_void on stopped TaskExecutor");
+            }
+            tasks.emplace(std::move(task_func));
+        }
+        condition.notify_one();
+    }
+
+   private:
     // 存储工作线程对象的容器
     std::vector<std::thread> workers;
     // 任务队列，存储待执行的任务 (std::function<void()> 类型)
