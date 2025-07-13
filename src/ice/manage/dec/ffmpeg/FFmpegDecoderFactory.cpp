@@ -1,5 +1,6 @@
 #include <fmt/format.h>
 
+#include <ice/execptions/load_error.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
 
 #include "ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp"
@@ -13,7 +14,7 @@ extern "C" {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];                 \
         av_strerror(ret, errbuf, sizeof(errbuf));              \
         fmt::print("at {}:{} \n", std::string(#func), errbuf); \
-        return;                                                \
+        throw ice::load_error(std::string(errbuf));            \
     }
 
 namespace ice {
@@ -55,7 +56,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
     if (audio_stream_index == -1) {
         fmt::print("there\'s no audio stream");
         format.channels = 0;
-        return;
+        throw ice::load_error("find stream failed");
     }
 
     // 获取音频流的参数

@@ -3,10 +3,12 @@
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp>
 
+#include "ice/execptions/load_error.hpp"
 #include "ice/manage/AudioFormat.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/codec.h>
 #include <libavformat/avformat.h>
 }
 
@@ -26,6 +28,66 @@ class FFmpegDecoder {
         // 打开文件
         AVCALL_CHECK(avformat_open_input(&avfmt_ctx, file_path.data(), nullptr,
                                          nullptr));
+        // find audio stream
+        for (int i = 0; i < avfmt_ctx->nb_streams; i++) {
+            // codecpar stores decoder info
+            if (avfmt_ctx->streams[i]->codecpar->codec_type ==
+                AVMEDIA_TYPE_AUDIO) {
+                stream_index = i;
+                break;
+            }
+        }
+        if (stream_index == -1) {
+            fmt::print("there\'s no audio stream");
+            ice_format.channels = 0;
+            throw ice::load_error("find stream failed");
+        }
+
+        // 获取音频流的参数
+        auto& audio_stream = avfmt_ctx->streams[stream_index];
+        auto& codec_params = audio_stream->codecpar;
+
+        ice_format.channels = codec_params->ch_layout.nb_channels;
+        ice_format.samplerate = codec_params->sample_rate;
+
+        // 获取总采样数
+        if (audio_stream->duration > 0) {
+            // 转换:总帧数 = 时长 * 采样率 / 时间基
+            total_frames =
+                av_rescale_q(audio_stream->duration, audio_stream->time_base,
+                             {1, (int)ice_format.samplerate});
+        } else {
+            // 某些容器格式可能在顶层 context 中有 duration
+            if (avfmt_ctx->duration > 0) {
+                // AV_TIME_BASE_Q
+                total_frames =
+                    av_rescale_q(avfmt_ctx->duration, {1, AV_TIME_BASE},
+                                 {1, (int)ice_format.samplerate});
+            } else {
+                fmt::print("file {} duration unknown", file_path);
+                // 表示未知
+                total_frames = 0;
+            }
+        }
+
+        // 查找编解码器
+        avcodec = avcodec_find_decoder(codec_params->codec_id);
+        if (!avcodec) {
+            throw ice::load_error("no decoder find.");
+        }
+
+        // 分配编解码器
+        avcodec_ctx = avcodec_alloc_context3(avcodec);
+        if (!avcodec_ctx) {
+            throw ice::load_error("decoder_context_alloc failed.");
+        }
+
+        // 将流的参数拷贝到解码器上下文中
+        // 它告诉解码器要处理的数据的采样率,声道,格式等信息。
+        AVCALL_CHECK(avcodec_parameters_to_context(avcodec_ctx, codec_params));
+
+        // 打开解码器，准备开始工作
+        AVCALL_CHECK(avcodec_open2(avcodec_ctx, avcodec, nullptr));
     }
     ~FFmpegDecoder() {
         avformat_close_input(&avfmt_ctx);
@@ -41,6 +103,7 @@ class FFmpegDecoder {
    private:
     AVFormatContext* avfmt_ctx{nullptr};
     AVCodecContext* avcodec_ctx{nullptr};
+    const AVCodec* avcodec{nullptr};
     AudioDataFormat ice_format;
     size_t total_frames;
     int stream_index;
@@ -52,7 +115,7 @@ FFmpegDecoderInstance::FFmpegDecoderInstance(std::string_view file_path) {
 }
 
 // 需要声明析构函数-隐藏ffmpeg实现细节
-FFmpegDecoderInstance::~FFmpegDecoderInstance() {}
+FFmpegDecoderInstance::~FFmpegDecoderInstance() = default;
 
 // 定位帧位置
 bool FFmpegDecoderInstance::seek(size_t pos) { return true; }

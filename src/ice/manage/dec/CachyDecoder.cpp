@@ -1,6 +1,8 @@
+#include <ice/execptions/instance_build_error.hpp>
 #include <ice/manage/dec/CachyDecoder.hpp>
 #include <ice/manage/dec/IDecoderInstance.hpp>
 
+#include "ice/execptions/load_error.hpp"
 #include "ice/thread/ThreadPool.hpp"
 
 namespace ice {
@@ -18,8 +20,8 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
         std::unique_ptr<IDecoderInstance> worker =
             factory.create_instance(path_str);
         if (!worker) {
-            throw std::runtime_error("create decoder instance " + path_str +
-                                     "failed");
+            throw ice::instance_build_error("create decoder instance " +
+                                            path_str + "failed");
         }
 
         // 获取原始文件格式信息
@@ -45,7 +47,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
 
         // 定位到音频文件头
         if (!worker->seek(0)) {
-            throw std::runtime_error("seek audio file " + path_str + "failed");
+            throw ice::load_error("seek audio file " + path_str + "failed");
         }
 
         // 循环解码整个文件
