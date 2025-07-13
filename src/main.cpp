@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <ice/tool/AllocationTracker.hpp>
-#include <ratio>
 #include <thread>
 
 #include "ice/manage/AudioBuffer.hpp"
@@ -12,9 +11,13 @@
 
 void test() {
     ice::ThreadPool thread_pool(8);
+#ifdef __APPLE__
+    auto file1 = "/Users/2333xiang/Music/Tensions - チョコレーション.mp3";
+#else
     auto file1 =
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
         "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
+#endif  //__APPLE__
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
     // test

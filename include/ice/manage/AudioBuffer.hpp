@@ -7,10 +7,11 @@
 #include <ice/execptions/buffer_error.hpp>
 #include <ice/manage/AudioFormat.hpp>
 #include <vector>
-
-namespace ice {
 #ifdef __APPLE__
 #include <algorithm>
+#endif  //__APPLE__
+namespace ice {
+#ifdef __APPLE__
 class AudioBuffer {
    public:
     // --- Public 接口与你的优化版本完全一致 ---
