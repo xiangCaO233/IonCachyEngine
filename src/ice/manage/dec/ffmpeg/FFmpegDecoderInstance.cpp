@@ -44,6 +44,9 @@ class FFmpegDecoder {
         AVCALL_CHECK(
             avformat_open_input(&avfmt_ctx, file_path.data(), nullptr, nullptr))
 
+        // 查找流信息(艾斯比mp3)
+        AVCALL_CHECK(avformat_find_stream_info(avfmt_ctx, nullptr))
+
         // 查找音频流
         for (int i = 0; i < avfmt_ctx->nb_streams; i++) {
             // codecpar 存储了解码器信息
@@ -170,7 +173,7 @@ class FFmpegDecoder {
         // 执行寻道操作
         // AVSEEK_FLAG_BACKWARD 保证我们能seek到请求的关键帧或其之前最近的关键帧
         AVCALL_CHECKRETB(av_seek_frame(avfmt_ctx, stream_index, timestamp,
-                                       AVSEEK_FLAG_BACKWARD));
+                                       AVSEEK_FLAG_BACKWARD))
 
         // 寻道后解码器内部的状态可能是不一致的,需要刷新
         avcodec_flush_buffers(avcodec_ctx);
