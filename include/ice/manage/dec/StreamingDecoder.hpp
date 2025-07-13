@@ -12,7 +12,7 @@ class StreamingDecoder : public IDecoder {
    public:
     // 工厂方法
     [[nodiscard]] static std::unique_ptr<StreamingDecoder> create(
-        std::string_view path, const IDecoderFactory& factory);
+        std::string_view path, std::shared_ptr<IDecoderFactory> factory);
 
     // 解码数据到缓冲区的接口
     size_t decode(float** buffer, uint16_t num_channels, size_t start_frame,
@@ -23,7 +23,7 @@ class StreamingDecoder : public IDecoder {
    private:
     // 构造StreamingDecoder
     explicit StreamingDecoder(std::string_view path,
-                              const IDecoderFactory& factory);
+                              std::shared_ptr<IDecoderFactory> factory);
 };
 
 }  // namespace ice

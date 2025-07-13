@@ -9,12 +9,11 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
-#define AVCALL_CHECK(func)                                     \
-    if (int ret = func < 0) {                                  \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];                 \
-        av_strerror(ret, errbuf, sizeof(errbuf));              \
-        fmt::print("at {}:{} \n", std::string(#func), errbuf); \
-        throw ice::load_error(std::string(errbuf));            \
+#define AVCALL_CHECK(func)                          \
+    if (int ret = func < 0) {                       \
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];      \
+        av_strerror(ret, errbuf, sizeof(errbuf));   \
+        throw ice::load_error(std::string(errbuf)); \
     }
 
 namespace ice {
@@ -24,7 +23,7 @@ class FFmpegFormat {
         const std::string path_str(file);
         // 打开文件
         AVCALL_CHECK(
-            avformat_open_input(&fmt_ctx, path_str.c_str(), nullptr, nullptr));
+            avformat_open_input(&fmt_ctx, path_str.c_str(), nullptr, nullptr))
     }
     ~FFmpegFormat() { avformat_close_input(&fmt_ctx); }
     FFmpegFormat(const FFmpegFormat&) = delete;
@@ -41,7 +40,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
                                  AudioDataFormat& format,
                                  size_t& total_frames) const {
     FFmpegFormat fffmt(file_path);
-    AVCALL_CHECK(avformat_find_stream_info(fffmt.get(), nullptr));
+    AVCALL_CHECK(avformat_find_stream_info(fffmt.get(), nullptr))
 
     // find audio stream
     int audio_stream_index{-1};

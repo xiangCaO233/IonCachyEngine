@@ -1,6 +1,7 @@
 #include <ice/execptions/instance_build_error.hpp>
 #include <ice/manage/dec/CachyDecoder.hpp>
 #include <ice/manage/dec/IDecoderInstance.hpp>
+#include <memory>
 
 #include "ice/execptions/load_error.hpp"
 #include "ice/thread/ThreadPool.hpp"
@@ -12,13 +13,13 @@ CachyDecoder::CachyDecoder(std::future<DecodedData> future_data)
 
 // 创建并提交异步任务
 std::unique_ptr<CachyDecoder> CachyDecoder::create(
-    std::string_view path, const IDecoderFactory& factory) {
+    std::string_view path, std::shared_ptr<IDecoderFactory> factory) {
     // 创建一个解码任务的lambda
-    auto decode_task = [&factory,
+    auto decode_task = [factory,
                         path_str = std::string(path)]() -> DecodedData {
         // 创建工人
         std::unique_ptr<IDecoderInstance> worker =
-            factory.create_instance(path_str);
+            factory->create_instance(path_str);
         if (!worker) {
             throw ice::instance_build_error("create decoder instance " +
                                             path_str + "failed");

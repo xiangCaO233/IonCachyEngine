@@ -23,7 +23,7 @@ class AudioTrack {
    public:
     // 工厂方法
     [[nodiscard]] static std::shared_ptr<AudioTrack> create(
-        std::string_view path, IDecoderFactory& decoder_factory,
+        std::string_view path, std::shared_ptr<IDecoderFactory> decoder_factory,
         CachingStrategy strategy);
 
     // 禁止拷贝，这是一个唯一的资源
@@ -48,7 +48,8 @@ class AudioTrack {
 
    private:
     // 私有构造函数，强制使用工厂方法
-    AudioTrack(std::string_view p, IDecoderFactory& decoder_factory,
+    AudioTrack(std::string_view p,
+               std::shared_ptr<IDecoderFactory> decoder_factory,
                CachingStrategy strategy);
 
     // 音频路径

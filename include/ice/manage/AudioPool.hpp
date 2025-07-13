@@ -34,12 +34,6 @@ struct StringHash {
 };
 
 class AudioPool {
-   private:
-    // 读写锁--可同时读,写时不可读不可写
-    mutable std::shared_mutex pool_mutex;
-    // 解码器工厂实现
-    std::unique_ptr<IDecoderFactory> decoder_factory;
-
    public:
     // 构造AudioPool
     explicit AudioPool(CodecBackend codec_backend);
@@ -84,7 +78,7 @@ class AudioPool {
         }
         // 需要加载
         // 独占写锁,创建资源
-        auto new_data = AudioTrack::create(sv_name, *decoder_factory, strategy);
+        auto new_data = AudioTrack::create(sv_name, decoder_factory, strategy);
 
         // C++20 map::emplace的键类型必须是key_type,所以需要构造string
         pool.emplace(std::string(sv_name), new_data);
@@ -92,7 +86,12 @@ class AudioPool {
         return new_data;
     }
 
-   protected:
+   private:
+    // 读写锁--可同时读,写时不可读不可写
+    mutable std::shared_mutex pool_mutex;
+    // 解码器工厂实现
+    std::shared_ptr<IDecoderFactory> decoder_factory;
+    // 音频轨道池
     std::unordered_map<std::string, std::weak_ptr<AudioTrack>, StringHash,
                        std::equal_to<>>
         pool;

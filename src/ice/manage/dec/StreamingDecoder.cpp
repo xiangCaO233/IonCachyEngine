@@ -3,9 +3,12 @@ namespace ice {
 // TODO(xiang 2025-07-12):实现流式解码器接口
 // 工厂方法
 [[nodiscard]] std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
-    std::string_view path, const IDecoderFactory& factory) {}
+    std::string_view path, std::shared_ptr<IDecoderFactory> factory) {
+    return std::unique_ptr<StreamingDecoder>(
+        new StreamingDecoder(path, factory));
+}
 StreamingDecoder::StreamingDecoder(std::string_view path,
-                                   const IDecoderFactory& factory) {}
+                                   std::shared_ptr<IDecoderFactory> factory) {}
 // 解码数据到缓冲区的接口
 size_t StreamingDecoder::decode(float** buffer, uint16_t num_channels,
                                 size_t start_frame, size_t frame_count) {

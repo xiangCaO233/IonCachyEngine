@@ -16,7 +16,7 @@ class CachyDecoder : public IDecoder {
    public:
     // 工厂方法
     [[nodiscard]] static std::unique_ptr<CachyDecoder> create(
-        std::string_view path, const IDecoderFactory& factory);
+        std::string_view path, std::shared_ptr<IDecoderFactory> factory);
 
     size_t num_frames() const override {
         const auto& data = get_data();

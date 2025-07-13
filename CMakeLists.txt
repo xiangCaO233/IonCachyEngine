@@ -12,7 +12,6 @@ else()
   add_compile_options(-mavx2)
 endif(APPLE)
 
-set(CMAKE_BUILD_TYPE Release)
 
 # 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")

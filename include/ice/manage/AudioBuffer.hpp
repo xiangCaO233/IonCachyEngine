@@ -1,15 +1,16 @@
 #ifndef ICE_AUDIOBUFFER_HPP
 #define ICE_AUDIOBUFFER_HPP
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <ice/execptions/buffer_error.hpp>
 #include <ice/manage/AudioFormat.hpp>
 #include <vector>
 
 namespace ice {
 #ifdef __APPLE__
+#include <algorithm>
 class AudioBuffer {
    public:
     // --- Public 接口与你的优化版本完全一致 ---
@@ -45,7 +46,7 @@ class AudioBuffer {
     // 核心操作：使用纯标量循环
     void operator+=(const AudioBuffer& other) {
         if (afmt != other.afmt || num_frames() != other.num_frames()) {
-            throw std::runtime_error(
+            throw ice::buffer_error(
                 "AudioBuffer_Baseline format mismatch for mixing.");
         }
         const size_t frames = num_frames();
@@ -253,7 +254,7 @@ class AudioBuffer {
     // 核心操作
     inline void operator+=(const AudioBuffer& other) {
         if (afmt != other.afmt || num_frames() != other.num_frames()) {
-            throw std::runtime_error("AudioBuffer format mismatch for mixing.");
+            throw ice::buffer_error("AudioBuffer format mismatch for mixing.");
         }
 
         // 使用 ICE_RESTRICT 告知编译器指针不重叠，允许更激进的优化
