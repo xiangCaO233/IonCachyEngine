@@ -7,7 +7,6 @@ namespace ice {
 Clipper::Clipper(std::shared_ptr<IAudioNode> input) : IEffectNode(input) {}
 
 // 应用效果
-void Clipper::apply_effect(AudioBuffer& output, const AudioBuffer& input,
-                           uint32_t frameCount) {}
+void Clipper::apply_effect(AudioBuffer& output, const AudioBuffer& input) {}
 
 }  // namespace ice

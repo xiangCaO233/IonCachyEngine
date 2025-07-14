@@ -13,8 +13,7 @@ class Clipper : public IEffectNode {
 
    protected:
     // 应用效果
-    void apply_effect(AudioBuffer& output, const AudioBuffer& input,
-                      uint32_t frameCount) override;
+    void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 };
 
 }  // namespace ice

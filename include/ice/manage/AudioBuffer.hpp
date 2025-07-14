@@ -136,9 +136,10 @@ class AlignedAllocator {
 
 class AudioBuffer {
    public:
-    static constexpr size_t SIMD_ALIGNMENT = 32;  // For AVX2
-    static constexpr size_t SIMD_VECTOR_SIZE =
-        8;  // 8 floats in a __m256 register
+    // For AVX2
+    static constexpr size_t SIMD_ALIGNMENT = 32;
+    // 8 floats in a __m256 register
+    static constexpr size_t SIMD_VECTOR_SIZE = 8;
 
     AudioDataFormat afmt;
 
@@ -153,6 +154,7 @@ class AudioBuffer {
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
 
     inline void resize(const AudioDataFormat& format, size_t num_frames) {
+        if (format == afmt && _original_num_frames == num_frames) return;
         afmt = format;
         _original_num_frames = num_frames;
 
@@ -180,6 +182,27 @@ class AudioBuffer {
             // 对于浮点数0,memset是安全且通常最快的
             std::memset(_contiguous_buffer.data(), 0,
                         _contiguous_buffer.size() * sizeof(float));
+        }
+    }
+    void clear_from(size_t start_frame) {
+        if (start_frame >= _original_num_frames) {
+            return;
+        }
+
+        // 需要清零的帧数
+        const size_t frames_to_clear = _original_num_frames - start_frame;
+        if (frames_to_clear == 0) return;
+
+        // 逐声道清零
+        for (uint16_t ch = 0; ch < afmt.channels; ++ch) {
+            // 获取第 ch 声道的起始指针
+            float* channel_start_ptr = channel_pointers_[ch];
+
+            // 计算需要清零的内存区域的起始地址
+            float* clear_start_ptr = channel_start_ptr + start_frame;
+
+            // 调用 memset
+            std::memset(clear_start_ptr, 0, frames_to_clear * sizeof(float));
         }
     }
 
@@ -218,12 +241,12 @@ class AudioBuffer {
 
         // 我们一次处理8个浮点数（4帧），所以循环步长为4
         for (size_t i = 0; i < aligned_frames; i += 4) {
-            // 1. 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
+            // 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
             // 我们一次加载两个 __m128 来组成一个 __m256
             __m256 interleaved_vec = _mm256_loadu_ps(
                 src + i * 2);  // 使用 unaligned load，因为源不保证对齐
 
-            // 2. 解交错 - 这是核心技巧
+            // 解交错
             // 目标:
             //   - 一个寄存器包含 [L0, L1, L2, L3, ?, ?, ?, ?]
             //   - 另一个寄存器包含 [R0, R1, R2, R3, ?, ?, ?, ?]
@@ -235,7 +258,7 @@ class AudioBuffer {
             __m256 shuffled =
                 _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
 
-            // 3. 使用 _mm256_permute2f128_ps 跨128位通道重排
+            // 使用 _mm256_permute2f128_ps 跨128位通道重排
             // 控制码 0b00100000 (0x20)
             // 它将 shuffled 的低128位和高128位组合成最终的左声道向量
             // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [L0,L1,L2,L3]
@@ -246,7 +269,7 @@ class AudioBuffer {
             // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [R0,R1,R2,R3]
             __m256 right_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x31);
 
-            // 4. 将解交错后的向量写入各自的对齐内存中
+            // 将解交错后的向量写入各自的对齐内存中
             _mm256_store_ps(dest[0] + i, left_vec);
             _mm256_store_ps(dest[1] + i, right_vec);
         }
@@ -279,13 +302,12 @@ class AudioBuffer {
         }
     }
 
-    // 指向连续内存块中各个声道的起始位置
-    std::vector<float*> channel_pointers_;
-
    private:
     // 使用 using 提高可读性
     using AlignedFloatVector =
         std::vector<float, AlignedAllocator<float, SIMD_ALIGNMENT> >;
+    // 指向连续内存块中各个声道的起始位置
+    std::vector<float*> channel_pointers_;
 
     // 单一连续内存块
     AlignedFloatVector _contiguous_buffer;

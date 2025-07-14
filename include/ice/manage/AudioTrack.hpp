@@ -6,12 +6,14 @@
 #include <memory>
 #include <string_view>
 
+#include "ice/core/SourceNode.hpp"
 #include "ice/manage/dec/IDecoder.hpp"
 #include "ice/manage/dec/IDecoderFactory.hpp"
 
 namespace ice {
 class AudioBuffer;
 
+// 缓存策略
 enum class CachingStrategy {
     // 完全缓存
     CACHY,
@@ -28,9 +30,11 @@ class AudioTrack {
         std::shared_ptr<IDecoderFactory> decoder_factory,
         CachingStrategy strategy);
 
-    // 禁止拷贝，这是一个唯一的资源
+    // 禁止拷贝,唯一资源
     AudioTrack(const AudioTrack&) = delete;
     AudioTrack& operator=(const AudioTrack&) = delete;
+
+    std::shared_ptr<SourceNode> create_source();
 
     // 原始数据格式
     inline const AudioDataFormat& native_format() const { return format; }
@@ -38,7 +42,7 @@ class AudioTrack {
     // 原始音频路径
     inline const std::string& path() const { return file_path; }
 
-    //
+    // 获取音频原始的总帧数-精确相对时间
     inline auto num_frames() const { return decoder->num_frames(); }
 
     // 将解码请求转发给其持有的解码器策略

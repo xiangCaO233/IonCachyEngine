@@ -16,7 +16,7 @@ class IAudioNode {
     virtual ~IAudioNode() = default;
 
     // 节点的通用处理接口
-    virtual void process(AudioBuffer& buffer, uint32_t frame_count) = 0;
+    virtual void process(AudioBuffer& buffer) = 0;
 };
 
 }  // namespace ice

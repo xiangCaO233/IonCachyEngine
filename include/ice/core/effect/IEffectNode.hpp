@@ -15,7 +15,7 @@ class IEffectNode : public IAudioNode {
     // 析构IEffectNode
     ~IEffectNode() override = default;
 
-    void process(AudioBuffer& buffer, uint32_t frame_count) override;
+    void process(AudioBuffer& buffer) override;
 
    protected:
     // 上游节点
@@ -25,8 +25,8 @@ class IEffectNode : public IAudioNode {
     AudioBuffer inputBuffer;
 
     // 应用效果的纯虚接口
-    virtual void apply_effect(AudioBuffer& output, const AudioBuffer& input,
-                              uint32_t frameCount) = 0;
+    virtual void apply_effect(AudioBuffer& output,
+                              const AudioBuffer& input) = 0;
 };
 }  // namespace ice
 

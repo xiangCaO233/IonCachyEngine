@@ -5,12 +5,12 @@ namespace ice {
 IEffectNode::IEffectNode(std::shared_ptr<IAudioNode> input)
     : inputNode(input) {}
 
-void IEffectNode::process(AudioBuffer& buffer, uint32_t frame_count) {
+void IEffectNode::process(AudioBuffer& buffer) {
     // 从上游节点拉取数据到我们自己的临时输入缓冲区
     // (需要确保 m_inputBuffer 大小足够)
-    inputNode->process(inputBuffer, frame_count);
+    inputNode->process(inputBuffer);
 
     // 对输入缓冲区的数据应用效果，并将结果放入最终的输出缓冲区
-    apply_effect(buffer, inputBuffer, frame_count);
+    apply_effect(buffer, inputBuffer);
 }
 }  // namespace ice

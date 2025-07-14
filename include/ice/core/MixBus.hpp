@@ -16,7 +16,7 @@ class MixBus : public IAudioNode {
     // 析构MixBus
     ~MixBus() override;
 
-    void process(AudioBuffer& buffer, uint32_t frame_count) override;
+    void process(AudioBuffer& buffer) override;
 
    private:
     // 来源表

@@ -144,8 +144,7 @@ class FFmpegDecoder {
         AVCALL_CHECK(swr_init(swr_ctx))
 
         // 初始化转换缓冲区
-        const size_t max_frames_per_avframe =
-            avcodec_ctx->frame_size > 0 ? avcodec_ctx->frame_size : 2048;
+        const size_t max_frames_per_avframe = 2048;
         conversion_buffer.resize({(uint16_t)avcodec_ctx->ch_layout.nb_channels,
                                   (uint32_t)avcodec_ctx->sample_rate},
                                  max_frames_per_avframe);
