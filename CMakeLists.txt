@@ -12,7 +12,6 @@ else()
   add_compile_options(-mavx2)
 endif(APPLE)
 
-
 # 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
@@ -53,6 +52,8 @@ set(SOURCES
     src/ice/manage/dec/ffmpeg/FFmpegDecoderFactory.cpp
     src/ice/manage/dec/ffmpeg/FFmpegDecoderInstance.cpp
     src/ice/thread/ThreadPool.cpp
+    src/ice/out/IReceiver.cpp
+    src/ice/out/play/sdl/SDLPlayer.cpp
     src/main.cpp)
 
 include_directories(include)

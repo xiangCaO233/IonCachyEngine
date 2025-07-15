@@ -4,13 +4,15 @@
 #include <memory>
 
 #include "ice/core/IAudioNode.hpp"
+#include "ice/manage/AudioFormat.hpp"
 
 namespace ice {
 
 class IReceiver {
    public:
     // 构造IReceiver
-    IReceiver() = default;
+    explicit IReceiver(const AudioDataFormat &format);
+
     // 析构IReceiver
     virtual ~IReceiver() = default;
 

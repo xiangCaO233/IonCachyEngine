@@ -30,9 +30,10 @@ void test() {
     fmt::print("frames:{}\n", track1->num_frames());
     fmt::print("channels:{}\n", track1->native_format().channels);
     fmt::print("samplerate:{}\n", track1->native_format().samplerate);
-    ice::AudioDataFormat format(2, 48000);
+    ice::AudioDataFormat format;
     ice::AudioBuffer buffer(format, 1024);
     track1->read(buffer, 3000000, 1024);
+
     // auto track2 = audiopool.get_or_load(thread_pool, file2);
     // track2 = audiopool.get_or_load(thread_pool, file2);
 }
