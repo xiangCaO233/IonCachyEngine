@@ -19,16 +19,24 @@ class AudioBuffer {
     // 构造与生命周期
     AudioBuffer() = default;
     AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
+
     // 删除拷贝，实现移动
     AudioBuffer(const AudioBuffer&) = delete;
     AudioBuffer& operator=(const AudioBuffer&) = delete;
     AudioBuffer(AudioBuffer&& other) noexcept;
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
+
     // 核心功能
     void resize(const AudioDataFormat& format, size_t num_frames);
     void clear() {
         for (auto& channel_data : _data) {
             std::fill(channel_data.begin(), channel_data.end(), 0.0f);
+        }
+    }
+    void clear_from(size_t start_frame) {
+        for (auto& channel_data : _data) {
+            std::fill(channel_data.begin() + start_frame, channel_data.end(),
+                      0.0f);
         }
     }
     // 数据访问 (提供与优化版本相同的接口)

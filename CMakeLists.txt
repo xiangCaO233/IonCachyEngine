@@ -39,8 +39,7 @@ else()
   pkg_check_modules(ffmpeg-util REQUIRED IMPORTED_TARGET libavutil)
 endif(WIN32)
 
-# set(LIB_SOURCES )
-set(SOURCES
+set(LIB_SOURCES
     src/ice/core/SourceNode.cpp
     src/ice/core/MixBus.cpp
     src/ice/core/effect/IEffectNode.cpp
@@ -55,14 +54,15 @@ set(SOURCES
     src/ice/manage/dec/ffmpeg/FFmpegDecoderInstance.cpp
     src/ice/thread/ThreadPool.cpp
     src/ice/out/IReceiver.cpp
-    src/ice/out/play/sdl/SDLPlayer.cpp
-    src/main.cpp)
+    src/ice/out/play/sdl/SDLPlayer.cpp)
+
+set(SOURCES ${LIB_SOURCES} src/main.cpp)
 
 include_directories(include)
 
-# add_library(IonCachyEngin-dev STATIC ${LIB_SOURCES})
+add_library(IonCachyEngin-dev STATIC ${LIB_SOURCES})
 
-# add_library(IonCachyEngin SHARED ${LIB_SOURCES})
+add_library(IonCachyEngin SHARED ${LIB_SOURCES})
 
 add_executable(testIonCachyEngin ${SOURCES})
 
@@ -76,6 +76,11 @@ target_link_libraries(
 #
 # endif(WIN32)
 
-# target_link_libraries(IonCachyEngin-dev PUBLIC )
+target_link_libraries(
+  IonCachyEngin-dev
+  PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
+         PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
 
-# target_link_libraries(IonCachyEngin PUBLIC )
+target_link_libraries(
+  IonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
+                       PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)

@@ -41,6 +41,10 @@ class SDLPlayer : public IReceiver {
     // 开始拉取数据并播放
     bool start() override;
 
+    bool joinable();
+
+    void join();
+
     // 停止拉取数据
     void stop() override;
 

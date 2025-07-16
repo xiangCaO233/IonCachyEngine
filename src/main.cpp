@@ -4,9 +4,7 @@
 #include <ice/tool/AllocationTracker.hpp>
 #include <thread>
 
-#include "ice/config/config.hpp"
 #include "ice/core/SourceNode.hpp"
-#include "ice/manage/AudioBuffer.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
 #include "ice/out/play/sdl/SDLPlayer.hpp"
@@ -70,7 +68,7 @@ void test() {
     player.set_source(source);
     // player.set_source(mixer);
 
-    player.open(23);
+    player.open();
     // player.open(selected_device);
     player.start();
 
@@ -83,7 +81,8 @@ void test() {
     fmt::print("{}s\n", total_time.count() / 1000.0 / 1000.0 / 1000.0);
     fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
 
-    std::this_thread::sleep_for(total_time);
+    // std::this_thread::sleep_for(total_time);
+    player.join();
 
     player.stop();
     player.close();

@@ -103,6 +103,7 @@ bool SDLPlayer::start() {
     running.store(true);
 
     sdl_audio_thread = std::thread(&SDLPlayer::audio_thread_loop, this);
+    // sdl_audio_thread.detach();
 
     // 恢复流所绑定的设备
     auto device = SDL_GetAudioStreamDevice(audio_stream);
@@ -113,6 +114,10 @@ bool SDLPlayer::start() {
 
     return true;
 }
+
+bool SDLPlayer::joinable() { return sdl_audio_thread.joinable(); }
+
+void SDLPlayer::join() { sdl_audio_thread.join(); }
 
 // 停止拉取数据
 void SDLPlayer::stop() {
