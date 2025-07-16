@@ -6,7 +6,7 @@
 #include <memory>
 #include <string_view>
 
-#include "ice/core/SourceNode.hpp"
+#include "ice/config/config.hpp"
 #include "ice/manage/dec/IDecoder.hpp"
 #include "ice/manage/dec/IDecoderFactory.hpp"
 
@@ -28,13 +28,11 @@ class AudioTrack {
     [[nodiscard]] static std::shared_ptr<AudioTrack> create(
         std::string_view path, ThreadPool& thread_pool,
         std::shared_ptr<IDecoderFactory> decoder_factory,
-        CachingStrategy strategy);
+        CachingStrategy strategy = ICEConfig::default_caching_strategy);
 
     // 禁止拷贝,唯一资源
     AudioTrack(const AudioTrack&) = delete;
     AudioTrack& operator=(const AudioTrack&) = delete;
-
-    std::shared_ptr<SourceNode> create_source();
 
     // 原始数据格式
     inline const AudioDataFormat& native_format() const { return format; }
@@ -64,7 +62,7 @@ class AudioTrack {
     // 原始音频数据格式
     AudioDataFormat format;
 
-    // 解码策略
+    // 使用的解码器
     std::unique_ptr<IDecoder> decoder;
 };
 

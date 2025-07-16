@@ -1,6 +1,7 @@
 #include <ice/manage/AudioTrack.hpp>
 #include <memory>
 
+#include "ice/core/SourceNode.hpp"
 #include "ice/manage/dec/CachyDecoder.hpp"
 #include "ice/manage/dec/StreamingDecoder.hpp"
 

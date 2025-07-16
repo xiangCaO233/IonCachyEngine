@@ -36,7 +36,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
         }
 
         // 预分配chunk缓存空间
-        const size_t CHUNK_SIZE = 4096;
+        const size_t CHUNK_SIZE = 2048;
         std::vector<float*> chunk_ptrs(format.channels);
         std::vector<std::vector<float>> chunk_buffer(format.channels);
         for (auto& c : chunk_buffer) {

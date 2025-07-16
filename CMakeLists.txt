@@ -22,9 +22,10 @@ find_package(spdlog REQUIRED)
 find_package(fmt REQUIRED)
 # openal
 find_package(OpenAL REQUIRED)
-
 # (c包管理器)
 find_package(PkgConfig REQUIRED)
+# sdl
+find_package(SDL3 REQUIRED)
 
 # rubberband库
 pkg_check_modules(rubberband REQUIRED IMPORTED_TARGET rubberband)
@@ -44,6 +45,7 @@ set(SOURCES
     src/ice/core/MixBus.cpp
     src/ice/core/effect/IEffectNode.cpp
     src/ice/core/effect/Clipper.cpp
+    src/ice/config/config.cpp
     src/ice/manage/AudioBuffer.cpp
     src/ice/manage/AudioTrack.cpp
     src/ice/manage/AudioPool.cpp
@@ -65,8 +67,9 @@ include_directories(include)
 add_executable(testIonCachyEngin ${SOURCES})
 
 target_link_libraries(
-  testIonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                           PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
+  testIonCachyEngin
+  PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
+         PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
 # if(WIN32)
 #
 # else()

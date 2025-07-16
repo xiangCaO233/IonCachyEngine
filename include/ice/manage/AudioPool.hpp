@@ -8,6 +8,7 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "ice/config/config.hpp"
 #include "ice/manage/AudioTrack.hpp"
 #include "ice/manage/dec/IDecoderFactory.hpp"
 #include "ice/thread/ThreadPool.hpp"
@@ -37,7 +38,8 @@ struct StringHash {
 class AudioPool {
    public:
     // 构造AudioPool
-    explicit AudioPool(CodecBackend codec_backend);
+    explicit AudioPool(
+        CodecBackend codec_backend = ICEConfig::default_codec_backend);
     // 析构AudioPool
     virtual ~AudioPool() = default;
 

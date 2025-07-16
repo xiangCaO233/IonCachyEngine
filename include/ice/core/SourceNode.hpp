@@ -2,26 +2,82 @@
 #define ICE_SOURCENODE_HPP
 
 #include <atomic>
+#include <chrono>
+#include <ice/manage/AudioTrack.hpp>
 #include <memory>
 
+#include "ice/config/config.hpp"
 #include "ice/core/IAudioNode.hpp"
 
 namespace ice {
-class AudioTrack;
 class Resampler;
 class SourceNode : public IAudioNode {
    public:
     // 构造SourceNode
-    explicit SourceNode(std::shared_ptr<AudioTrack> track,
-                        const AudioDataFormat& engin_format);
+    explicit SourceNode(
+        std::shared_ptr<AudioTrack> track,
+        const AudioDataFormat& engin_format = ICEConfig::internal_format);
     // 析构SourceNode
-    ~SourceNode() override = default;
+    ~SourceNode() override;
 
     // 只管从播放位置读取请求的数据量并填充缓冲区
     void process(AudioBuffer& buffer) override;
 
     // 设置是否循环播放
     inline void setloop(bool flag) { is_looping.store(flag); }
+
+    // 设置播放位置
+    // 根据帧位置
+    inline void set_playpos(size_t frame_pos) { playback_pos.store(frame_pos); }
+
+    // 根据时间(us)
+    /**
+     * @brief 根据一个时间段来设置播放位置。
+     * 这是一个模板函数，能够接受任何类型的 std::chrono::duration
+     * (例如：std::chrono::seconds, std::chrono::milliseconds,
+     * std::chrono::nanoseconds 等)。
+     *
+     * 用法示例:
+     * @code
+     *   using namespace std::chrono_literals; // 启用 s, ms, us, ns 等时间后缀
+     *
+     *   source_node->set_playpos(10s);
+     * 跳转到第10秒 source_node->set_playpos(std::chrono::minutes(1) + 30s);
+     * 跳转到1分30秒 source_node->set_playpos(500ms); 跳转到500毫秒
+     * @endcode
+     *
+     * @tparam Rep    时间段的底层表示类型 (例如 int, double)。
+     * @tparam Period 一个 std::ratio 类型，代表时间刻度的周期 (例如
+     * std::ratio<1, 1000> 代表毫秒)。
+     * @param time_pos 从音轨起始点开始计算的时间段。
+     */
+    template <typename Rep, typename Period>
+    inline void set_playpos(
+        const std::chrono::duration<Rep, Period>& time_pos) {
+        // 获取音轨的采样率
+        const auto sample_rate =
+            static_cast<double>(track->native_format().samplerate);
+        if (sample_rate == 0) {
+            return;
+        }
+
+        // 将任何传入的时间单位，都安全地、精确地转换为“秒”
+        // 我们使用一个以 double 为基础的 duration
+        // 类型来接收转换结果，以保证最高精度。
+        using double_seconds = std::chrono::duration<double>;
+        const auto seconds =
+            std::chrono::duration_cast<double_seconds>(time_pos).count();
+
+        // 计算对应的帧位置
+        const auto frame_position = static_cast<size_t>(seconds * sample_rate);
+
+        // 安全地设置播放位置 (边界检查)
+        const auto total_frames = track->num_frames();
+        const auto final_position = std::min(frame_position, total_frames);
+
+        // 原子地存储
+        set_playpos(final_position);
+    }
 
    private:
     // 重采样实现

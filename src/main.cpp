@@ -4,9 +4,12 @@
 #include <ice/tool/AllocationTracker.hpp>
 #include <thread>
 
+#include "ice/config/config.hpp"
+#include "ice/core/SourceNode.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
+#include "ice/out/play/sdl/SDLPlayer.hpp"
 #include "ice/thread/ThreadPool.hpp"
 
 void test() {
@@ -21,21 +24,55 @@ void test() {
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
     // test
-    ice::AudioPool audiopool(ice::CodecBackend::FFMPEG);
+    ice::AudioPool audiopool;
     auto track1 = audiopool.get_or_load(thread_pool, file1);
     track1 = audiopool.get_or_load(thread_pool, file1);
+    // auto track2 = audiopool.get_or_load(thread_pool, file2);
+    // track2 = audiopool.get_or_load(thread_pool, file2);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
+    // 获取音频轨道信息
     fmt::print("frames:{}\n", track1->num_frames());
     fmt::print("channels:{}\n", track1->native_format().channels);
     fmt::print("samplerate:{}\n", track1->native_format().samplerate);
-    ice::AudioDataFormat format;
-    ice::AudioBuffer buffer(format, 1024);
-    track1->read(buffer, 3000000, 1024);
 
-    // auto track2 = audiopool.get_or_load(thread_pool, file2);
-    // track2 = audiopool.get_or_load(thread_pool, file2);
+    // ice::AudioDataFormat format;
+    // ice::AudioBuffer buffer(format, 1024);
+    // track1->read(buffer, 3000000, 1024);
+
+    ice::SDLPlayer::init_backend();
+    auto devices = ice::SDLPlayer::list_devices();
+    for (const auto& device : devices) {
+        fmt::print("deviceid:{},devicename:{}\n", device.id, device.name);
+    }
+    // auto selected_device = devices[0].id;
+
+    auto player = ice::SDLPlayer(track1->native_format());
+
+    auto source = std::make_shared<ice::SourceNode>(track1);
+    // auto source2 = std::make_shared<ice::SourceNode>(track2);
+
+    using namespace std::chrono_literals;
+
+    // source->set_playpos(10s + 100us);
+
+    source->setloop(true);
+
+    // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
+    // auto mixer = std::make_shared<Mixer>();
+    // mixer.add_source({stretcher ,source2 });
+
+    player.set_source(source);
+    // player.set_source(mixer);
+
+    player.open();
+    // player.open(selected_device);
+    player.start();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30000));
+
+    player.stop();
+    player.close();
+    ice::SDLPlayer::quit_backend();
 }
 
 int main(int argc, char* argv[]) {

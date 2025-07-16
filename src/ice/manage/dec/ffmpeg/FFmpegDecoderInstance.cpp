@@ -1,3 +1,4 @@
+#include <fmt/base.h>
 #include <fmt/format.h>
 
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
@@ -183,53 +184,54 @@ class FFmpegDecoder {
     size_t decode(float** buffer, size_t chunksize) {
         size_t frames_decoded_total = 0;
 
-        // 循环，直到解码并输出了足够数量的帧
         while (frames_decoded_total < chunksize) {
-            // 尝试从解码器接收一个已经解码好的 AVFrame
-            int ret = avcodec_receive_frame(avcodec_ctx, avframe);
-
-            if (ret == 0) {  // 成功接收到一个原生格式的 AVFrame
-
-                // 使用 swr_convert 将原生帧转换到内部临时缓冲区
-                int converted_count = swr_convert(
-                    swr_ctx,
-                    (uint8_t**)
-                        conversion_buffer.raw_ptrs(),  // 目标：内部临时缓冲区
-                    conversion_buffer.num_frames(),    // 目标大小
-                    (const uint8_t**)avframe->data,    // 源：解码出的原生帧
-                    avframe->nb_samples                // 源大小
-                );
-
-                if (converted_count <= 0) {
-                    av_frame_unref(avframe);
-                    // 转换失败或无输出，继续
-                    continue;
-                }
-
-                // 计算需要从临时区拷贝多少数据到最终的目标缓冲区
-                size_t frames_needed = chunksize - frames_decoded_total;
+            // 步骤 1: 优先处理上一次遗留的数据
+            if (conversion_buffer_remains > 0) {
                 size_t frames_to_copy =
-                    std::min((size_t)converted_count, frames_needed);
+                    std::min(chunksize - frames_decoded_total,
+                             conversion_buffer_remains);
 
-                // 逐声道地将数据从临时区拷贝到最终缓冲区的正确位置
                 for (uint16_t ch = 0; ch < avcodec_ctx->ch_layout.nb_channels;
                      ++ch) {
-                    const float* src = conversion_buffer.raw_ptrs()[ch];
-                    // 写入到 buffer 的正确偏移位置
+                    const float* src = conversion_buffer.raw_ptrs()[ch] +
+                                       conversion_buffer_offset;
                     float* dest = buffer[ch] + frames_decoded_total;
-
                     memcpy(dest, src, frames_to_copy * sizeof(float));
                 }
 
                 frames_decoded_total += frames_to_copy;
+                conversion_buffer_remains -= frames_to_copy;
+                conversion_buffer_offset += frames_to_copy;
 
+                if (frames_decoded_total >= chunksize) break;
+            }
+
+            // 如果遗留数据已用完，重置偏移
+            conversion_buffer_offset = 0;
+
+            // 从解码器获取一个新的原生帧
+            int ret = avcodec_receive_frame(avcodec_ctx, avframe);
+
+            if (ret == 0) {
+                // 将整个原生帧转换到的内部缓冲区
+                int converted_count = swr_convert(
+                    swr_ctx, (uint8_t**)conversion_buffer.raw_ptrs(),
+                    conversion_buffer.num_frames(),
+                    (const uint8_t**)avframe->data, avframe->nb_samples);
+
+                if (converted_count > 0) {
+                    // 更新我们内部缓冲区的剩余帧数
+                    conversion_buffer_remains = converted_count;
+                }
                 av_frame_unref(avframe);
+
                 continue;
             } else if (ret == AVERROR(EAGAIN)) {
                 // 发送新Packet
                 av_packet_unref(avpacket);
                 int read_ret = av_read_frame(avfmt_ctx, avpacket);
                 if (read_ret == AVERROR_EOF) {
+                    // 发送空pack
                     avcodec_send_packet(avcodec_ctx, nullptr);
                     // 不需要continue，下一次while循环会处理解码器的EOF
                 } else if (read_ret < 0) {
@@ -285,6 +287,10 @@ class FFmpegDecoder {
     SwrContext* swr_ctx{nullptr};
     AudioDataFormat ice_format;
     AudioBuffer conversion_buffer;
+    // 新增：记录上一次转换后，在 conversion_buffer 中还剩下多少帧
+    size_t conversion_buffer_remains = 0;
+    // 新增：记录上一次转换后，我们从缓冲区的哪个位置开始拷贝的
+    size_t conversion_buffer_offset = 0;
     size_t total_frames;
     int stream_index;
 };

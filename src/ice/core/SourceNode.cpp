@@ -75,6 +75,9 @@ SourceNode::SourceNode(std::shared_ptr<AudioTrack> track,
     }
 }
 
+// 析构SourceNode
+SourceNode::~SourceNode() = default;
+
 // 只管读取数据填充缓冲区
 void SourceNode::process(AudioBuffer& buffer) {
     auto gained_frames = track->read(buffer, playback_pos, buffer.num_frames());
