@@ -1,8 +1,8 @@
 #ifndef ICE_MIXBUS_HPP
 #define ICE_MIXBUS_HPP
 
-#include <list>
 #include <memory>
+#include <set>
 
 #include "ice/core/IAudioNode.hpp"
 #include "ice/manage/AudioBuffer.hpp"
@@ -12,15 +12,19 @@ namespace ice {
 class MixBus : public IAudioNode {
    public:
     // 构造MixBus
-    MixBus();
+    MixBus() = default;
     // 析构MixBus
-    ~MixBus() override;
+    ~MixBus() override = default;
 
     void process(AudioBuffer& buffer) override;
 
+    void add_source(std::shared_ptr<IAudioNode> src);
+
+    void remove_source(std::shared_ptr<IAudioNode> src);
+
    private:
     // 来源表
-    std::list<std::shared_ptr<ice::IAudioNode>> sources;
+    std::set<std::shared_ptr<ice::IAudioNode>> sources;
 
     // 缓存的缓冲区
     AudioBuffer temp_buffer;

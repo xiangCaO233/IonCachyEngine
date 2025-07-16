@@ -2,6 +2,8 @@
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/AudioTrack.hpp>
 
+#include "ice/config/config.hpp"
+
 extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>

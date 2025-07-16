@@ -1,9 +1,11 @@
 #include <fmt/base.h>
 
+#include <algorithm>
 #include <chrono>
 #include <ice/tool/AllocationTracker.hpp>
-#include <thread>
+#include <memory>
 
+#include "ice/core/MixBus.hpp"
 #include "ice/core/SourceNode.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
@@ -14,6 +16,8 @@ void test() {
     ice::ThreadPool thread_pool(8);
 #ifdef __APPLE__
     auto file1 = "/Users/2333xiang/Music/Tensions - チョコレーション.mp3";
+    auto file2 =
+        "/Users/2333xiang/Music/Neko Hacker,利香 - GHOST (feat. 利香).mp3";
 #else
     auto file1 =
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
@@ -24,20 +28,22 @@ void test() {
     file1 =
         "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
         "湊貴大 - 朧月.mp3";
-#endif  //__APPLE__
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
+#endif  //__APPLE__
     // test
     ice::AudioPool audiopool;
     auto track1 = audiopool.get_or_load(thread_pool, file1);
     track1 = audiopool.get_or_load(thread_pool, file1);
-    // auto track2 = audiopool.get_or_load(thread_pool, file2);
-    // track2 = audiopool.get_or_load(thread_pool, file2);
+    auto track2 = audiopool.get_or_load(thread_pool, file2);
+    track2 = audiopool.get_or_load(thread_pool, file2);
 
     // 获取音频轨道信息
-    fmt::print("frames:{}\n", track1->num_frames());
-    fmt::print("channels:{}\n", track1->native_format().channels);
-    fmt::print("samplerate:{}\n", track1->native_format().samplerate);
+    fmt::print("frames:{},{}\n", track1->num_frames(), track2->num_frames());
+    fmt::print("channels:{},{}\n", track1->native_format().channels,
+               track2->native_format().channels);
+    fmt::print("samplerate:{},{}\n", track1->native_format().samplerate,
+               track2->native_format().samplerate);
 
     // ice::AudioDataFormat format;
     // ice::AudioBuffer buffer(format, 1024);
@@ -53,26 +59,32 @@ void test() {
     ice::SDLPlayer player;
 
     auto source = std::make_shared<ice::SourceNode>(track1);
-    // auto source2 = std::make_shared<ice::SourceNode>(track2);
+    auto source2 = std::make_shared<ice::SourceNode>(track2);
 
     using namespace std::chrono_literals;
 
     // source->set_playpos(1min + 100us);
 
     source->setloop(true);
+    source2->setloop(true);
+
+    auto mixer = std::make_shared<ice::MixBus>();
+
+    // mixer->add_source(source);
+    mixer->add_source(source2);
 
     // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
     // auto mixer = std::make_shared<Mixer>();
     // mixer.add_source({stretcher ,source2 });
 
-    player.set_source(source);
+    player.set_source(mixer);
     // player.set_source(mixer);
 
     player.open();
     // player.open(selected_device);
     player.start();
 
-    auto total_time = source->total_time();
+    auto total_time = std::max(source->total_time(), source2->total_time());
 
     fmt::print("total:\n");
     fmt::print("{}ns\n", total_time.count());
