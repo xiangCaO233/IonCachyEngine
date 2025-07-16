@@ -185,7 +185,7 @@ class FFmpegDecoder {
         size_t frames_decoded_total = 0;
 
         while (frames_decoded_total < chunksize) {
-            // 步骤 1: 优先处理上一次遗留的数据
+            // 优先处理上一次遗留的数据
             if (conversion_buffer_remains > 0) {
                 size_t frames_to_copy =
                     std::min(chunksize - frames_decoded_total,

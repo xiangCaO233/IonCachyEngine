@@ -20,6 +20,12 @@ void test() {
     auto file1 =
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
         "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
+    file1 =
+        "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
+        "3秒ルール.mp3";
+    file1 =
+        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
+        "湊貴大 - 朧月.mp3";
 #endif  //__APPLE__
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
@@ -46,14 +52,14 @@ void test() {
     }
     // auto selected_device = devices[0].id;
 
-    auto player = ice::SDLPlayer(track1->native_format());
+    ice::SDLPlayer player;
 
     auto source = std::make_shared<ice::SourceNode>(track1);
     // auto source2 = std::make_shared<ice::SourceNode>(track2);
 
     using namespace std::chrono_literals;
 
-    // source->set_playpos(10s + 100us);
+    // source->set_playpos(1min + 100us);
 
     source->setloop(true);
 
@@ -64,11 +70,20 @@ void test() {
     player.set_source(source);
     // player.set_source(mixer);
 
-    player.open();
+    player.open(23);
     // player.open(selected_device);
     player.start();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(30000));
+    auto total_time = source->total_time();
+
+    fmt::print("total:\n");
+    fmt::print("{}ns\n", total_time.count());
+    fmt::print("{}us\n", total_time.count() / 1000.0);
+    fmt::print("{}ms\n", total_time.count() / 1000.0 / 1000.0);
+    fmt::print("{}s\n", total_time.count() / 1000.0 / 1000.0 / 1000.0);
+    fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
+
+    std::this_thread::sleep_for(total_time);
 
     player.stop();
     player.close();

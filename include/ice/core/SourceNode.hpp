@@ -79,6 +79,48 @@ class SourceNode : public IAudioNode {
         set_playpos(final_position);
     }
 
+    // 获取音轨总帧数
+    inline size_t num_frames() const { return track->num_frames(); }
+
+    /**
+     * @brief 获取音轨的总时长。
+     *
+     * 该函数基于音轨的总帧数和采样率进行精确计算，
+     * 并以 std::chrono::nanoseconds 的形式返回，以提供最高精度。
+     * 如果音轨信息无效（如采样率为0），则返回0。
+     *
+     * @return std::chrono::nanoseconds 表示总时长的对象。
+     */
+    [[nodiscard]] inline std::chrono::nanoseconds total_time() const {
+        // 步骤 1: 获取总帧数和采样率
+        const size_t total_frames_val = num_frames();
+        const auto sample_rate =
+            static_cast<double>(track->native_format().samplerate);
+
+        // 步骤 2: 防御性检查
+        if (sample_rate == 0 || total_frames_val == 0) {
+            return std::chrono::nanoseconds(0);
+        }
+
+        // 计算总时长（以秒为单位的浮点数）
+        // 总时长 = 总帧数 / (帧/秒)
+        const double duration_in_seconds =
+            double(total_frames_val) / sample_rate;
+
+        // 将这个浮点秒数转换为纳秒
+        // 这是最关键、最能体现 std::chrono 威力的一步。
+
+        // 创建一个以 double 为基础的秒单位的 duration 对象
+        using double_seconds = std::chrono::duration<double>;
+        const auto duration_fp = double_seconds(duration_in_seconds);
+
+        // 使用 std::chrono::duration_cast 将其安全地转换为纳秒
+        // duration_cast 会处理所有单位换算，并进行截断（如果需要）
+        // 从而得到一个整数类型的纳秒值。
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            duration_fp);
+    }
+
    private:
     // 重采样实现
     std::unique_ptr<Resampler> resampleimpl{nullptr};

@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "ice/config/config.hpp"
 #include "ice/out/IReceiver.hpp"
 
 namespace ice {
@@ -19,7 +20,8 @@ struct AudioDeviceInfo {
 };
 class SDLPlayer : public IReceiver {
    public:
-    explicit SDLPlayer(const AudioDataFormat& format);
+    explicit SDLPlayer(
+        const AudioDataFormat& format = ICEConfig::internal_format);
     static std::atomic<bool> sdl_inited;
     static bool init_backend();
     static void quit_backend();
