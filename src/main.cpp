@@ -4,9 +4,11 @@
 #include <chrono>
 #include <ice/tool/AllocationTracker.hpp>
 #include <memory>
+#include <thread>
 
 #include "ice/core/MixBus.hpp"
 #include "ice/core/SourceNode.hpp"
+#include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
 #include "ice/out/play/sdl/SDLPlayer.hpp"
@@ -66,12 +68,19 @@ void test() {
     // source->set_playpos(1min + 100us);
 
     source->setloop(true);
+
+    auto stretcher = std::make_shared<ice::TimeStretcher>();
+    // 设置播放速度
+    stretcher->set_playback_ratio(1.37);
+
+    stretcher->set_inputnode(source);
+
     source2->setloop(true);
 
     auto mixer = std::make_shared<ice::MixBus>();
 
-    // mixer->add_source(source);
-    mixer->add_source(source2);
+    mixer->add_source(stretcher);
+    // mixer->add_source(source2);
 
     // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
     // auto mixer = std::make_shared<Mixer>();
@@ -93,7 +102,14 @@ void test() {
     fmt::print("{}s\n", total_time.count() / 1000.0 / 1000.0 / 1000.0);
     fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
 
-    // std::this_thread::sleep_for(total_time);
+    std::thread get_actual_play_ratio([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
+        fmt::print("actual playback ratio:{}\n",
+                   stretcher->get_actual_playback_ratio());
+    });
+    get_actual_play_ratio.detach();
+
+    // std::this_thread::sleep_for(2000ms);
     player.join();
 
     player.stop();

@@ -226,7 +226,7 @@ class AudioBuffer {
     }
 
     inline size_t num_frames() const { return _original_num_frames; }
-    inline size_t num_channels() const { return afmt.channels; }
+    inline uint16_t num_channels() const { return afmt.channels; }
     inline size_t aligned_frames_per_channel() const {
         return _aligned_num_frames;
     }

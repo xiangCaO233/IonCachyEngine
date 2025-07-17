@@ -7,7 +7,7 @@ namespace ice {
 class Clipper : public IEffectNode {
    public:
     // 构造Clipper
-    explicit Clipper(std::shared_ptr<IAudioNode> input);
+    Clipper();
     // 析构Clipper
     ~Clipper() override = default;
 

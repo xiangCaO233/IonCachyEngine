@@ -39,7 +39,7 @@ class SourceNode : public IAudioNode {
      *
      * 用法示例:
      * @code
-     *   using namespace std::chrono_literals; // 启用 s, ms, us, ns 等时间后缀
+     *   using namespace std::chrono_literals; 启用 s, ms, us, ns 等时间后缀
      *
      *   source_node->set_playpos(10s);
      * 跳转到第10秒 source_node->set_playpos(std::chrono::minutes(1) + 30s);
@@ -115,7 +115,7 @@ class SourceNode : public IAudioNode {
         const auto duration_fp = double_seconds(duration_in_seconds);
 
         // 使用 std::chrono::duration_cast 将其安全地转换为纳秒
-        // duration_cast 会处理所有单位换算，并进行截断（如果需要）
+        // duration_cast 会处理所有单位换算，并进行截断
         // 从而得到一个整数类型的纳秒值。
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
             duration_fp);
