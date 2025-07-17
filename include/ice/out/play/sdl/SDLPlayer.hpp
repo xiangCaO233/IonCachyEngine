@@ -12,7 +12,7 @@
 #include "ice/out/IReceiver.hpp"
 
 namespace ice {
-struct AudioDeviceInfo {
+struct SDLAudioDeviceInfo {
     // 人类可读的设备名, e.g., "Realtek Digital Output"
     std::string name;
     // SDL/后端使用的设备ID
@@ -25,8 +25,9 @@ class SDLPlayer : public IReceiver {
     static std::atomic<bool> sdl_inited;
     static bool init_backend();
     static void quit_backend();
+
     // 列出输出设备
-    static std::vector<AudioDeviceInfo> list_devices();
+    static std::vector<SDLAudioDeviceInfo> list_devices();
 
     // 状态管理
     // 打开sdl设备

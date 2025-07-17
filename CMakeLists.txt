@@ -58,6 +58,7 @@ set(LIB_SOURCES
     src/ice/manage/dec/ffmpeg/FFmpegDecoderInstance.cpp
     src/ice/thread/ThreadPool.cpp
     src/ice/out/IReceiver.cpp
+    src/ice/out/play/openal/ALPlayer.cpp
     src/ice/out/play/sdl/SDLPlayer.cpp)
 
 set(SOURCES ${LIB_SOURCES} src/main.cpp)

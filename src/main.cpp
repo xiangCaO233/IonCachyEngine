@@ -14,6 +14,7 @@
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
+#include "ice/out/play/openal/ALPlayer.hpp"
 #include "ice/out/play/sdl/SDLPlayer.hpp"
 #include "ice/thread/ThreadPool.hpp"
 
@@ -53,6 +54,10 @@ void test() {
     // ice::AudioDataFormat format;
     // ice::AudioBuffer buffer(format, 1024);
     // track1->read(buffer, 3000000, 1024);
+    auto ds = ice::ALPlayer::list_devices();
+    for (const auto& device : ds) {
+        fmt::print("al devicename:{}\n", device.name);
+    }
 
     ice::SDLPlayer::init_backend();
     auto devices = ice::SDLPlayer::list_devices();

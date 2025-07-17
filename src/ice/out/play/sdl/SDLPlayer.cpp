@@ -31,12 +31,12 @@ void SDLPlayer::quit_backend() {
 }
 
 // 列出输出设备
-std::vector<AudioDeviceInfo> SDLPlayer::list_devices() {
-    std::vector<AudioDeviceInfo> devices;
+std::vector<SDLAudioDeviceInfo> SDLPlayer::list_devices() {
+    std::vector<SDLAudioDeviceInfo> devices;
     int count = 0;
     if (auto sdl_devices = SDL_GetAudioPlaybackDevices(&count)) {
         for (int i = 0; i < count; ++i) {
-            AudioDeviceInfo info;
+            SDLAudioDeviceInfo info;
             info.id = sdl_devices[i];
             const char* name = SDL_GetAudioDeviceName(sdl_devices[i]);
             info.name = name ? name : "Unknown Device";
