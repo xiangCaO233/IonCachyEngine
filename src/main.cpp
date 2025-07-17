@@ -4,10 +4,12 @@
 #include <chrono>
 #include <ice/tool/AllocationTracker.hpp>
 #include <memory>
+#include <numbers>
 #include <thread>
 
 #include "ice/core/MixBus.hpp"
 #include "ice/core/SourceNode.hpp"
+#include "ice/core/effect/GraphicEqualizer.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
@@ -27,9 +29,9 @@ void test() {
     file1 =
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
-    file1 =
-        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
-        "湊貴大 - 朧月.mp3";
+    // file1 =
+    //     "/home/xiang/Documents/music game maps/初音ミク 湊貴大 -
+    //     朧月/初音ミク " "湊貴大 - 朧月.mp3";
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
 #endif  //__APPLE__
@@ -71,7 +73,7 @@ void test() {
 
     auto stretcher = std::make_shared<ice::TimeStretcher>();
     // 设置播放速度
-    stretcher->set_playback_ratio(1.37);
+    stretcher->set_playback_ratio(1.0);
 
     stretcher->set_inputnode(source);
 
@@ -80,13 +82,28 @@ void test() {
     auto mixer = std::make_shared<ice::MixBus>();
 
     mixer->add_source(stretcher);
+
+    std::vector<double> freqs = {31,   62,   125,  250,  500,
+                                 1000, 2000, 4000, 8000, 16000};
+    auto eq = std::make_shared<ice::GraphicEqualizer>(freqs);
+
+    const double q = std::numbers::sqrt3;
+
+    eq->set_band_q_factor(0, q);
+    eq->set_band_q_factor(1, q);
+    eq->set_band_q_factor(2, q);
+
+    eq->set_inputnode(mixer);
+
     // mixer->add_source(source2);
 
     // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
     // auto mixer = std::make_shared<Mixer>();
     // mixer.add_source({stretcher ,source2 });
 
-    player.set_source(mixer);
+    // 启用均衡器
+    player.set_source(eq);
+
     // player.set_source(mixer);
 
     player.open();
@@ -102,15 +119,32 @@ void test() {
     fmt::print("{}s\n", total_time.count() / 1000.0 / 1000.0 / 1000.0);
     fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
 
+    // eq自动控制lambda
+    auto eq_controll = [&]() {
+        int count = 0;
+        while (count < 16) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2500ms));
+
+            eq->set_band_gain_db(0, count * 3);
+            eq->set_band_gain_db(1, count * 3);
+            eq->set_band_gain_db(2, count * 3);
+
+            fmt::print("[q={}]band [31hz,62hz,125hz] gain:{}db\n", q,
+                       count * 3);
+
+            ++count;
+        }
+    };
+
     std::thread get_actual_play_ratio([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
+        eq_controll();
         fmt::print("actual playback ratio:{}\n",
                    stretcher->get_actual_playback_ratio());
     });
     get_actual_play_ratio.detach();
 
-    // std::this_thread::sleep_for(2000ms);
-    player.join();
+    std::this_thread::sleep_for(total_time);
+    // player.join();
 
     player.stop();
     player.close();

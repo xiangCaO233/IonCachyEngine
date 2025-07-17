@@ -45,6 +45,8 @@ set(LIB_SOURCES
     src/ice/core/effect/IEffectNode.cpp
     src/ice/core/effect/Clipper.cpp
     src/ice/core/effect/TimeStretcher.cpp
+    src/ice/core/effect/filter/BiquadFilter.cpp
+    src/ice/core/effect/GraphicEqualizer.cpp
     src/ice/config/config.cpp
     src/ice/manage/AudioBuffer.cpp
     src/ice/manage/AudioTrack.cpp
