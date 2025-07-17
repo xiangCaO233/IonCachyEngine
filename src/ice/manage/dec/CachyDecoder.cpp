@@ -18,8 +18,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
     auto decode_task = [factory,
                         path_str = std::string(path)]() -> DecodedData {
         // 创建工人
-        std::unique_ptr<IDecoderInstance> worker =
-            factory->create_instance(path_str);
+        auto worker = factory->create_instance(path_str);
         if (!worker) {
             throw ice::instance_build_error("create decoder instance " +
                                             path_str + "failed");

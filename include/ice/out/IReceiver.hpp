@@ -34,12 +34,12 @@ class IReceiver {
 
     // --- 数据源管理 ---
     // 设置要从中拉取数据的音频节点图的最终节点
-    inline void set_source(std::shared_ptr<IAudioNode> source) {
+    virtual void set_source(std::shared_ptr<IAudioNode> source) {
         data_source = source;
     }
 
    protected:
-    [[nodiscard]] inline std::shared_ptr<IAudioNode> get_source() const {
+    [[nodiscard]] virtual std::shared_ptr<IAudioNode> get_source() const {
         return data_source;
     }
 

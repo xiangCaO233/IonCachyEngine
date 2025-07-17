@@ -12,6 +12,7 @@ namespace ice {
 StreamingDecoder::StreamingDecoder(std::string_view path,
                                    ThreadPool& thread_pool,
                                    std::shared_ptr<IDecoderFactory> factory) {}
+
 // 解码数据到缓冲区的接口
 size_t StreamingDecoder::decode(float** buffer, uint16_t num_channels,
                                 size_t start_frame, size_t frame_count) {

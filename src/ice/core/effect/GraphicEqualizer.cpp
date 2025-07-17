@@ -40,7 +40,6 @@ void GraphicEqualizer::apply_effect(AudioBuffer& output,
 
     // 将输入拷贝到输出
     for (uint16_t ch = 0; ch < input.num_channels(); ++ch) {
-        // 【关键修正】乘以 sizeof(float)
         std::memcpy(output.raw_ptrs()[ch], input.raw_ptrs()[ch],
                     input.num_frames() * sizeof(float));
     }
