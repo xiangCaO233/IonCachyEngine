@@ -2,16 +2,14 @@
 #define ICE_TIMESTRETCHER_HPP
 
 #include <atomic>
+#include <ice/core/effect/rubberband/RStretcher.hpp>
 #include <memory>
 
 #include "ice/core/effect/IEffectNode.hpp"
 
 namespace ice {
-class StretcherImp;
 class TimeStretcher : public IEffectNode {
    public:
-    TimeStretcher();
-    ~TimeStretcher() override;
     void process(AudioBuffer& buffer) override;
 
     /**
@@ -48,8 +46,8 @@ class TimeStretcher : public IEffectNode {
     // 实际拉伸倍率
     std::atomic<double> actual_stretch_ratio{1.0};
 
-    // 拉伸器实现
-    std::unique_ptr<StretcherImp> stretchimpl;
+    // 拉伸器
+    std::unique_ptr<RStretcher> stretcher;
 };
 
 }  // namespace ice

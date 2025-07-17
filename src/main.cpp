@@ -75,12 +75,12 @@ void test() {
     auto stretcher = std::make_shared<ice::TimeStretcher>();
 
     // 设置播放速度
-    stretcher->set_playback_ratio(1.0);
+    stretcher->set_playback_ratio(1.);
 
     stretcher->set_inputnode(source);
 
     auto pitchalter = std::make_shared<ice::PitchAlter>();
-    pitchalter->set_pitch_shift(0.f);
+    pitchalter->set_pitch_shift(0.);
     pitchalter->set_inputnode(stretcher);
 
     source2->setloop(true);
@@ -99,9 +99,9 @@ void test() {
     eq->set_band_q_factor(1, 0.717);
     eq->set_band_q_factor(2, 0.717);
 
-    eq->set_band_gain_db(0, 15);
-    eq->set_band_gain_db(1, 15);
-    eq->set_band_gain_db(2, 15);
+    eq->set_band_gain_db(0, 6);
+    eq->set_band_gain_db(1, 6);
+    eq->set_band_gain_db(2, 6);
 
     eq->set_inputnode(mixer);
 
@@ -159,13 +159,14 @@ void test() {
 
     std::thread get_actual_play_ratio([&]() {
         // eq_controll();
-        pitch_controll();
+        // pitch_controll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
         fmt::print("actual playback ratio:{}\n",
                    stretcher->get_actual_playback_ratio());
     });
     get_actual_play_ratio.detach();
 
-    std::this_thread::sleep_for(total_time);
+    std::this_thread::sleep_for(total_time / 1.37);
     // player.join();
 
     player.stop();

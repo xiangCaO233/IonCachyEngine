@@ -2,17 +2,13 @@
 #define ICE_PITCHALTER_HPP
 
 #include <atomic>
-#include <memory>
+#include <ice/core/effect/rubberband/RStretcher.hpp>
 
 #include "ice/core/effect/IEffectNode.hpp"
 
 namespace ice {
-class PAlterImp;
 class PitchAlter : public IEffectNode {
    public:
-    PitchAlter();
-    ~PitchAlter() override;
-
     /**
      * @brief 设置音高变化,以半音（semitones）为单位
      * e.g., +12.0f 是升高一个八度, -12.0f 是降低一个八度
@@ -29,8 +25,8 @@ class PitchAlter : public IEffectNode {
    private:
     // 音高变化
     std::atomic<double> pitch_semitones;
-    // 变调器实现
-    std::unique_ptr<PAlterImp> palterimpl;
+    // 拉伸器
+    std::unique_ptr<RStretcher> stretcher;
 };
 }  // namespace ice
 
