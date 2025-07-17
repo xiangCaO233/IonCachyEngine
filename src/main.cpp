@@ -10,6 +10,7 @@
 #include "ice/core/MixBus.hpp"
 #include "ice/core/SourceNode.hpp"
 #include "ice/core/effect/GraphicEqualizer.hpp"
+#include "ice/core/effect/PitchAlter.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
@@ -29,9 +30,9 @@ void test() {
     file1 =
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
-    // file1 =
-    //     "/home/xiang/Documents/music game maps/初音ミク 湊貴大 -
-    //     朧月/初音ミク " "湊貴大 - 朧月.mp3";
+    file1 =
+        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
+        "湊貴大 - 朧月.mp3";
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
 #endif  //__APPLE__
@@ -72,16 +73,21 @@ void test() {
     source->setloop(true);
 
     auto stretcher = std::make_shared<ice::TimeStretcher>();
+
     // 设置播放速度
     stretcher->set_playback_ratio(1.0);
 
     stretcher->set_inputnode(source);
 
+    auto pitchalter = std::make_shared<ice::PitchAlter>();
+    pitchalter->set_pitch_shift(0.f);
+    pitchalter->set_inputnode(stretcher);
+
     source2->setloop(true);
 
     auto mixer = std::make_shared<ice::MixBus>();
 
-    mixer->add_source(stretcher);
+    mixer->add_source(pitchalter);
 
     std::vector<double> freqs = {31,   62,   125,  250,  500,
                                  1000, 2000, 4000, 8000, 16000};
@@ -89,9 +95,13 @@ void test() {
 
     const double q = std::numbers::sqrt3;
 
-    eq->set_band_q_factor(0, q);
-    eq->set_band_q_factor(1, q);
-    eq->set_band_q_factor(2, q);
+    eq->set_band_q_factor(0, 0.717);
+    eq->set_band_q_factor(1, 0.717);
+    eq->set_band_q_factor(2, 0.717);
+
+    eq->set_band_gain_db(0, 15);
+    eq->set_band_gain_db(1, 15);
+    eq->set_band_gain_db(2, 15);
 
     eq->set_inputnode(mixer);
 
@@ -136,8 +146,20 @@ void test() {
         }
     };
 
+    // pitch自动控制lambda
+    auto pitch_controll = [&]() {
+        int count = 0;
+        while (count < 16) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(7500ms));
+            pitchalter->set_pitch_shift(count * 1.5);
+            fmt::print("pitch alt:{}semitones\n", count * 1.5);
+            ++count;
+        }
+    };
+
     std::thread get_actual_play_ratio([&]() {
-        eq_controll();
+        // eq_controll();
+        pitch_controll();
         fmt::print("actual playback ratio:{}\n",
                    stretcher->get_actual_playback_ratio());
     });

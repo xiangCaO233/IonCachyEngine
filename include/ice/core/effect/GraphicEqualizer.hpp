@@ -51,6 +51,7 @@ class GraphicEqualizer : public IEffectNode {
     }
 
    protected:
+    // 应用均衡器
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
    private:
