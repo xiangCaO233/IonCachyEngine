@@ -22,8 +22,11 @@ class ALPlayer : public IReceiver {
     static std::vector<ALAudioDeviceInfo> list_devices();
 
     // 状态管理
-    // 打开sdl设备
+
+    // 打开播放器(默认设备)
     bool open() override;
+    // 打开播放器(指定设备)
+    bool open(std::string_view devicename);
 
     // 关闭sdl设备,释放资源
     void close() override;

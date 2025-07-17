@@ -9,7 +9,8 @@ class ALBackend {};
 
 std::atomic<bool> ALPlayer::al_inited{false};
 
-bool ALPlayer::init_backend() {}
+bool ALPlayer::init_backend() { return true; }
+
 void ALPlayer::quit_backend() {}
 
 // 列出输出设备
@@ -35,19 +36,30 @@ std::vector<ALAudioDeviceInfo> ALPlayer::list_devices() {
 }
 
 // 状态管理
-// 打开sdl设备
-bool ALPlayer::open() {}
+// 打开播放器(默认设备)
+bool ALPlayer::open() {
+    return open(alcGetString(nullptr, ALC_DEFAULT_DEVICE_SPECIFIER));
+}
+// 打开播放器(指定设备)
+bool ALPlayer::open(std::string_view devicename) {
+    auto device = alcOpenDevice(devicename.data());
+    if (device) {
+        auto ctx = alcCreateContext(device, nullptr);
+        alcMakeContextCurrent(ctx);
+        alGetError();
+    }
+}
 
 // 关闭sdl设备,释放资源
 void ALPlayer::close() {}
 
 // 开始拉取数据并播放
-bool ALPlayer::start() {}
+bool ALPlayer::start() { return true; }
 
 // 停止拉取数据
 void ALPlayer::stop() {}
 
 // 查询状态
-bool ALPlayer::is_running() const {}
+bool ALPlayer::is_running() const { return true; }
 
 }  // namespace ice
