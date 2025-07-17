@@ -124,20 +124,20 @@ void test() {
     compressor->set_inputnode(eq);
     // 为处理人声设置典型的参数
     // 设置一个相对较低的阈值，以便捕捉到大部分的演唱信号
-    compressor->set_threshold_db(-36.0f);
+    compressor->set_threshold_db(-30.0f);
 
     // 设置一个适中的压缩比，既能控制住大音量，又不会听起来太死板
     // 4:1 的压缩比
-    compressor->set_ratio(2.5f);
+    compressor->set_ratio(4.f);
 
     // 设置一个较快的启动时间，以便能迅速对爆破音('p', 'b')做出反应
-    compressor->set_attack_ms(200.0f);
+    compressor->set_attack_ms(50.0f);
 
-    // 设置一个与音乐节奏相关的释放时间，让声音听起来自然
-    compressor->set_release_ms(666.0f);
+    // 设置一个与音乐节奏相关的释放时间(beat / 2)，让声音听起来自然
+    compressor->set_release_ms(150.0f);
 
     // 压缩了信号，整体音量变小，提回来
-    compressor->set_makeup_gain_db(8.0f);
+    compressor->set_makeup_gain_db(6.0f);
 
     player.set_source(compressor);
 
