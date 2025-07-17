@@ -44,6 +44,7 @@ set(LIB_SOURCES
     src/ice/core/MixBus.cpp
     src/ice/core/effect/IEffectNode.cpp
     src/ice/core/effect/Clipper.cpp
+    src/ice/core/effect/Compresser.cpp
     src/ice/core/effect/TimeStretcher.cpp
     src/ice/core/effect/PitchAlter.cpp
     src/ice/core/effect/filter/BiquadFilter.cpp

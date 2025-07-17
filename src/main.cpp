@@ -9,11 +9,13 @@
 
 #include "ice/core/MixBus.hpp"
 #include "ice/core/SourceNode.hpp"
+#include "ice/core/effect/Compresser.hpp"
 #include "ice/core/effect/GraphicEqualizer.hpp"
 #include "ice/core/effect/PitchAlter.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/AudioPool.hpp"
+#include "ice/manage/AudioTrack.hpp"
 #include "ice/out/play/openal/ALPlayer.hpp"
 #include "ice/out/play/sdl/SDLPlayer.hpp"
 #include "ice/thread/ThreadPool.hpp"
@@ -26,11 +28,11 @@ void test() {
         "/Users/2333xiang/Music/Neko Hacker,利香 - GHOST (feat. 利香).mp3";
 #else
     auto file1 =
-        "/home/xiang/Documents/music game maps/Mind Enhancement - "
-        "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
-    file1 =
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
+    file1 =
+        "/home/xiang/Documents/music game maps/Mind Enhancement - "
+        "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
     file1 =
         "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
         "湊貴大 - 朧月.mp3";
@@ -40,7 +42,9 @@ void test() {
     // test
     ice::AudioPool audiopool;
     auto track1 = audiopool.get_or_load(thread_pool, file1);
-    track1 = audiopool.get_or_load(thread_pool, file1);
+    track1 = audiopool.get_or_load(thread_pool, file1,
+                                   ice::CachingStrategy::STREAMING);
+
     auto track2 = audiopool.get_or_load(thread_pool, file2);
     track2 = audiopool.get_or_load(thread_pool, file2);
 
@@ -51,19 +55,19 @@ void test() {
     fmt::print("samplerate:{},{}\n", track1->native_format().samplerate,
                track2->native_format().samplerate);
 
-    // ice::AudioDataFormat format;
-    // ice::AudioBuffer buffer(format, 1024);
-    // track1->read(buffer, 3000000, 1024);
+    ice::ALPlayer::init_backend();
     auto ds = ice::ALPlayer::list_devices();
-    for (const auto& device : ds) {
+    std::ranges::for_each(ds, [](const ice::ALAudioDeviceInfo& device) {
         fmt::print("al devicename:{}\n", device.name);
-    }
+    });
 
     ice::SDLPlayer::init_backend();
+
     auto devices = ice::SDLPlayer::list_devices();
-    for (const auto& device : devices) {
+    std::ranges::for_each(devices, [](const auto& device) {
         fmt::print("deviceid:{},devicename:{}\n", device.id, device.name);
-    }
+    });
+
     // auto selected_device = devices[0].id;
 
     ice::SDLPlayer player;
@@ -100,14 +104,15 @@ void test() {
 
     const double q = std::numbers::sqrt3;
 
-    eq->set_band_q_factor(0, 0.717);
-    eq->set_band_q_factor(1, 0.717);
-    eq->set_band_q_factor(2, 0.717);
+    eq->set_band_q_factor(0, q / 2.0);
+    eq->set_band_q_factor(1, q / 2.0);
+    eq->set_band_q_factor(2, q / 2.0);
 
-    eq->set_band_gain_db(0, 6);
-    eq->set_band_gain_db(1, 6);
-    eq->set_band_gain_db(2, 6);
+    eq->set_band_gain_db(0, 9);
+    eq->set_band_gain_db(1, 9);
+    eq->set_band_gain_db(2, 9);
 
+    // 启用均衡器
     eq->set_inputnode(mixer);
 
     // mixer->add_source(source2);
@@ -115,9 +120,26 @@ void test() {
     // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
     // auto mixer = std::make_shared<Mixer>();
     // mixer.add_source({stretcher ,source2 });
+    auto compressor = std::make_shared<ice::Compressor>();
+    compressor->set_inputnode(eq);
+    // 为处理人声设置典型的参数
+    // 设置一个相对较低的阈值，以便捕捉到大部分的演唱信号
+    compressor->set_threshold_db(-36.0f);
 
-    // 启用均衡器
-    player.set_source(eq);
+    // 设置一个适中的压缩比，既能控制住大音量，又不会听起来太死板
+    // 4:1 的压缩比
+    compressor->set_ratio(2.5f);
+
+    // 设置一个较快的启动时间，以便能迅速对爆破音('p', 'b')做出反应
+    compressor->set_attack_ms(200.0f);
+
+    // 设置一个与音乐节奏相关的释放时间，让声音听起来自然
+    compressor->set_release_ms(666.0f);
+
+    // 压缩了信号，整体音量变小，提回来
+    compressor->set_makeup_gain_db(8.0f);
+
+    player.set_source(compressor);
 
     // player.set_source(mixer);
 
@@ -171,7 +193,7 @@ void test() {
     });
     get_actual_play_ratio.detach();
 
-    std::this_thread::sleep_for(total_time / 1.37);
+    std::this_thread::sleep_for(total_time);
     // player.join();
 
     player.stop();
