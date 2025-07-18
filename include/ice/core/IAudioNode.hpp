@@ -1,8 +1,6 @@
 #ifndef ICE_IAUDIONODE_HPP
 #define ICE_IAUDIONODE_HPP
 
-#include <cstdint>
-
 #include "ice/manage/AudioBuffer.hpp"
 
 namespace ice {

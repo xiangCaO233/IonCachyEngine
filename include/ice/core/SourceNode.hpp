@@ -26,6 +26,9 @@ class SourceNode : public IAudioNode {
     // 设置是否循环播放
     inline void setloop(bool flag) { is_looping.store(flag); }
 
+    // 获取播放位置-帧位置
+    inline size_t get_playpos() const { return playback_pos.load(); }
+
     // 设置播放位置
     // 根据帧位置
     inline void set_playpos(size_t frame_pos) { playback_pos.store(frame_pos); }
@@ -81,6 +84,11 @@ class SourceNode : public IAudioNode {
 
     // 获取音轨总帧数
     inline size_t num_frames() const { return track->num_frames(); }
+
+    // 获取音轨原始格式
+    inline const AudioDataFormat& format() const {
+        return track->native_format();
+    }
 
     /**
      * @brief 获取音轨的总时长。
