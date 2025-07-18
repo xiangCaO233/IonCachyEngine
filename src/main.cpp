@@ -139,7 +139,7 @@ void test() {
     // 压缩了信号，整体音量变小，提回来
     compressor->set_makeup_gain_db(6.0f);
 
-    player.set_source(compressor);
+    player.set_source(source);
 
     // player.set_source(mixer);
 
