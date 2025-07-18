@@ -156,7 +156,7 @@ void SDLPlayer::audio_thread_loop() {
 
         // 如果库存充足，就没必要现在补货。休眠一小会儿，避免CPU空转。
         if (queued_bytes > target_queued_bytes) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             // 继续下一次循环检查
             continue;
         }
