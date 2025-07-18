@@ -5,6 +5,7 @@
 
 #include <ice/out/play/sdl/SDLPlayer.hpp>
 
+#include "ice/config/config.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 
 namespace ice {
@@ -50,7 +51,7 @@ std::vector<SDLAudioDeviceInfo> SDLPlayer::list_devices() {
 
 SDLPlayer::SDLPlayer(const AudioDataFormat& format)
     : IReceiver(format), playformat(format) {
-    buffer.resize(playformat, 1024);
+    buffer.resize(playformat, ICEConfig::default_buffer_size);
 }
 
 bool SDLPlayer::open() { return open(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK); }
