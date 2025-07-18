@@ -1,6 +1,4 @@
-# IonCachyEngine
-
-# 🧊 Ice Audio Framework
+# 🧊 Ice Audio Engine
 
 一个为性能、控制力和模块化而生的现代C++20音频框架。
 
