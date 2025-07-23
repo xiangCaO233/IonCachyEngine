@@ -59,7 +59,7 @@ class SourceNode : public IAudioNode {
         const std::chrono::duration<Rep, Period>& time_pos) {
         // 获取音轨的采样率
         const auto sample_rate =
-            static_cast<double>(track->native_format().samplerate);
+            static_cast<double>(track->get_media_info().format.samplerate);
         if (sample_rate == 0) {
             return;
         }
@@ -75,7 +75,7 @@ class SourceNode : public IAudioNode {
         const auto frame_position = static_cast<size_t>(seconds * sample_rate);
 
         // 安全地设置播放位置 (边界检查)
-        const auto total_frames = track->num_frames();
+        const auto total_frames = track->get_media_info().frame_count;
         const auto final_position = std::min(frame_position, total_frames);
 
         // 原子地存储
@@ -83,11 +83,13 @@ class SourceNode : public IAudioNode {
     }
 
     // 获取音轨总帧数
-    inline size_t num_frames() const { return track->num_frames(); }
+    inline size_t num_frames() const {
+        return track->get_media_info().frame_count;
+    }
 
     // 获取音轨原始格式
     inline const AudioDataFormat& format() const {
-        return track->native_format();
+        return track->get_media_info().format;
     }
 
     /**
@@ -103,7 +105,7 @@ class SourceNode : public IAudioNode {
         // 步骤 1: 获取总帧数和采样率
         const size_t total_frames_val = num_frames();
         const auto sample_rate =
-            static_cast<double>(track->native_format().samplerate);
+            static_cast<double>(track->get_media_info().format.samplerate);
 
         // 步骤 2: 防御性检查
         if (sample_rate == 0 || total_frames_val == 0) {

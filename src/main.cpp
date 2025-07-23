@@ -49,11 +49,12 @@ void test() {
     track2 = audiopool.get_or_load(thread_pool, file2);
 
     // 获取音频轨道信息
-    fmt::print("frames:{},{}\n", track1->num_frames(), track2->num_frames());
-    fmt::print("channels:{},{}\n", track1->native_format().channels,
-               track2->native_format().channels);
-    fmt::print("samplerate:{},{}\n", track1->native_format().samplerate,
-               track2->native_format().samplerate);
+    fmt::print("frames:{},{}\n", track1->get_media_info().frame_count,
+               track2->get_media_info().frame_count);
+    fmt::print("channels:{},{}\n", track1->get_media_info().format.channels,
+               track2->get_media_info().format.channels);
+    fmt::print("samplerate:{},{}\n", track1->get_media_info().format.samplerate,
+               track2->get_media_info().format.samplerate);
 
     ice::ALPlayer::init_backend();
     auto ds = ice::ALPlayer::list_devices();

@@ -2,7 +2,9 @@
 
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
+#include <iostream>
 
+#include "ice/manage/AudioTrack.hpp"
 #include "ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp"
 
 extern "C" {
@@ -37,8 +39,7 @@ class FFmpegFormat {
 
 // 探测文件元信息
 void FFmpegDecoderFactory::probe(std::string_view file_path,
-                                 AudioDataFormat& format,
-                                 size_t& total_frames) const {
+                                 MediaInfo& media_info) const {
     FFmpegFormat fffmt(file_path);
     AVCALL_CHECK(avformat_find_stream_info(fffmt.get(), nullptr))
 
@@ -54,7 +55,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
     }
     if (audio_stream_index == -1) {
         fmt::print("there\'s no audio stream");
-        format.channels = 0;
+        media_info.format.channels = 0;
         throw ice::load_error("find stream failed");
     }
 
@@ -62,26 +63,67 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
     auto& audio_stream = fffmt.get()->streams[audio_stream_index];
     auto& codec_params = audio_stream->codecpar;
 
-    format.channels = codec_params->ch_layout.nb_channels;
-    format.samplerate = codec_params->sample_rate;
+    media_info.format.channels = codec_params->ch_layout.nb_channels;
+    media_info.format.samplerate = codec_params->sample_rate;
 
     // 获取总采样数
     if (audio_stream->duration > 0) {
         // 转换:总帧数 = 时长 * 采样率 / 时间基
-        total_frames =
+        media_info.frame_count =
             av_rescale_q(audio_stream->duration, audio_stream->time_base,
-                         {1, (int)format.samplerate});
+                         {1, (int)media_info.format.samplerate});
     } else {
         // 某些容器格式可能在顶层 context 中有 duration
         if (fffmt.get()->duration > 0) {
             // AV_TIME_BASE_Q
-            total_frames =
+            media_info.frame_count =
                 av_rescale_q(fffmt.get()->duration, {1, AV_TIME_BASE},
-                             {1, (int)format.samplerate});
+                             {1, (int)media_info.format.samplerate});
         } else {
             fmt::print("file {} duration unknown", file_path);
             // 表示未知
-            total_frames = 0;
+            media_info.frame_count = 0;
+        }
+    }
+
+    media_info.bitrate = fffmt.get()->bit_rate;
+    // 4. 从字典中获取元数据
+    AVDictionaryEntry* tag = nullptr;
+
+    // 获取艺术家
+    tag = av_dict_get(fffmt.get()->metadata, "artist", nullptr,
+                      AV_DICT_IGNORE_SUFFIX);
+    if (tag) {
+        media_info.artist = std::string(tag->value);
+    }
+
+    // 获取专辑
+    tag = av_dict_get(fffmt.get()->metadata, "album", nullptr,
+                      AV_DICT_IGNORE_SUFFIX);
+    if (tag) {
+        media_info.album = std::string(tag->value);
+    }
+
+    // 获取标题
+    tag = av_dict_get(fffmt.get()->metadata, "title", nullptr,
+                      AV_DICT_IGNORE_SUFFIX);
+    if (tag) {
+        media_info.title = std::string(tag->value);
+    }
+
+    // 查找并提取专辑封面
+    for (unsigned int i = 0; i < fffmt.get()->nb_streams; ++i) {
+        AVStream* stream = fffmt.get()->streams[i];
+        if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+            const AVPacket& packet = stream->attached_pic;
+            if (packet.size > 0 && packet.data) {
+                // 内存分配和拷贝在这里发生
+                media_info.cover.size = packet.size;
+                media_info.cover.data = new uint8_t[media_info.cover.size];
+                memcpy(media_info.cover.data, packet.data,
+                       media_info.cover.size);
+                break;
+            }
         }
     }
 }

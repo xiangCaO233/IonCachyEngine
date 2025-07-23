@@ -19,9 +19,10 @@ AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
                        std::shared_ptr<IDecoderFactory> decoder_factory,
                        CachingStrategy strategy)
     : file_path(path) {
-    // 先探测一下文件格式
+    // 探测文件格式
     size_t total_frames_probe = 0;
-    decoder_factory->probe(this->file_path, this->format, total_frames_probe);
+    decoder_factory->probe(file_path, media_info);
+
     switch (strategy) {
         case CachingStrategy::CACHY: {
             decoder = CachyDecoder::create(path, thread_pool, decoder_factory);

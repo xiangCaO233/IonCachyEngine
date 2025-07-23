@@ -2,8 +2,6 @@
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/AudioTrack.hpp>
 
-#include "ice/config/config.hpp"
-
 extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
@@ -70,10 +68,10 @@ class Resampler {
 SourceNode::SourceNode(std::shared_ptr<AudioTrack> track,
                        const AudioDataFormat& engin_format)
     : track(track) {
-    if (engin_format != track->native_format()) {
+    if (engin_format != track->get_media_info().format) {
         // 格式不同-创建一个重采器
-        resampleimpl =
-            std::make_unique<Resampler>(track->native_format(), engin_format);
+        resampleimpl = std::make_unique<Resampler>(
+            track->get_media_info().format, engin_format);
     }
 }
 
@@ -90,12 +88,12 @@ void SourceNode::process(AudioBuffer& buffer) {
     }
     // 更新播放位置
     playback_pos += gained_frames;
-    if (playback_pos >= track->num_frames()) {
+    if (playback_pos >= track->get_media_info().frame_count) {
         // 启用循环则在此恢复播放指针到0
         if (is_looping.load()) {
             playback_pos = 0;
         } else {
-            playback_pos.store(track->num_frames());
+            playback_pos.store(track->get_media_info().frame_count);
         }
         [[unlikely]] if (gained_frames == 0)
             return;

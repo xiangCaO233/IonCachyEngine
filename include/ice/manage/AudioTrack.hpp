@@ -2,13 +2,14 @@
 #define ICE_AUDIOTRACK_HPP
 
 #include <cstddef>
+#include <ice/config/config.hpp>
 #include <ice/manage/AudioFormat.hpp>
+#include <ice/manage/dec/IDecoder.hpp>
+#include <ice/manage/dec/IDecoderFactory.hpp>
+#include <ice/manage/dec/MediaInfo.hpp>
 #include <memory>
+#include <string>
 #include <string_view>
-
-#include "ice/config/config.hpp"
-#include "ice/manage/dec/IDecoder.hpp"
-#include "ice/manage/dec/IDecoderFactory.hpp"
 
 namespace ice {
 class AudioBuffer;
@@ -34,14 +35,8 @@ class AudioTrack {
     AudioTrack(const AudioTrack&) = delete;
     AudioTrack& operator=(const AudioTrack&) = delete;
 
-    // 原始数据格式
-    inline const AudioDataFormat& native_format() const { return format; }
-
-    // 原始音频路径
-    inline const std::string& path() const { return file_path; }
-
-    // 获取音频原始的总帧数-精确相对时间
-    inline auto num_frames() const { return decoder->num_frames(); }
+    // 获取媒体信息
+    inline const MediaInfo& get_media_info() const { return media_info; }
 
     // 将解码请求转发给其持有的解码器策略
     inline auto read(AudioBuffer& buffer, size_t start_frame,
@@ -55,12 +50,11 @@ class AudioTrack {
     AudioTrack(std::string_view p, ThreadPool& thread_pool,
                std::shared_ptr<IDecoderFactory> decoder_factory,
                CachingStrategy strategy);
+    // 媒体信息
+    MediaInfo media_info;
 
     // 音频路径
     std::string file_path;
-
-    // 原始音频数据格式
-    AudioDataFormat format;
 
     // 使用的解码器
     std::unique_ptr<IDecoder> decoder;
