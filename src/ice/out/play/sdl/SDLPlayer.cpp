@@ -93,10 +93,11 @@ void SDLPlayer::close() {
         audio_stream = nullptr;
     }
 
-    if (current_device) {
-        SDL_CloseAudioDevice(current_device);
-        current_device = 0;
-    }
+    // destroystream关闭设备
+    // if (current_device) {
+    //     SDL_CloseAudioDevice(current_device);
+    //     current_device = 0;
+    // }
 }
 
 // 开始拉取数据并播放
