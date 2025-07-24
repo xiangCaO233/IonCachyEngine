@@ -8,9 +8,9 @@ namespace ice {
 class PlayCallBack {
    public:
     // 构造PlayCallBack
-    PlayCallBack();
+    PlayCallBack() = default;
     // 析构PlayCallBack
-    virtual ~PlayCallBack();
+    virtual ~PlayCallBack() = default;
 
     // 帧基
     virtual void frameplaypos_updated(size_t frame_pos) = 0;
