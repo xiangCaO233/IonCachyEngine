@@ -139,8 +139,8 @@ void SDLPlayer::stop() {
     }
 
     // 暂停SDL设备
-    if (device_id) {
-        SDL_PauseAudioDevice(device_id);
+    if (current_device) {
+        SDL_PauseAudioDevice(current_device);
     }
 }
 
