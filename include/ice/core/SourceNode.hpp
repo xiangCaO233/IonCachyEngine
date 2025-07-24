@@ -5,9 +5,11 @@
 #include <chrono>
 #include <ice/manage/AudioTrack.hpp>
 #include <memory>
+#include <set>
 
 #include "ice/config/config.hpp"
 #include "ice/core/IAudioNode.hpp"
+#include "ice/core/PlayCallBack.hpp"
 
 namespace ice {
 class Resampler;
@@ -52,6 +54,18 @@ class SourceNode : public IAudioNode {
     // 设置播放位置
     // 根据帧位置
     inline void set_playpos(size_t frame_pos) { playback_pos.store(frame_pos); }
+
+    // 添加回调
+    inline void add_playcallback(
+        const std::shared_ptr<PlayCallBack>& callback) {
+        callbacks.insert(callback);
+    }
+
+    // 移除回调
+    inline void remove_playcallback(
+        const std::shared_ptr<PlayCallBack>& callback) {
+        callbacks.erase(callback);
+    }
 
     // 根据时间(us)
     /**
@@ -157,6 +171,9 @@ class SourceNode : public IAudioNode {
 
     // 轨道指针
     std::shared_ptr<AudioTrack> track;
+
+    // 播放回调列表
+    std::set<std::shared_ptr<PlayCallBack>> callbacks;
 
     // 播放位置
     std::atomic<size_t> playback_pos{0};
