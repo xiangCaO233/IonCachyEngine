@@ -38,6 +38,9 @@ class AudioTrack {
     // 获取媒体信息
     inline const MediaInfo& get_media_info() const { return media_info; }
 
+    // 获取文件绝对路径
+    inline const std::string& path() const { return file_path; }
+
     // 将解码请求转发给其持有的解码器策略
     inline auto read(AudioBuffer& buffer, size_t start_frame,
                      size_t frame_count) const {
