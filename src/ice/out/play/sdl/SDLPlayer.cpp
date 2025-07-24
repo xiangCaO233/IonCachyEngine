@@ -83,17 +83,19 @@ bool SDLPlayer::open(SDL_AudioDeviceID deviceid) {
 void SDLPlayer::close() {
     // 必须先停止并等待线程结束
     stop();
+
     // 确保有流和设备再解绑
-    if (audio_stream && device_id) {
+    if (audio_stream && current_device) {
         SDL_UnbindAudioStream(audio_stream);
     }
     if (audio_stream) {
         SDL_DestroyAudioStream(audio_stream);
         audio_stream = nullptr;
     }
-    if (device_id) {
-        SDL_CloseAudioDevice(device_id);
-        device_id = 0;
+
+    if (current_device) {
+        SDL_CloseAudioDevice(current_device);
+        current_device = 0;
     }
 }
 
