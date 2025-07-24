@@ -23,8 +23,22 @@ class SourceNode : public IAudioNode {
     // 只管从播放位置读取请求的数据量并填充缓冲区
     void process(AudioBuffer& buffer) override;
 
+    // 音源基本控制
+
+    // 是否正在播放
+    inline bool isplaying() { return is_playing.load(); }
+
+    // 设置音源为暂停
+    inline void pause() { is_playing.store(false); }
+
+    // 设置音源为播放
+    inline void play() { is_playing.store(true); }
+
     // 设置是否循环播放
     inline void setloop(bool flag) { is_looping.store(flag); }
+
+    // 是否正在循环
+    inline bool isloop() { return is_looping.load(); }
 
     // 获取播放位置-帧位置
     inline size_t get_playpos() const { return playback_pos.load(); }
@@ -146,6 +160,9 @@ class SourceNode : public IAudioNode {
 
     // 音源是否循环(到结尾是否自动置零播放位置)
     std::atomic<bool> is_looping{false};
+
+    // 音源是否正在播放
+    std::atomic<bool> is_playing{false};
 
     // 应用音量到缓冲区
     void apply_volume(AudioBuffer& buffer) const;

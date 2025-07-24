@@ -80,6 +80,8 @@ SourceNode::~SourceNode() = default;
 
 // 只管读取数据填充缓冲区
 void SourceNode::process(AudioBuffer& buffer) {
+    if (!is_playing.load()) return;
+
     auto gained_frames = track->read(buffer, playback_pos, buffer.num_frames());
     if (gained_frames < buffer.num_frames()) {
         // 未完全获取到预期的帧数-在此处补0
