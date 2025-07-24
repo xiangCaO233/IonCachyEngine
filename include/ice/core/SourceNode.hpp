@@ -34,6 +34,12 @@ class SourceNode : public IAudioNode {
     // 设置音源为播放
     inline void play() { is_playing.store(true); }
 
+    // 获取音源音量
+    inline float getvolume() const { return volume.load(); }
+
+    // 设置音源音量
+    inline void setvolume(float v) { volume.store(v); }
+
     // 设置是否循环播放
     inline void setloop(bool flag) { is_looping.store(flag); }
 
