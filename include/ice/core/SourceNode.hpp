@@ -127,7 +127,7 @@ class SourceNode : public IAudioNode {
         const auto sample_rate =
             static_cast<double>(track->get_media_info().format.samplerate);
 
-        // 步骤 2: 防御性检查
+        // 防御性检查
         if (sample_rate == 0 || total_frames_val == 0) {
             return std::chrono::nanoseconds(0);
         }

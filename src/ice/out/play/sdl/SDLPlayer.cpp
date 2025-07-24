@@ -69,6 +69,8 @@ bool SDLPlayer::open(SDL_AudioDeviceID deviceid) {
     audio_stream =
         SDL_OpenAudioDeviceStream(deviceid, &source_spec, nullptr, nullptr);
 
+    current_device = SDL_GetAudioStreamDevice(audio_stream);
+
     if (audio_stream == nullptr) {
         fmt::print("Failed to open audio device stream: {}\n", SDL_GetError());
         return false;

@@ -55,6 +55,10 @@ class SDLPlayer : public IReceiver {
     // sdl音频线程函数
     void audio_thread_loop();
 
+    inline SDL_AudioDeviceID get_current_device() const {
+        return current_device;
+    }
+
    private:
     // 播放器格式
     AudioDataFormat playformat;
@@ -65,8 +69,8 @@ class SDLPlayer : public IReceiver {
     // 播放器是否正在播放
     std::atomic<bool> running{false};
 
-    // 默认设备
-    SDL_AudioDeviceID device_id{0};
+    // 当前播放设备
+    SDL_AudioDeviceID current_device{0};
 
     // sdl音频流
     SDL_AudioStream* audio_stream{nullptr};
