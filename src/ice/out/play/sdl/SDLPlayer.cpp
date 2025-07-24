@@ -81,42 +81,33 @@ bool SDLPlayer::open(SDL_AudioDeviceID deviceid) {
 
 // 关闭sdl设备,释放资源
 void SDLPlayer::close() {
-    // 必须先停止并等待线程结束
+    // 先停止线程和设备
     stop();
 
-    // 确保有流和设备再解绑
-    if (audio_stream && current_device) {
-        SDL_UnbindAudioStream(audio_stream);
-    }
+    // 对于由 SDL_OpenAudioDeviceStream 创建的流，
+    // 调用 SDL_DestroyAudioStream 会自动关闭设备并处理解绑。
+    // 你不需要做任何其他事情。
     if (audio_stream) {
         SDL_DestroyAudioStream(audio_stream);
         audio_stream = nullptr;
     }
-
-    // destroystream关闭设备
-    // if (current_device) {
-    //     SDL_CloseAudioDevice(current_device);
-    //     current_device = 0;
-    // }
+    // 确保设备 ID 被重置
+    current_device = 0;
 }
 
 // 开始拉取数据并播放
 bool SDLPlayer::start() {
-    // 防止重复启动
     if (running.load() || !audio_stream) {
         return false;
     }
     running.store(true);
+    paused.store(false);
 
+    // 恢复设备，以防之前被暂停过
+    SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
+
+    // 在恢复设备后再创建线程
     sdl_audio_thread = std::thread(&SDLPlayer::audio_thread_loop, this);
-    // sdl_audio_thread.detach();
-
-    // 恢复流所绑定的设备
-    auto device = SDL_GetAudioStreamDevice(audio_stream);
-
-    if (device) {
-        SDL_ResumeAudioDevice(device);
-    }
 
     return true;
 }
@@ -131,17 +122,34 @@ void SDLPlayer::stop() {
         return;
     }
 
-    // 发送停止信号
+    // 1. 设置标志，通知线程退出
     running.store(false);
 
-    // 等待音频线程执行完毕并退出
+    // 2. 如果线程因为我们的 pause() 调用而卡住，唤醒它
+    //    这里我们直接 resume 设备，让 SDL 的回调机制能继续，
+    //    从而让我们的线程能从可能的阻塞中返回。
+    //    这一步是解决“暂停后退出崩溃”的关键！
+    if (paused.load()) {
+        resume();  // 调用我们自己的 resume 函数
+    }
+
+    // 3. 等待音频线程自然结束
     if (sdl_audio_thread.joinable()) {
         sdl_audio_thread.join();
     }
-
-    // 暂停SDL设备
-    if (current_device) {
-        SDL_PauseAudioDevice(current_device);
+}
+void SDLPlayer::pause() {
+    if (running.load() && !paused.load()) {
+        paused.store(true);
+        // 直接使用 SDL 的函数来暂停物理设备
+        SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
+    }
+}
+void SDLPlayer::resume() {
+    if (running.load() && paused.load()) {
+        paused.store(false);
+        // 恢复物理设备
+        SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
     }
 }
 
@@ -161,6 +169,7 @@ void SDLPlayer::audio_thread_loop() {
 
         // 如果库存充足，就没必要现在补货。休眠一小会儿，避免CPU空转。
         if (queued_bytes > target_queued_bytes) {
+            if (!running.load()) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             // 继续下一次循环检查
             continue;

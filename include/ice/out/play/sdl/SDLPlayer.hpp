@@ -52,6 +52,9 @@ class SDLPlayer : public IReceiver {
     // 查询状态
     bool is_running() const override { return running.load(); }
 
+    void pause();
+    void resume();
+
     // sdl音频线程函数
     void audio_thread_loop();
 
@@ -68,6 +71,7 @@ class SDLPlayer : public IReceiver {
 
     // 播放器是否正在播放
     std::atomic<bool> running{false};
+    std::atomic<bool> paused{false};
 
     // 当前播放设备
     SDL_AudioDeviceID current_device{0};
