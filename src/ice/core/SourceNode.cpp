@@ -101,6 +101,17 @@ void SourceNode::process(AudioBuffer& buffer) {
             return;
     }
 
+    // 通知回调
+    for (const auto& callback : callbacks) {
+        callback->frameplaypos_updated(playback_pos.load());
+        // 转换播放位置为纳秒
+        using double_seconds = std::chrono::duration<double>;
+        callback->timeplaypos_updated(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                double_seconds(static_cast<double>(playback_pos.load()) /
+                               format().samplerate)));
+    }
+
     if (resampleimpl) {
         // 若需要格式转换则在此执行转换
         resampleimpl->resmaple(buffer);
