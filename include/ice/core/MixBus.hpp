@@ -22,6 +22,8 @@ class MixBus : public IAudioNode {
 
     void remove_source(std::shared_ptr<IAudioNode> src);
 
+    inline void clear() { sources.clear(); }
+
    private:
     // 来源表
     std::set<std::shared_ptr<ice::IAudioNode>> sources;
