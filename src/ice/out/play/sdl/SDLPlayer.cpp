@@ -179,13 +179,12 @@ void SDLPlayer::audio_thread_loop() {
         // --- 拉取数据 ---
         {
             std::scoped_lock<std::mutex> lock(source_mutex);
+            buffer.clear();
             if (get_source()) {
                 // 从连接的音频图中拉取标准格式的数据
                 get_source()->process(buffer);
-            } else {
-                // 如果没有数据源,则输出静音
-                buffer.clear();
             }
+            // 如果没有数据源,直接输出静音
         }
         // 锁在这里被释放
         // --- 数据格式转换 (平面 -> 交错) ---
