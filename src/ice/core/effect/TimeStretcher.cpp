@@ -57,6 +57,7 @@ void TimeStretcher::process(AudioBuffer& buffer) {
     // 准备输入缓冲区
     AudioBuffer& input_buf = get_inputbuffer();
     input_buf.resize(buffer.afmt, input_frames_to_pull);
+    input_buf.clear();
 
     // 拉取数据
     input_node->process(input_buf);
