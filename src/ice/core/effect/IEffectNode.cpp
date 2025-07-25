@@ -6,6 +6,7 @@ void IEffectNode::process(AudioBuffer& buffer) {
     if (inputNode) {
         // (需要确保 m_inputBuffer 大小足够)
         inputBuffer.resize(buffer.afmt, buffer.num_frames());
+        inputBuffer.clear();
 
         // 从上游节点拉取数据到我们自己的临时输入缓冲区
         inputNode->process(inputBuffer);
