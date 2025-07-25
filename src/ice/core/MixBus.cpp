@@ -9,6 +9,7 @@ void MixBus::process(AudioBuffer& buffer) {
     for (const auto& source : sources) {
         temp_buffer.clear();
         temp_buffer.resize(buffer.afmt, buffer.num_frames());
+        temp_buffer.clear();
         // 拉取输入源的数据到缓冲
         source->process(temp_buffer);
 
