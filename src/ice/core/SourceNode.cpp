@@ -88,15 +88,22 @@ void SourceNode::process(AudioBuffer& buffer) {
         // 非常路径-提醒编译器优化
         [[unlikely]] buffer.clear_from(gained_frames);
     }
+
     // 更新播放位置
     playback_pos += gained_frames;
-    if (playback_pos >= track->get_media_info().frame_count) {
+    [[unlikely]] if (playback_pos >= track->get_media_info().frame_count) {
         // 启用循环则在此恢复播放指针到0
         if (is_looping.load()) {
             playback_pos = 0;
         } else {
             playback_pos.store(track->get_media_info().frame_count);
         }
+
+        // 通知回调播放完成一遍
+        for (const auto& callback : callbacks) {
+            callback->play_done(is_looping.load());
+        }
+
         [[unlikely]] if (gained_frames == 0)
             return;
     }

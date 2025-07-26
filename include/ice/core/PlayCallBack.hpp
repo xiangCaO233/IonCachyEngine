@@ -12,6 +12,9 @@ class PlayCallBack {
     // 析构PlayCallBack
     virtual ~PlayCallBack() = default;
 
+    // 播放完成完整一遍回调(传入是否循环)
+    virtual void play_done(bool loop) const = 0;
+
     // 帧基
     virtual void frameplaypos_updated(size_t frame_pos) = 0;
 
