@@ -22,8 +22,10 @@ class Resampler {
         // 初始化重采样器 SwrContext
         AVChannelLayout srcch_layout;
         av_channel_layout_default(&srcch_layout, source_format.channels);
+
         AVChannelLayout tgtch_layout;
         av_channel_layout_default(&tgtch_layout, target_format.channels);
+
         AVCALL_CHECK(swr_alloc_set_opts2(
             &swr_ctx,
             &tgtch_layout,       // 目标声道布局
@@ -91,12 +93,12 @@ void SourceNode::process(AudioBuffer& buffer) {
 
     // 更新播放位置
     playback_pos += gained_frames;
-    [[unlikely]] if (playback_pos >= track->get_media_info().frame_count) {
+    [[unlikely]] if (playback_pos >= track->num_frames()) {
         // 启用循环则在此恢复播放指针到0
         if (is_looping.load()) {
             playback_pos = 0;
         } else {
-            playback_pos.store(track->get_media_info().frame_count);
+            playback_pos.store(track->num_frames());
         }
 
         // 通知回调播放完成一遍
@@ -131,8 +133,9 @@ void SourceNode::process(AudioBuffer& buffer) {
 void SourceNode::apply_volume(AudioBuffer& buffer) const {
     const uint16_t num_channels = buffer.afmt.channels;
     const size_t num_frames = buffer.num_frames();
-    // 如果无事可做，立刻退出。这是一个关键的微优化。
-    if (num_frames == 0) {
+    // 如果无事可做,立刻退出
+    if (num_frames == 0 ||
+        std::abs(volume - 1.f) <= std::numeric_limits<float>::epsilon()) {
         return;
     }
     // 热循环-SIMD优化的主要候选者
