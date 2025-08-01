@@ -1,6 +1,7 @@
 #include <ice/core/SourceNode.hpp>
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/AudioTrack.hpp>
+#include <utility>
 
 #include "ice/config/config.hpp"
 
@@ -128,6 +129,9 @@ void SourceNode::process(AudioBuffer& buffer) {
     if (resampleimpl) {
         // 若需要格式转换则在此执行转换
         resampleimpl->resmaple(inputBuffer, buffer);
+    } else {
+        // 无需转换-直接移动
+        buffer = std::move(inputBuffer);
     }
 
     if (volume != 1.f) {
