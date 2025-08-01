@@ -80,8 +80,8 @@ void SourceNode::process(AudioBuffer& buffer) {
     if (!is_playing.load()) return;
 
     auto desired_frames = buffer.num_frames() *
-                          (double(buffer.afmt.samplerate) /
-                           double(ice::ICEConfig::internal_format.samplerate));
+                          (double(track->get_media_info().format.samplerate) /
+                           double(buffer.afmt.samplerate));
     AudioBuffer inputBuffer;
     inputBuffer.resize(track->get_media_info().format, desired_frames);
 
