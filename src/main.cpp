@@ -31,11 +31,11 @@ void test() {
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
         "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
     file1 =
-        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
-        "湊貴大 - 朧月.mp3";
-    file1 =
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
+    file1 =
+        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
+        "湊貴大 - 朧月.mp3";
     auto file2 =
         "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
 #endif  //__APPLE__
@@ -74,7 +74,9 @@ void test() {
     ice::SDLPlayer player;
 
     auto source = std::make_shared<ice::SourceNode>(track1);
+    source->play();
     auto source2 = std::make_shared<ice::SourceNode>(track2);
+    source2->play();
 
     using namespace std::chrono_literals;
 
@@ -140,7 +142,7 @@ void test() {
     // 压缩了信号，整体音量变小，提回来
     compressor->set_makeup_gain_db(6.0f);
 
-    player.set_source(mixer);
+    player.set_source(eq);
 
     // player.set_source(mixer);
 

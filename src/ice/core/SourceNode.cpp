@@ -79,9 +79,11 @@ SourceNode::~SourceNode() = default;
 void SourceNode::process(AudioBuffer& buffer) {
     if (!is_playing.load()) return;
 
-    auto desired_frames = buffer.num_frames() *
-                          (double(track->get_media_info().format.samplerate) /
-                           double(buffer.afmt.samplerate));
+    auto desired_frames =
+        std::ceil(double(buffer.num_frames()) *
+                  (double(track->get_media_info().format.samplerate) /
+                   double(buffer.afmt.samplerate)));
+
     AudioBuffer inputBuffer;
     inputBuffer.resize(track->get_media_info().format, desired_frames);
 
