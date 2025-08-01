@@ -41,8 +41,8 @@ class PitchAlter : public IEffectNode {
 
    private:
     // 音高变化
-    std::atomic<double> pitch_semitones;
-    std::atomic<double> pitch_scale;
+    std::atomic<double> pitch_semitones{0.};
+    std::atomic<double> pitch_scale{1.};
     // 拉伸器
     std::unique_ptr<RStretcher> stretcher;
 };
