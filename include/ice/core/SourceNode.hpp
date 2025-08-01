@@ -174,7 +174,7 @@ class SourceNode : public IAudioNode {
     std::set<std::shared_ptr<PlayCallBack>> callbacks;
 
     // 播放位置
-    std::atomic<size_t> playback_pos{0};
+    std::atomic<double> playback_pos{0.};
 
     // 音源音量
     std::atomic<float> volume{0.4f};

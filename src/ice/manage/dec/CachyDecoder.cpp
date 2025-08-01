@@ -1,3 +1,4 @@
+#include <cmath>
 #include <ice/execptions/instance_build_error.hpp>
 #include <ice/manage/dec/CachyDecoder.hpp>
 #include <ice/manage/dec/IDecoderInstance.hpp>
@@ -88,8 +89,8 @@ const CachyDecoder::DecodedData& CachyDecoder::get_data() const {
     return *data_cache_;
 }
 
-size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
-                            size_t start_frame, size_t frame_count) {
+double CachyDecoder::decode(float** buffer, uint16_t num_channels,
+                            double start_frame, double frame_count) {
     // 确保后台任务已完成
     const auto& data = get_data();
 
@@ -102,7 +103,7 @@ size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
 
     // 确定要拷贝的帧数:取请求帧数和剩余帧数中的较小值
     const size_t frames_available = total_frames - start_frame;
-    const size_t frames_to_copy = std::min(frame_count, frames_available);
+    const auto frames_to_copy = std::min(frame_count, double(frames_available));
     if (frames_to_copy == 0) {
         return 0;
     }
@@ -112,11 +113,12 @@ size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
     // 逐声道进行内存拷贝
     for (uint16_t ch = 0; ch < channels_to_copy; ++ch) {
         // 源指针:指向内部PCM数据的正确起始位置
-        const float* src = data.pcm_data[ch].data() + start_frame;
+        const float* src =
+            data.pcm_data[ch].data() + size_t(std::floor(start_frame));
         // 目标指针:从传入的指针数组中获取
         float* dest = buffer[ch];
         // 块拷贝内存
-        memcpy(dest, src, frames_to_copy * sizeof(float));
+        memcpy(dest, src, size_t(std::floor(frames_to_copy)) * sizeof(float));
     }
     // 返回实际处理的帧数
     return frames_to_copy;
