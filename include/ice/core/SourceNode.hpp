@@ -16,9 +16,7 @@ class Resampler;
 class SourceNode : public IAudioNode {
    public:
     // 构造SourceNode
-    explicit SourceNode(
-        std::shared_ptr<AudioTrack> track,
-        const AudioDataFormat& engin_format = ICEConfig::internal_format);
+    explicit SourceNode(std::shared_ptr<AudioTrack> track);
     // 析构SourceNode
     ~SourceNode() override;
 

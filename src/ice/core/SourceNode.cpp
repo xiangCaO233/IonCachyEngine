@@ -2,6 +2,8 @@
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/AudioTrack.hpp>
 
+#include "ice/config/config.hpp"
+
 extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
@@ -50,16 +52,11 @@ class Resampler {
             swr_close(swr_ctx);
         }
     }
-    void resmaple(AudioBuffer& buffer) {
-        AudioBuffer conversion_buffer;
-        // 实现格式转换传入的缓冲区为buffer的afmt-已经配置好了
-        conversion_buffer.resize(buffer.afmt, buffer.num_frames());
-        // 执行转换：从临时源转换到最终的目标buffer。
-        swr_convert(swr_ctx, (uint8_t**)conversion_buffer.raw_ptrs(),
-                    buffer.num_frames(), (const uint8_t**)buffer.raw_ptrs(),
-                    buffer.num_frames());
-        // 直接移动缓冲区
-        buffer = std::move(conversion_buffer);
+    void resmaple(const AudioBuffer& inbuffer, AudioBuffer& outbuffer) {
+        // 执行转换,从输入缓冲转换到输出缓冲区
+        swr_convert(
+            swr_ctx, (uint8_t**)outbuffer.raw_ptrs(), outbuffer.num_frames(),
+            (const uint8_t**)inbuffer.raw_ptrs(), inbuffer.num_frames());
     }
 
    private:
@@ -67,13 +64,11 @@ class Resampler {
 };
 
 // 构造SourceNode
-SourceNode::SourceNode(std::shared_ptr<AudioTrack> track,
-                       const AudioDataFormat& engin_format)
-    : track(track) {
-    if (engin_format != track->get_media_info().format) {
+SourceNode::SourceNode(std::shared_ptr<AudioTrack> track) : track(track) {
+    if (ice::ICEConfig::internal_format != track->get_media_info().format) {
         // 格式不同-创建一个重采器
         resampleimpl = std::make_unique<Resampler>(
-            track->get_media_info().format, engin_format);
+            track->get_media_info().format, ice::ICEConfig::internal_format);
     }
 }
 
@@ -84,7 +79,14 @@ SourceNode::~SourceNode() = default;
 void SourceNode::process(AudioBuffer& buffer) {
     if (!is_playing.load()) return;
 
-    auto gained_frames = track->read(buffer, playback_pos, buffer.num_frames());
+    auto desired_frames = buffer.num_frames() *
+                          (double(buffer.afmt.samplerate) /
+                           double(ice::ICEConfig::internal_format.samplerate));
+    AudioBuffer inputBuffer;
+    inputBuffer.resize(track->get_media_info().format, desired_frames);
+
+    auto gained_frames = track->read(inputBuffer, playback_pos, desired_frames);
+
     if (gained_frames < buffer.num_frames()) {
         // 未完全获取到预期的帧数-在此处补0
         // 非常路径-提醒编译器优化
@@ -123,8 +125,9 @@ void SourceNode::process(AudioBuffer& buffer) {
 
     if (resampleimpl) {
         // 若需要格式转换则在此执行转换
-        resampleimpl->resmaple(buffer);
+        resampleimpl->resmaple(inputBuffer, buffer);
     }
+
     if (volume != 1.f) {
         apply_volume(buffer);
     }
