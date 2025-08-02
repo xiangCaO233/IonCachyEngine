@@ -50,6 +50,11 @@ class AudioTrack {
         return decoder->decode(buffer.raw_ptrs(), buffer.afmt.channels,
                                start_frame, frame_count);
     }
+    // 通过接口直接获取原始数据
+    inline void origin(std::vector<std::span<const float>>& origin_data,
+                       double start_frame, double frame_count) {
+        decoder->origin(origin_data, start_frame, frame_count);
+    }
 
    private:
     // 私有构造函数，强制使用工厂方法
