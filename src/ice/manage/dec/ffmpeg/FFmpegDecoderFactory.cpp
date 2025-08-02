@@ -2,7 +2,6 @@
 
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
-#include <iostream>
 
 #include "ice/manage/AudioTrack.hpp"
 #include "ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp"
@@ -88,7 +87,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
 
     media_info.bitrate = fffmt.get()->bit_rate;
     // 4. 从字典中获取元数据
-    AVDictionaryEntry* tag = nullptr;
+    const AVDictionaryEntry* tag = nullptr;
 
     // 获取艺术家
     tag = av_dict_get(fffmt.get()->metadata, "artist", nullptr,
@@ -113,7 +112,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
 
     // 查找并提取专辑封面
     for (unsigned int i = 0; i < fffmt.get()->nb_streams; ++i) {
-        AVStream* stream = fffmt.get()->streams[i];
+        const AVStream* stream = fffmt.get()->streams[i];
         if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
             const AVPacket& packet = stream->attached_pic;
             if (packet.size > 0 && packet.data) {

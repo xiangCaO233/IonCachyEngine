@@ -85,7 +85,6 @@ void SourceNode::process(AudioBuffer& buffer) {
                   (double(track->get_media_info().format.samplerate) /
                    double(buffer.afmt.samplerate)));
 
-    AudioBuffer inputBuffer;
     inputBuffer.resize(track->get_media_info().format, desired_frames);
 
     auto gained_frames = track->read(inputBuffer, playback_pos, desired_frames);

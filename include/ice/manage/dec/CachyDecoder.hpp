@@ -28,6 +28,9 @@ class CachyDecoder : public IDecoder {
     // 解码数据到缓冲区的接口
     double decode(float** buffer, uint16_t num_channels, double start_frame,
                   double frame_count) override;
+    // 获取原始数据接口
+    double origin(std::vector<std::span<const float>>& origin_data,
+                  double start_frame, double frame_count) override;
 
    private:
     // 包含解码结果的结构体

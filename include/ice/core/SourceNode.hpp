@@ -115,9 +115,7 @@ class SourceNode : public IAudioNode {
     }
 
     // 获取音轨总帧数
-    inline size_t num_frames() const {
-        return track->get_media_info().frame_count;
-    }
+    inline size_t num_frames() const { return track->num_frames(); }
 
     // 获取音轨原始格式
     inline const AudioDataFormat& format() const {
@@ -169,6 +167,9 @@ class SourceNode : public IAudioNode {
 
     // 轨道指针
     std::shared_ptr<AudioTrack> track;
+
+    // 内部输入缓冲区
+    AudioBuffer inputBuffer;
 
     // 播放回调列表
     std::set<std::shared_ptr<PlayCallBack>> callbacks;

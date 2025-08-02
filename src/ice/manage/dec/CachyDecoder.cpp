@@ -3,6 +3,7 @@
 #include <ice/manage/dec/CachyDecoder.hpp>
 #include <ice/manage/dec/IDecoderInstance.hpp>
 #include <memory>
+#include <span>
 
 #include "ice/execptions/load_error.hpp"
 
@@ -122,5 +123,32 @@ double CachyDecoder::decode(float** buffer, uint16_t num_channels,
     }
     // 返回实际处理的帧数
     return frames_to_copy;
+}
+
+// 获取原始数据接口
+double CachyDecoder::origin(std::vector<std::span<const float>>& origin_data,
+                            double start_frame, double frame_count) {
+    // 确保后台任务已完成
+    const auto& data = get_data();
+    if (data.pcm_data.empty()) return 0.;
+
+    // 如果内部没有数据,或请求的起始点已超出范围，则直接返回
+    const size_t total_frames = data.pcm_data[0].size();
+    if (start_frame >= total_frames) return 0.;
+
+    // 确定帧数:取请求帧数和剩余帧数中的较小值
+    const size_t frames_available = total_frames - start_frame;
+    const auto framesneeded = std::min(frame_count, double(frames_available));
+    if (framesneeded == 0) {
+        return 0.;
+    }
+
+    // 生成span
+    for (const auto& chdata : data.pcm_data) {
+        origin_data.emplace_back(
+            chdata.begin() + size_t(std::floor(start_frame)),
+            chdata.begin() + size_t(std::floor(start_frame + framesneeded)));
+    }
+    return framesneeded;
 }
 }  // namespace ice

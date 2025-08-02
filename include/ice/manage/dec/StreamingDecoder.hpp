@@ -20,6 +20,10 @@ class StreamingDecoder : public IDecoder {
     double decode(float** buffer, uint16_t num_channels, double start_frame,
                   double frame_count) override;
 
+    // 获取原始数据接口
+    double origin(std::vector<std::span<const float>>& origin_data,
+                  double start_frame, double frame_count) override;
+
     size_t num_frames() const override { return 0; }
 
    private:
