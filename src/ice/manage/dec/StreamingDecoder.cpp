@@ -19,9 +19,9 @@ double StreamingDecoder::decode(float** buffer, uint16_t num_channels,
     // TODO(xiang 2025-07-11): 实现流式解码
     return 0;
 }
-std::vector<std::span<const float>> StreamingDecoder::origin(
+double StreamingDecoder::origin(
     std::vector<std::span<const float>>& origin_data, double start_frame,
     double frame_count) {
-    return {};
+    return 0.;
 }
 }  // namespace ice
