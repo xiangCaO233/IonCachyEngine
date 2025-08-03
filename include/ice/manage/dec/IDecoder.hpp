@@ -19,11 +19,11 @@ class IDecoder {
     virtual size_t num_frames() const = 0;
 
     // 读取数据到缓冲区的接口(读取数量使用浮点数)
-    virtual double decode(float** buffer, uint16_t num_channels,
+    virtual size_t decode(float** buffer, uint16_t num_channels,
                           size_t start_frame, size_t frame_count) = 0;
 
     // 获取原始数据接口
-    virtual double origin(std::vector<std::span<const float>>& origin_data,
+    virtual size_t origin(std::vector<std::span<const float>>& origin_data,
                           size_t start_frame, size_t frame_count) = 0;
 };
 

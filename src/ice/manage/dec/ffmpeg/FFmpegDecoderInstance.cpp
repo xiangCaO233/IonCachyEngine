@@ -41,7 +41,7 @@ namespace ice {
 class FFmpegDecoder {
    public:
     explicit FFmpegDecoder(std::string_view file_path,
-                           ice::AudioDataFormat& target_format) {
+                           const ice::AudioDataFormat& target_format) {
         // 打开文件
         AVCALL_CHECK(
             avformat_open_input(&avfmt_ctx, file_path.data(), nullptr, nullptr))
@@ -237,13 +237,13 @@ class FFmpegDecoder {
                 int read_ret = av_read_frame(avfmt_ctx, avpacket);
                 if (read_ret == AVERROR_EOF) {
                     // 发送空pack
-                    avcodec_send_packet(avcodec_ctx, nullptr);
+                    AVCALL_CHECK(avcodec_send_packet(avcodec_ctx, nullptr));
                     // 不需要continue，下一次while循环会处理解码器的EOF
                 } else if (read_ret < 0) {
                     // 读文件出错，终止
                     break;
                 } else if (avpacket->stream_index == stream_index) {
-                    avcodec_send_packet(avcodec_ctx, avpacket);
+                    AVCALL_CHECK(avcodec_send_packet(avcodec_ctx, avpacket));
                 }
             } else if (ret == AVERROR_EOF) {
                 // 解码器已被完全清空，没有更多帧了
@@ -301,7 +301,7 @@ class FFmpegDecoder {
 };
 
 FFmpegDecoderInstance::FFmpegDecoderInstance(
-    std::string_view file_path, ice::AudioDataFormat& target_format) {
+    std::string_view file_path, const ice::AudioDataFormat& target_format) {
     // 初始化解码器资源
     ffimpl = std::make_unique<FFmpegDecoder>(file_path, target_format);
 }
@@ -320,7 +320,7 @@ size_t FFmpegDecoderInstance::read(float** buffer, size_t chunksize) {
 const AudioDataFormat& FFmpegDecoderInstance::get_source_format() const {
     return ffimpl->iceformat();
 }
-size_t FFmpegDecoderInstance::get_total_frames() const {
+size_t FFmpegDecoderInstance::get_source_total_frames() const {
     return ffimpl->frames();
 }
 

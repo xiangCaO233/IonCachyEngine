@@ -12,7 +12,7 @@ class FFmpegDecoderInstance : public IDecoderInstance {
    public:
     // 构造需要对应文件路径
     explicit FFmpegDecoderInstance(std::string_view file_path,
-                                   ice::AudioDataFormat& target_format);
+                                   const ice::AudioDataFormat& target_format);
 
     // 需要声明析构函数-隐藏ffmpeg实现细节
     ~FFmpegDecoderInstance() override;
@@ -23,7 +23,7 @@ class FFmpegDecoderInstance : public IDecoderInstance {
     size_t read(float** buffer, size_t chunksize) override;
 
     const AudioDataFormat& get_source_format() const override;
-    size_t get_total_frames() const override;
+    size_t get_source_total_frames() const override;
 
    private:
     std::unique_ptr<FFmpegDecoder> ffimpl;

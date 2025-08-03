@@ -1,6 +1,7 @@
 #include <ice/manage/AudioTrack.hpp>
 #include <memory>
 
+#include "ice/config/config.hpp"
 #include "ice/manage/dec/CachyDecoder.hpp"
 #include "ice/manage/dec/StreamingDecoder.hpp"
 
@@ -20,17 +21,19 @@ AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
                        CachingStrategy strategy)
     : file_path(path) {
     // 探测文件格式
-    size_t total_frames_probe = 0;
     decoder_factory->probe(file_path, media_info);
 
     switch (strategy) {
         case CachingStrategy::CACHY: {
-            decoder = CachyDecoder::create(path, thread_pool, decoder_factory);
+            decoder =
+                CachyDecoder::create(path, ice::ICEConfig::internal_format,
+                                     thread_pool, decoder_factory);
             break;
         }
         case CachingStrategy::STREAMING: {
             decoder =
-                StreamingDecoder::create(path, thread_pool, decoder_factory);
+                StreamingDecoder::create(path, ice::ICEConfig::internal_format,
+                                         thread_pool, decoder_factory);
             break;
         }
     }

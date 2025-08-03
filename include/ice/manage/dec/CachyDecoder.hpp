@@ -2,13 +2,13 @@
 #define ICE_CACHYDECODER_HPP
 
 #include <future>
+#include <ice/manage/AudioFormat.hpp>
+#include <ice/manage/dec/IDecoder.hpp>
+#include <ice/manage/dec/IDecoderFactory.hpp>
 #include <ice/thread/ThreadPool.hpp>
 #include <optional>
 #include <string_view>
 #include <vector>
-
-#include "ice/manage/dec/IDecoder.hpp"
-#include "ice/manage/dec/IDecoderFactory.hpp"
 
 namespace ice {
 class CachyDecoder : public IDecoder {
@@ -17,8 +17,8 @@ class CachyDecoder : public IDecoder {
    public:
     // 工厂方法
     [[nodiscard]] static std::unique_ptr<CachyDecoder> create(
-        std::string_view path, ThreadPool& thread_pool,
-        std::shared_ptr<IDecoderFactory> factory);
+        std::string_view path, const ice::AudioDataFormat& target_format,
+        ThreadPool& thread_pool, std::shared_ptr<IDecoderFactory> factory);
 
     size_t num_frames() const override {
         const auto& data = get_data();
@@ -26,10 +26,10 @@ class CachyDecoder : public IDecoder {
         return data.pcm_data.empty() ? 0 : data.pcm_data[0].size();
     }
     // 解码数据到缓冲区的接口
-    double decode(float** buffer, uint16_t num_channels, size_t start_frame,
+    size_t decode(float** buffer, uint16_t num_channels, size_t start_frame,
                   size_t frame_count) override;
     // 获取原始数据接口
-    double origin(std::vector<std::span<const float>>& origin_data,
+    size_t origin(std::vector<std::span<const float>>& origin_data,
                   size_t start_frame, size_t frame_count) override;
 
    private:

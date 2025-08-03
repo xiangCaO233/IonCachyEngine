@@ -15,7 +15,7 @@ class FFmpegDecoderFactory : public IDecoderFactory {
     // 创建解码器实例接口
     std::unique_ptr<IDecoderInstance> create_instance(
         std::string_view file_path,
-        ice::AudioDataFormat& target_format) const override;
+        const ice::AudioDataFormat& target_format) const override;
 };
 }  // namespace ice
 

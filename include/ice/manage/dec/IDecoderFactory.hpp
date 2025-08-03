@@ -23,7 +23,7 @@ class IDecoderFactory {
     // 创建解码器实例接口
     virtual std::unique_ptr<IDecoderInstance> create_instance(
         std::string_view file_path,
-        ice::AudioDataFormat& target_format) const = 0;
+        const ice::AudioDataFormat& target_format) const = 0;
 };
 
 }  // namespace ice

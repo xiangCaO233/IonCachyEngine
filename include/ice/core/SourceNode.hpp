@@ -11,7 +11,6 @@
 #include "ice/core/PlayCallBack.hpp"
 
 namespace ice {
-class Resampler;
 class SourceNode : public IAudioNode {
    public:
     // 构造SourceNode
@@ -161,20 +160,14 @@ class SourceNode : public IAudioNode {
     }
 
    private:
-    // 重采样实现
-    std::unique_ptr<Resampler> resampleimpl{nullptr};
-
     // 轨道指针
     std::shared_ptr<AudioTrack> track;
-
-    // 内部输入缓冲区
-    AudioBuffer inputBuffer;
 
     // 播放回调列表
     std::set<std::shared_ptr<PlayCallBack>> callbacks;
 
     // 播放位置
-    std::atomic<double> playback_pos{0.};
+    std::atomic<size_t> playback_pos{0};
 
     // 音源音量
     std::atomic<float> volume{0.4f};

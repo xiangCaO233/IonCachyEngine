@@ -13,13 +13,13 @@ CachyDecoder::CachyDecoder(std::future<DecodedData> future_data)
 
 // 创建并提交异步任务
 std::unique_ptr<CachyDecoder> CachyDecoder::create(
-    std::string_view path, ThreadPool& thread_pool,
-    std::shared_ptr<IDecoderFactory> factory) {
+    std::string_view path, const ice::AudioDataFormat& target_format,
+    ThreadPool& thread_pool, std::shared_ptr<IDecoderFactory> factory) {
     // 创建一个解码任务的lambda
-    auto decode_task = [factory,
+    auto decode_task = [target_format, factory,
                         path_str = std::string(path)]() -> DecodedData {
         // 创建工人
-        auto worker = factory->create_instance(path_str);
+        auto worker = factory->create_instance(path_str, target_format);
         if (!worker) {
             throw ice::instance_build_error("create decoder instance " +
                                             path_str + "failed");
@@ -27,7 +27,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
 
         // 获取原始文件格式信息
         auto format = worker->get_source_format();
-        size_t total_frames = worker->get_total_frames();
+        size_t total_frames = worker->get_source_total_frames();
 
         // 预分配内存
         std::vector<std::vector<float>> pcm(format.channels);

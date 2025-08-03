@@ -3,75 +3,10 @@
 #include <ice/manage/AudioTrack.hpp>
 #include <utility>
 
-#include "ice/config/config.hpp"
-
-extern "C" {
-#include <libavutil/channel_layout.h>
-#include <libswresample/swresample.h>
-}
-
-#define AVCALL_CHECK(func)                          \
-    if (int ret = func < 0) {                       \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];      \
-        av_strerror(ret, errbuf, sizeof(errbuf));   \
-        throw ice::load_error(std::string(errbuf)); \
-    }
-
 namespace ice {
-class Resampler {
-   public:
-    Resampler(const AudioDataFormat& source_format,
-              const AudioDataFormat& target_format) {
-        // 初始化重采样器 SwrContext
-        AVChannelLayout srcch_layout;
-        av_channel_layout_default(&srcch_layout, source_format.channels);
-
-        AVChannelLayout tgtch_layout;
-        av_channel_layout_default(&tgtch_layout, target_format.channels);
-
-        AVCALL_CHECK(swr_alloc_set_opts2(
-            &swr_ctx,
-            &tgtch_layout,       // 目标声道布局
-            AV_SAMPLE_FMT_FLTP,  // 目标样本格式固定为planner-float(32位浮点数，平面)
-            target_format.samplerate,  // 目标采样率
-            &srcch_layout,             // 源声道布局
-            AV_SAMPLE_FMT_FLTP,        // 源样本格式
-            source_format.samplerate,  // 源采样率
-            0,                         // 日志偏移
-            nullptr                    // 日志上下文
-            ))
-
-        if (!swr_ctx) {
-            throw ice::load_error("swr_alloc_set_opts failed.");
-        }
-
-        // 初始化重采样器上下文
-        AVCALL_CHECK(swr_init(swr_ctx))
-    }
-    ~Resampler() {
-        if (swr_ctx) {
-            swr_close(swr_ctx);
-        }
-    }
-    void resmaple(const AudioBuffer& inbuffer, AudioBuffer& outbuffer) {
-        // 执行转换,从输入缓冲转换到输出缓冲区
-        swr_convert(
-            swr_ctx, (uint8_t**)outbuffer.raw_ptrs(), outbuffer.num_frames(),
-            (const uint8_t**)inbuffer.raw_ptrs(), inbuffer.num_frames());
-    }
-
-   private:
-    SwrContext* swr_ctx{nullptr};
-};
 
 // 构造SourceNode
-SourceNode::SourceNode(std::shared_ptr<AudioTrack> track) : track(track) {
-    if (ice::ICEConfig::internal_format != track->get_media_info().format) {
-        // 格式不同-创建一个重采器
-        resampleimpl = std::make_unique<Resampler>(
-            track->get_media_info().format, ice::ICEConfig::internal_format);
-    }
-}
+SourceNode::SourceNode(std::shared_ptr<AudioTrack> track) : track(track) {}
 
 // 析构SourceNode
 SourceNode::~SourceNode() = default;
@@ -80,14 +15,9 @@ SourceNode::~SourceNode() = default;
 void SourceNode::process(AudioBuffer& buffer) {
     if (!is_playing.load()) return;
 
-    auto desired_frames =
-        std::ceil(double(buffer.num_frames()) *
-                  (double(track->get_media_info().format.samplerate) /
-                   double(buffer.afmt.samplerate)));
+    buffer.resize(track->get_media_info().format, buffer.num_frames());
 
-    inputBuffer.resize(track->get_media_info().format, desired_frames);
-
-    auto gained_frames = track->read(inputBuffer, playback_pos, desired_frames);
+    auto gained_frames = track->read(buffer, playback_pos, buffer.num_frames());
 
     if (gained_frames < buffer.num_frames()) {
         // 未完全获取到预期的帧数-在此处补0
@@ -122,15 +52,7 @@ void SourceNode::process(AudioBuffer& buffer) {
         callback->timeplaypos_updated(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 double_seconds(static_cast<double>(playback_pos.load()) /
-                               format().samplerate)));
-    }
-
-    if (resampleimpl) {
-        // 若需要格式转换则在此执行转换
-        resampleimpl->resmaple(inputBuffer, buffer);
-    } else {
-        // 无需转换-直接移动
-        buffer = std::move(inputBuffer);
+                               double(format().samplerate))));
     }
 
     if (volume != 1.f) {
