@@ -129,8 +129,8 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
 
 // 创建解码器实例
 std::unique_ptr<IDecoderInstance> FFmpegDecoderFactory::create_instance(
-    std::string_view file_path) const {
-    return std::make_unique<FFmpegDecoderInstance>(file_path);
+    std::string_view file_path, ice::AudioDataFormat& target_format) const {
+    return std::make_unique<FFmpegDecoderInstance>(file_path, target_format);
 }
 
 }  // namespace ice

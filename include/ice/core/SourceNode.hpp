@@ -6,8 +6,6 @@
 #include <ice/manage/AudioTrack.hpp>
 #include <memory>
 #include <set>
-#include <span>
-#include <vector>
 
 #include "ice/core/IAudioNode.hpp"
 #include "ice/core/PlayCallBack.hpp"

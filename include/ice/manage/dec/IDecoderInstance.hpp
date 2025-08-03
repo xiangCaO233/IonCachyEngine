@@ -17,7 +17,7 @@ class IDecoderInstance {
     virtual size_t read(float** buffer, size_t chunksize) = 0;
 
     // 抽象层解码所需信息接口
-    virtual const AudioDataFormat& get_format() const = 0;
+    virtual const AudioDataFormat& get_source_format() const = 0;
     virtual size_t get_total_frames() const = 0;
 };
 }  // namespace ice

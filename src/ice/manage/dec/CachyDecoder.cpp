@@ -1,4 +1,3 @@
-#include <cmath>
 #include <ice/execptions/instance_build_error.hpp>
 #include <ice/manage/dec/CachyDecoder.hpp>
 #include <ice/manage/dec/IDecoderInstance.hpp>
@@ -27,7 +26,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
         }
 
         // 获取原始文件格式信息
-        auto format = worker->get_format();
+        auto format = worker->get_source_format();
         size_t total_frames = worker->get_total_frames();
 
         // 预分配内存
@@ -91,7 +90,7 @@ const CachyDecoder::DecodedData& CachyDecoder::get_data() const {
 }
 
 double CachyDecoder::decode(float** buffer, uint16_t num_channels,
-                            double start_frame, double frame_count) {
+                            size_t start_frame, size_t frame_count) {
     // 确保后台任务已完成
     const auto& data = get_data();
 
@@ -104,7 +103,7 @@ double CachyDecoder::decode(float** buffer, uint16_t num_channels,
 
     // 确定要拷贝的帧数:取请求帧数和剩余帧数中的较小值
     const size_t frames_available = total_frames - start_frame;
-    const auto frames_to_copy = std::min(frame_count, double(frames_available));
+    const auto frames_to_copy = std::min(frame_count, frames_available);
     if (frames_to_copy == 0) {
         return 0;
     }
@@ -114,12 +113,11 @@ double CachyDecoder::decode(float** buffer, uint16_t num_channels,
     // 逐声道进行内存拷贝
     for (uint16_t ch = 0; ch < channels_to_copy; ++ch) {
         // 源指针:指向内部PCM数据的正确起始位置
-        const float* src =
-            data.pcm_data[ch].data() + size_t(std::floor(start_frame));
+        const float* src = data.pcm_data[ch].data() + start_frame;
         // 目标指针:从传入的指针数组中获取
         float* dest = buffer[ch];
         // 块拷贝内存
-        memcpy(dest, src, size_t(std::floor(frames_to_copy)) * sizeof(float));
+        memcpy(dest, src, frames_to_copy * sizeof(float));
     }
     // 返回实际处理的帧数
     return frames_to_copy;
@@ -127,7 +125,7 @@ double CachyDecoder::decode(float** buffer, uint16_t num_channels,
 
 // 获取原始数据接口
 double CachyDecoder::origin(std::vector<std::span<const float>>& origin_data,
-                            double start_frame, double frame_count) {
+                            size_t start_frame, size_t frame_count) {
     // 确保后台任务已完成
     const auto& data = get_data();
     if (data.pcm_data.empty()) return 0.;
@@ -138,16 +136,15 @@ double CachyDecoder::origin(std::vector<std::span<const float>>& origin_data,
 
     // 确定帧数:取请求帧数和剩余帧数中的较小值
     const size_t frames_available = total_frames - start_frame;
-    const auto framesneeded = std::min(frame_count, double(frames_available));
+    const auto framesneeded = std::min(frame_count, frames_available);
     if (framesneeded == 0) {
         return 0.;
     }
 
     // 生成span
     for (const auto& chdata : data.pcm_data) {
-        origin_data.emplace_back(
-            chdata.begin() + size_t(std::floor(start_frame)),
-            chdata.begin() + size_t(std::floor(start_frame + framesneeded)));
+        origin_data.emplace_back(chdata.begin() + start_frame,
+                                 chdata.begin() + start_frame + framesneeded);
     }
     return framesneeded;
 }

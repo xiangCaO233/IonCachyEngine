@@ -40,7 +40,8 @@ namespace ice {
 // 完整定义
 class FFmpegDecoder {
    public:
-    explicit FFmpegDecoder(std::string_view file_path) {
+    explicit FFmpegDecoder(std::string_view file_path,
+                           ice::AudioDataFormat& target_format) {
         // 打开文件
         AVCALL_CHECK(
             avformat_open_input(&avfmt_ctx, file_path.data(), nullptr, nullptr))
@@ -120,6 +121,10 @@ class FFmpegDecoder {
         // other hand, swr_alloc() can use swr_alloc_set_opts2() to set
         // the parameters
         // on the allocated context.
+        // 初始化重采样器 SwrContext
+        AVChannelLayout tgtch_layout;
+        av_channel_layout_default(&tgtch_layout, target_format.channels);
+
         AVCALL_CHECK(swr_alloc_set_opts2(
             // @param ps
             // Pointer to an existing Swr context if available,
@@ -127,9 +132,9 @@ class FFmpegDecoder {
             // On success, *ps will be set to the allocated context.
             //
             &swr_ctx,
-            &avcodec_ctx->ch_layout,  // 目标声道布局(不变)
+            &tgtch_layout,       // 目标声道布局
             AV_SAMPLE_FMT_FLTP,  // 目标样本格式固定为planner-float(32位浮点数，平面)
-            avcodec_ctx->sample_rate,  // 目标采样率(不变)
+            target_format.samplerate,  // 目标采样率
             &avcodec_ctx->ch_layout,   // 源声道布局
             avcodec_ctx->sample_fmt,   // 源样本格式
             avcodec_ctx->sample_rate,  // 源采样率
@@ -295,9 +300,10 @@ class FFmpegDecoder {
     int stream_index;
 };
 
-FFmpegDecoderInstance::FFmpegDecoderInstance(std::string_view file_path) {
+FFmpegDecoderInstance::FFmpegDecoderInstance(
+    std::string_view file_path, ice::AudioDataFormat& target_format) {
     // 初始化解码器资源
-    ffimpl = std::make_unique<FFmpegDecoder>(file_path);
+    ffimpl = std::make_unique<FFmpegDecoder>(file_path, target_format);
 }
 FFmpegDecoderInstance::~FFmpegDecoderInstance() = default;
 
@@ -311,7 +317,7 @@ size_t FFmpegDecoderInstance::read(float** buffer, size_t chunksize) {
     return ffimpl->decode(buffer, chunksize);
 }
 
-const AudioDataFormat& FFmpegDecoderInstance::get_format() const {
+const AudioDataFormat& FFmpegDecoderInstance::get_source_format() const {
     return ffimpl->iceformat();
 }
 size_t FFmpegDecoderInstance::get_total_frames() const {

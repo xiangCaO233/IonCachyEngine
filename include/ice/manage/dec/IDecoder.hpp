@@ -20,11 +20,11 @@ class IDecoder {
 
     // 读取数据到缓冲区的接口(读取数量使用浮点数)
     virtual double decode(float** buffer, uint16_t num_channels,
-                          double start_frame, double frame_count) = 0;
+                          size_t start_frame, size_t frame_count) = 0;
 
     // 获取原始数据接口
     virtual double origin(std::vector<std::span<const float>>& origin_data,
-                          double start_frame, double frame_count) = 0;
+                          size_t start_frame, size_t frame_count) = 0;
 };
 
 }  // namespace ice
