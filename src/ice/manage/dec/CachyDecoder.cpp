@@ -89,7 +89,7 @@ const CachyDecoder::DecodedData& CachyDecoder::get_data() const {
     return *data_cache_;
 }
 
-double CachyDecoder::decode(float** buffer, uint16_t num_channels,
+size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
                             size_t start_frame, size_t frame_count) {
     // 确保后台任务已完成
     const auto& data = get_data();
@@ -124,7 +124,7 @@ double CachyDecoder::decode(float** buffer, uint16_t num_channels,
 }
 
 // 获取原始数据接口
-double CachyDecoder::origin(std::vector<std::span<const float>>& origin_data,
+size_t CachyDecoder::origin(std::vector<std::span<const float>>& origin_data,
                             size_t start_frame, size_t frame_count) {
     // 确保后台任务已完成
     const auto& data = get_data();
