@@ -33,10 +33,12 @@ pkg_check_modules(rubberband REQUIRED IMPORTED_TARGET rubberband)
 # ffmpeg
 if(WIN32)
   find_package(FFMPEG REQUIRED)
+  set(FFLIB ${FFMPEG_LIBRARIES})
 else()
   pkg_check_modules(ffmpeg-base REQUIRED IMPORTED_TARGET libswresample
                     libavcodec libavformat)
   pkg_check_modules(ffmpeg-util REQUIRED IMPORTED_TARGET libavutil)
+  set(FFLIB PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
 endif(WIN32)
 
 set(LIB_SOURCES
@@ -73,9 +75,8 @@ add_library(IonCachyEngin SHARED ${LIB_SOURCES})
 add_executable(testIonCachyEngin ${SOURCES})
 
 target_link_libraries(
-  testIonCachyEngin
-  PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
-         PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
+  testIonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
+                           SDL3::SDL3 ${FFLIB})
 # if(WIN32)
 #
 # else()
