@@ -9,7 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(APPLE)
 
 else()
-  add_compile_options(-mavx2)
+  if(MSVC)
+    target_compile_options(your_target PRIVATE "/arch:AVX2")
+  else()
+    target_compile_options(your_target PRIVATE "-mavx2")
+  endif()
 endif(APPLE)
 
 # 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
