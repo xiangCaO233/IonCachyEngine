@@ -84,10 +84,9 @@ target_link_libraries(
 # endif(WIN32)
 
 target_link_libraries(
-  IonCachyEngin-dev
-  PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
-         PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
+  IonCachyEngin-dev PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
+                           SDL3::SDL3 ${FFLIB})
 
 target_link_libraries(
   IonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
-                       PkgConfig::ffmpeg-base PkgConfig::ffmpeg-util)
+                       ${FFLIB})
