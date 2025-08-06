@@ -10,9 +10,9 @@ if(APPLE)
 
 else()
   if(MSVC)
-    target_compile_options(your_target PRIVATE "/arch:AVX2")
+    target_compile_options("/arch:AVX2")
   else()
-    target_compile_options(your_target PRIVATE "-mavx2")
+    target_compile_options("-mavx2")
   endif()
 endif(APPLE)
 
