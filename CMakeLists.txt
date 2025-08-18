@@ -16,10 +16,6 @@ else()
   endif()
 endif(APPLE)
 
-# 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
-# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-
 # 日志库
 find_package(spdlog REQUIRED)
 # 格式化库
@@ -79,18 +75,13 @@ add_library(IonCachyEngin SHARED ${LIB_SOURCES})
 add_executable(testIonCachyEngin ${SOURCES})
 
 target_link_libraries(
-  testIonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                           SDL3::SDL3 ${FFLIB})
-# if(WIN32)
-#
-# else()
-#
-# endif(WIN32)
+  testIonCachyEngin PUBLIC fmt::fmt spdlog::spdlog OpenAL::OpenAL
+                           PkgConfig::rubberband SDL3::SDL3 ${FFLIB})
 
 target_link_libraries(
-  IonCachyEngin-dev PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                           SDL3::SDL3 ${FFLIB})
+  IonCachyEngin-dev PUBLIC fmt::fmt spdlog::spdlog OpenAL::OpenAL
+                           PkgConfig::rubberband SDL3::SDL3 ${FFLIB})
 
 target_link_libraries(
-  IonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
-                       ${FFLIB})
+  IonCachyEngin PUBLIC fmt::fmt spdlog::spdlog OpenAL::OpenAL
+                       PkgConfig::rubberband SDL3::SDL3 ${FFLIB})
