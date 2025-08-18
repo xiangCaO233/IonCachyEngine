@@ -1,0 +1,154 @@
+{
+    fmt = {
+        __enabled = true,
+        links = "fmt",
+        __requirestr = "fmt",
+        envs = {
+            PATH = {
+                "/home/xiang/.xmake/packages/n/ninja/v1.13.1/e7cc4735aeb048e6870171a23c4ee800/bin",
+                "/home/xiang/.xmake/packages/c/cmake/4.0.3/b686e3b7911246e2bfa1b52ae27762fe/bin"
+            }
+        },
+        shared = true,
+        version = "11.2.0",
+        libfiles = "/usr/lib64/libfmt.so"
+    },
+    ["openal-soft"] = {
+        linkdirs = {
+            "/home/xiang/.xmake/packages/o/openal-soft/1.24.3/4fbd90ff40a94188a4f696fa3c9eae8a/lib",
+            "/home/xiang/.xmake/packages/l/libsndio/1.9.0/aa973ae5d04a4f53a02cf28d02c69457/lib",
+            "/usr/lib"
+        },
+        envs = {
+            PATH = {
+                "/home/xiang/.xmake/packages/n/ninja/v1.13.1/e7cc4735aeb048e6870171a23c4ee800/bin",
+                "/home/xiang/.xmake/packages/c/cmake/4.0.3/b686e3b7911246e2bfa1b52ae27762fe/bin",
+                "/home/xiang/.xmake/packages/m/m4/1.4.19/8b7c7260096844c1a8b1c8d773e64b3d/bin",
+                "/home/xiang/.xmake/packages/a/autoconf/2.72/acf1540df7454fb895001231995955f2/bin",
+                "/home/xiang/.xmake/packages/a/automake/1.17/023583104f8e4bd8aa209b66cbeb4bee/bin",
+                "/home/xiang/.xmake/packages/l/libtool/2.5.4/a39f42a4cf63482dafd96ea22a05e4c1/bin"
+            }
+        },
+        __requirestr = "openal-soft",
+        version = "1.24.3",
+        sysincludedirs = {
+            "/home/xiang/.xmake/packages/o/openal-soft/1.24.3/4fbd90ff40a94188a4f696fa3c9eae8a/include",
+            "/home/xiang/.xmake/packages/l/libsndio/1.9.0/aa973ae5d04a4f53a02cf28d02c69457/include"
+        },
+        defines = "AL_LIBTYPE_STATIC",
+        links = {
+            "openal",
+            "sndio",
+            "atopology",
+            "asound"
+        },
+        license = "LGPL-2.0",
+        installdir = "/home/xiang/.xmake/packages/o/openal-soft/1.24.3/4fbd90ff40a94188a4f696fa3c9eae8a",
+        syslinks = {
+            "dl",
+            "pthread"
+        },
+        libfiles = {
+            "/home/xiang/.xmake/packages/o/openal-soft/1.24.3/4fbd90ff40a94188a4f696fa3c9eae8a/lib/libopenal.a",
+            "/home/xiang/.xmake/packages/l/libsndio/1.9.0/aa973ae5d04a4f53a02cf28d02c69457/lib/libsndio.a",
+            "/usr/lib/libatopology.so",
+            "/usr/lib/libasound.so"
+        },
+        static = true,
+        __enabled = true
+    },
+    sdl = {
+        defines = {
+            "_GNU_SOURCE=1",
+            "_REENTRANT"
+        },
+        libfiles = "/usr/lib64/libSDL.so",
+        version = "1.2.68",
+        __enabled = true,
+        sysincludedirs = "/usr/include/SDL",
+        shared = true,
+        __requirestr = "sdl",
+        links = "SDL"
+    },
+    ffmpeg = {
+        __enabled = true,
+        libfiles = {
+            "/usr/lib64/libavcodec.so",
+            "/usr/lib64/libavdevice.so",
+            "/usr/lib64/libavfilter.so",
+            "/usr/lib64/libavformat.so",
+            "/usr/lib64/libavutil.so",
+            "/usr/lib64/libpostproc.so",
+            "/usr/lib64/libswresample.so",
+            "/usr/lib64/libswscale.so",
+            "/usr/lib64/libdrm.so"
+        },
+        __requirestr = "ffmpeg",
+        sysincludedirs = "/usr/include/libdrm",
+        envs = {
+            PYTHONPATH = {
+                "/home/xiang/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/lib/python3.13/site-packages"
+            },
+            PATH = {
+                "/home/xiang/.xmake/packages/f/ffmpeg/7.1/64694029cd9747be960e46c3e8e456d7/bin",
+                "/home/xiang/.xmake/packages/n/nasm/2.16.03/168b8a1ce3e4467998320bf818687de8/bin",
+                "/home/xiang/.xmake/packages/p/pkg-config/0.29.2/a0aba256d7674c1bbee15f0ee1534e92/bin",
+                "/home/xiang/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/bin",
+                "/home/xiang/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/bin",
+                "/home/xiang/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/Scripts",
+                "/home/xiang/.xmake/packages/m/meson/1.8.3/03b44440550447358ee466c4ca57f4e8/bin",
+                "/home/xiang/.xmake/packages/n/ninja/v1.13.1/e7cc4735aeb048e6870171a23c4ee800/bin"
+            }
+        },
+        shared = true,
+        version = "7.1.1",
+        links = {
+            "avcodec",
+            "avdevice",
+            "avfilter",
+            "avformat",
+            "avutil",
+            "postproc",
+            "swresample",
+            "swscale",
+            "drm"
+        }
+    },
+    rubberband = {
+        __enabled = true,
+        links = {
+            "rubberband",
+            "fftw3",
+            "samplerate"
+        },
+        __requirestr = "rubberband",
+        shared = true,
+        version = "4.0.0",
+        libfiles = {
+            "/usr/lib64/librubberband.so",
+            "/usr/lib64/libfftw3.so",
+            "/usr/lib64/libsamplerate.so"
+        }
+    },
+    spdlog = {
+        shflags = "-pthread",
+        ldflags = "-pthread",
+        version = "1.15.3",
+        __enabled = true,
+        links = {
+            "spdlog",
+            "fmt"
+        },
+        __requirestr = "spdlog",
+        shared = true,
+        defines = {
+            "SPDLOG_SHARED_LIB",
+            "SPDLOG_COMPILED_LIB",
+            "SPDLOG_FMT_EXTERNAL"
+        },
+        libfiles = {
+            "/usr/lib64/libspdlog.so",
+            "/usr/lib64/libfmt.so"
+        }
+    }
+}

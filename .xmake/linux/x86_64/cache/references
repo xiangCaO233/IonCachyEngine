@@ -1,0 +1,7 @@
+{
+    packages = {
+        "/home/xiang/.xmake/packages/l/libsndio/1.9.0/aa973ae5d04a4f53a02cf28d02c69457",
+        "/home/xiang/.xmake/packages/o/openal-soft/1.24.3/4fbd90ff40a94188a4f696fa3c9eae8a",
+        "/home/xiang/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf"
+    }
+}
