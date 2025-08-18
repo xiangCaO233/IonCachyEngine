@@ -2,6 +2,7 @@
 /libdependencies
 /.cache
 /.idea
+/.xmake
 /.vs
 /.vscode
 /.vim
