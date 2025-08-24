@@ -1,7 +1,6 @@
 #include <ice/core/SourceNode.hpp>
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/AudioTrack.hpp>
-#include <utility>
 
 namespace ice {
 
@@ -50,9 +49,9 @@ void SourceNode::process(AudioBuffer& buffer) {
         // 转换播放位置为纳秒
         using double_seconds = std::chrono::duration<double>;
         callback->timeplaypos_updated(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                double_seconds(static_cast<double>(playback_pos.load()) /
-                               double(format().samplerate))));
+            std::chrono::duration_cast<std::chrono::nanoseconds>(double_seconds(
+                static_cast<double>(playback_pos.load()) /
+                double(ice::ICEConfig::internal_format.samplerate))));
     }
 
     if (volume != 1.f) {
