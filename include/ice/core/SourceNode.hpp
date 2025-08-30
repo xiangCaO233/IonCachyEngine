@@ -89,7 +89,7 @@ class SourceNode : public IAudioNode {
         const std::chrono::duration<Rep, Period>& time_pos) {
         // 获取音轨的采样率
         const auto sample_rate =
-            static_cast<double>(track->get_media_info().format.samplerate);
+            static_cast<double>(ice::ICEConfig::internal_format.samplerate);
         if (sample_rate == 0) {
             return;
         }
