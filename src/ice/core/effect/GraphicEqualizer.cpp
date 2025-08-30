@@ -1,7 +1,6 @@
 #include <cmath>
 #include <cstring>
 #include <ice/core/effect/GraphicEqualizer.hpp>
-#include <utility>
 
 namespace ice {
 GraphicEqualizer::GraphicEqualizer(

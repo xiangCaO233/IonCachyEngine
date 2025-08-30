@@ -71,7 +71,7 @@ void TimeStretcher::apply_effect(AudioBuffer& output,
                                  const AudioBuffer& input) {
     if (!stretcher) {
         // 需要拉伸且不存在拉伸器-在此初始化
-        stretcher = std::make_unique<RStretcher>(output.afmt);
+        stretcher = std::make_unique<RStretcher>(input.afmt);
     }
     // 更新拉伸倍率
     if (stretcher->get_stretch_ratio() != actual_stretch_ratio) {
