@@ -14,7 +14,7 @@ SourceNode::~SourceNode() = default;
 void SourceNode::process(AudioBuffer& buffer) {
     if (!is_playing.load()) return;
 
-    buffer.resize(track->get_media_info().format, buffer.num_frames());
+    buffer.resize(ice::ICEConfig::internal_format, buffer.num_frames());
 
     auto gained_frames = track->read(buffer, playback_pos, buffer.num_frames());
 

@@ -3,10 +3,9 @@
 #include <SDL3/SDL_init.h>
 #include <fmt/base.h>
 
+#include <ice/config/config.hpp>
+#include <ice/manage/AudioBuffer.hpp>
 #include <ice/out/play/sdl/SDLPlayer.hpp>
-
-#include "ice/config/config.hpp"
-#include "ice/manage/AudioBuffer.hpp"
 
 namespace ice {
 std::atomic<bool> SDLPlayer::sdl_inited{false};

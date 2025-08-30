@@ -4,12 +4,11 @@
 #include <SDL3/SDL.h>
 
 #include <atomic>
+#include <ice/config/config.hpp>
+#include <ice/out/IReceiver.hpp>
 #include <mutex>
 #include <thread>
 #include <vector>
-
-#include "ice/config/config.hpp"
-#include "ice/out/IReceiver.hpp"
 
 namespace ice {
 struct SDLAudioDeviceInfo {

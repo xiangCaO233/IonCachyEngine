@@ -3,9 +3,8 @@
 
 #include <atomic>
 #include <cmath>
+#include <ice/core/effect/IEffectNode.hpp>
 #include <ice/core/effect/rubberband/RStretcher.hpp>
-
-#include "ice/core/effect/IEffectNode.hpp"
 
 namespace ice {
 class PitchAlter : public IEffectNode {
@@ -34,6 +33,8 @@ class PitchAlter : public IEffectNode {
 
     // 获取音高倍率变化值
     inline double scale() const { return pitch_scale.load(); }
+
+    void process(AudioBuffer& buffer) override;
 
    protected:
     // 应用变调器

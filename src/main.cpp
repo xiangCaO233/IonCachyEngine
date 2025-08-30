@@ -34,10 +34,11 @@ void test() {
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
     file1 =
-        "/home/xiang/Documents/music game maps/初音ミク 湊貴大 - 朧月/初音ミク "
-        "湊貴大 - 朧月.mp3";
+        "/home/xiang/Documents/MusicMapRepo/osu/(SV)The Koxx - A Fool Moon "
+        "Night/audio.mp3";
     auto file2 =
-        "/home/xiang/Documents/music game maps/osu/Akasha/Snare 3 - B.wav";
+        "/home/xiang/Documents/MusicMapRepo/osu/1134062 LeaF - "
+        "Mopemope/audio.mp3";
 #endif  //__APPLE__
     // test
     ice::AudioPool audiopool;
