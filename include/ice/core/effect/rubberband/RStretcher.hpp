@@ -4,6 +4,7 @@
 #include <rubberband/RubberBandStretcher.h>
 
 #include <atomic>
+#include <cmath>
 
 #include "ice/manage/AudioBuffer.hpp"
 #include "ice/manage/AudioFormat.hpp"
@@ -47,6 +48,13 @@ class RStretcher {
 
     // 流式处理
     inline void process(AudioBuffer& output, const AudioBuffer& input) {
+        if (const auto EPSILON = 1e-6;
+            std::fabs(palt_ratio - 1.0) <= EPSILON &&
+            std::fabs(stretcher_ratio - 1.0) <= EPSILON) {
+            // 快速通道
+            output += input;
+            return;
+        }
         const size_t input_frames = input.num_frames();
         const size_t output_frames_capacity = output.num_frames();
         const uint16_t num_channels = input.afmt.channels;
