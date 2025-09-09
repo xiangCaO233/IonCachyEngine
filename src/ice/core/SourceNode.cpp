@@ -32,6 +32,7 @@ void SourceNode::process(AudioBuffer& buffer) {
             playback_pos = 0;
         } else {
             playback_pos.store(track->num_frames());
+            pause();
         }
 
         // 通知回调播放完成一遍
