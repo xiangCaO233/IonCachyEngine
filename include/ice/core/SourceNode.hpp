@@ -105,7 +105,7 @@ class SourceNode : public IAudioNode {
         const auto frame_position = static_cast<size_t>(seconds * sample_rate);
 
         // 安全地设置播放位置 (边界检查)
-        const auto total_frames = track->get_media_info().frame_count;
+        const auto total_frames = track->num_frames();
         const auto final_position = std::min(frame_position, total_frames);
 
         // 原子地存储
@@ -133,7 +133,7 @@ class SourceNode : public IAudioNode {
         // 步骤 1: 获取总帧数和采样率
         const size_t total_frames_val = num_frames();
         const auto sample_rate =
-            static_cast<double>(track->get_media_info().format.samplerate);
+            static_cast<double>(ice::ICEConfig::internal_format.samplerate);
 
         // 防御性检查
         if (sample_rate == 0 || total_frames_val == 0) {
