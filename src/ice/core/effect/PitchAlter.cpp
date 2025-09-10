@@ -11,7 +11,7 @@ void PitchAlter::process(AudioBuffer& buffer) {
     if (get_inputnode()) {
         // 拉取数据
         get_inputnode()->process(input_buf);
-        if (pitch_scale.load() - 1. < 0.001f) {
+        if (std::abs(pitch_scale.load() - 1.) < 0.001f) {
             // 直通优化
             buffer += input_buf;
             return;
