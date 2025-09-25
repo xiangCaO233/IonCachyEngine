@@ -1,5 +1,6 @@
 #include <cmath>
 #include <ice/core/effect/filter/BiquadFilter.hpp>
+#include <numbers>
 
 namespace ice {
 
@@ -7,7 +8,7 @@ namespace ice {
 void BiquadFilter::set_peaking(double sample_rate, double center_freq_hz,
                                double q, double gain_db) {
     const double A = std::pow(10.0, gain_db / 40.0);
-    const double w0 = 2.0 * M_PI * center_freq_hz / sample_rate;
+    const double w0 = 2.0 * std::numbers::pi * center_freq_hz / sample_rate;
     const double cos_w0 = std::cos(w0);
     const double sin_w0 = std::sin(w0);
     const double alpha = sin_w0 / (2.0 * q);
