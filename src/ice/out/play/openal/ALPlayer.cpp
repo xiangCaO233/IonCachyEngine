@@ -48,6 +48,7 @@ bool ALPlayer::open(std::string_view devicename) {
         alcMakeContextCurrent(ctx);
         alGetError();
     }
+    return true;
 }
 
 // 关闭sdl设备,释放资源
