@@ -2,7 +2,7 @@
 #include <vector>
 
 namespace ice {
-#ifdef __APPLE__
+#ifndef __linux__
 // 构造函数
 AudioBuffer::AudioBuffer(const AudioDataFormat& format, size_t num_frames)
     : afmt(format) {
