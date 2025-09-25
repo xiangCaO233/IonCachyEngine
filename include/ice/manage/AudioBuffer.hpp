@@ -11,7 +11,7 @@
 #include <algorithm>
 #endif  //__APPLE__
 namespace ice {
-#ifdef __APPLE__
+#ifndef __linux__
 class AudioBuffer {
    public:
     // --- Public 接口与你的优化版本完全一致 ---
@@ -82,15 +82,15 @@ class AudioBuffer {
     void sync_pointers();
 };
 #else
-#if defined(_MSC_VER)
-#include <malloc.h>
-// 适用于 Microsoft Visual C++
-#define ICE_RESTRICT __declspec(restrict)
-#else
-// 适用于 GCC 和 Clang
+// #if defined(_MSC_VER)
+// #include <malloc.h>
+// // 适用于 Microsoft Visual C++
+// #define ICE_RESTRICT __declspec(restrict)
+// #else
+// // 适用于 GCC 和 Clang
 #define ICE_RESTRICT __restrict__
 #include <mm_malloc.h>
-#endif
+// #endif
 
 // 分配器
 template <typename T, size_t Alignment>

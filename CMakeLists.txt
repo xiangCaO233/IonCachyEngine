@@ -10,7 +10,7 @@ if(APPLE)
 
 else()
   if(MSVC)
-    add_compile_options("/arch:AVX2")
+    # add_compile_options("/arch:AVX2")
   else()
     add_compile_options("-mavx2")
   endif()
