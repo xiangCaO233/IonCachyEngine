@@ -78,32 +78,14 @@ add_library(IonCachyEngin SHARED ${LIB_SOURCES})
 
 add_executable(testIonCachyEngin ${SOURCES})
 
-if(WIN32)
-  target_link_libraries(
-    testIonCachyEngin
-    PUBLIC fmt::fmt OpenAL::OpenAL
-           E:\\Software\\vcpkg\\installed\\x64-windows\\lib\\rubberband.lib
-           SDL3::SDL3 ${FFLIB})
-  target_link_libraries(
-    IonCachyEngin-dev
-    PUBLIC fmt::fmt OpenAL::OpenAL
-           E:\\Software\\vcpkg\\installed\\x64-windows\\lib\\rubberband.lib
-           SDL3::SDL3 ${FFLIB})
-  target_link_libraries(
-    IonCachyEngin
-    PUBLIC fmt::fmt OpenAL::OpenAL
-           E:\\Software\\vcpkg\\installed\\x64-windows\\lib\\rubberband.lib
-           SDL3::SDL3 ${FFLIB})
-else()
-  target_link_libraries(
-    testIonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                             SDL3::SDL3 ${FFLIB})
-  target_link_libraries(
-    IonCachyEngin-dev PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                             SDL3::SDL3 ${FFLIB})
+target_link_libraries(
+  testIonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
+                           SDL3::SDL3 ${FFLIB})
 
-  target_link_libraries(
-    IonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
-                         SDL3::SDL3 ${FFLIB})
+target_link_libraries(
+  IonCachyEngin-dev PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband
+                           SDL3::SDL3 ${FFLIB})
 
-endif(WIN32)
+target_link_libraries(
+  IonCachyEngin PUBLIC fmt::fmt OpenAL::OpenAL PkgConfig::rubberband SDL3::SDL3
+                       ${FFLIB})
