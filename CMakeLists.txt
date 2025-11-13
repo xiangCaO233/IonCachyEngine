@@ -33,11 +33,62 @@ find_package(SDL3 REQUIRED)
 
 # rubberband库
 pkg_check_modules(rubberband REQUIRED IMPORTED_TARGET rubberband)
+if(CMAKE_CROSSCOMPILING)
+    # 修复 rubberband 的包含路径
+    set_target_properties(PkgConfig::rubberband PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SYSROOT}/include"
+    )
+
+    # ==================== 这是新增的关键修正 ====================
+    # 我们将清理掉从主机 pkg-config 带来的不兼容的链接库/标志
+    
+    # 首先，获取被污染的链接库列表
+    get_target_property(RUBBERBAND_LIBS PkgConfig::rubberband INTERFACE_LINK_LIBRARIES)
+    message(STATUS "Original rubberband libs (from host pkg-config): ${RUBBERBAND_LIBS}")
+
+    # 创建一个新的、干净的列表
+    set(CLEANED_RUBBERBAND_LIBS "")
+    
+    # 遍历所有被污染的库/标志
+    foreach(LIB ${RUBBERBAND_LIBS})
+        # 如果某个条目不是 "-framework Accelerate"，我们就把它加入到干净列表中
+        # 注意：这里需要精确匹配
+        if(NOT (LIB STREQUAL "-framework" OR LIB STREQUAL "Accelerate"))
+            list(APPEND CLEANED_RUBBERBAND_LIBS ${LIB})
+        endif()
+    endforeach()
+    
+    # 用我们清理过的列表，覆盖掉原来的 INTERFACE_LINK_LIBRARIES 属性
+    set_target_properties(PkgConfig::rubberband PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${CLEANED_RUBBERBAND_LIBS}"
+    )
+    
+    message(STATUS "Cleaned rubberband libs for cross-compiling: ${CLEANED_RUBBERBAND_LIBS}")
+    # ======================== 修正结束 ========================
+endif()
+
 
 # ffmpeg
 if(WIN32)
-  find_package(FFMPEG REQUIRED)
-  set(FFLIB ${FFMPEG_LIBRARIES})
+  # find_package(FFMPEG REQUIRED)
+  # set(FFLIB ${FFMPEG_LIBRARIES})
+  find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED 
+    libavcodec 
+    libavformat 
+    libavutil 
+    libavdevice 
+    libavfilter 
+    libswscale 
+    libswresample
+)
+
+# 设置变量以保持兼容性
+set(FFMPEG_FOUND TRUE)
+set(FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS})
+set(FFMPEG_LIBRARIES ${FFMPEG_LIBRARIES})
+set(FFLIB ${FFMPEG_LIBRARIES})
+
 else()
   pkg_check_modules(ffmpeg-base REQUIRED IMPORTED_TARGET libswresample
                     libavcodec libavformat)

@@ -1,4 +1,5 @@
 /build
+/build-windows-release
 /libdependencies
 /.cache
 /.idea
