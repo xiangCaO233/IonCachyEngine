@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cstddef>
 
-namespace ice {
-class PlayCallBack {
-   public:
+namespace ice
+{
+class PlayCallBack
+{
+public:
     // 构造PlayCallBack
     PlayCallBack() = default;
     // 析构PlayCallBack

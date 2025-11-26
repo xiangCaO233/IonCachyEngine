@@ -10,20 +10,23 @@
 #include <thread>
 #include <vector>
 
-namespace ice {
-struct SDLAudioDeviceInfo {
+namespace ice
+{
+struct SDLAudioDeviceInfo
+{
     // 人类可读的设备名, e.g., "Realtek Digital Output"
     std::string name;
     // SDL/后端使用的设备ID
     SDL_AudioDeviceID id;
 };
-class SDLPlayer : public IReceiver {
-   public:
+class SDLPlayer : public IReceiver
+{
+public:
     explicit SDLPlayer(
         const AudioDataFormat& format = ICEConfig::internal_format);
     static std::atomic<bool> sdl_inited;
-    static bool init_backend();
-    static void quit_backend();
+    static bool              init_backend();
+    static void              quit_backend();
 
     // 列出输出设备
     static std::vector<SDLAudioDeviceInfo> list_devices();
@@ -57,11 +60,12 @@ class SDLPlayer : public IReceiver {
     // sdl音频线程函数
     void audio_thread_loop();
 
-    inline SDL_AudioDeviceID get_current_device() const {
+    inline SDL_AudioDeviceID get_current_device() const
+    {
         return current_device;
     }
 
-   private:
+private:
     // 播放器格式
     AudioDataFormat playformat;
 
@@ -69,17 +73,17 @@ class SDLPlayer : public IReceiver {
     AudioBuffer buffer;
 
     // 播放器是否正在播放
-    std::atomic<bool> running{false};
-    std::atomic<bool> paused{false};
+    std::atomic<bool> running{ false };
+    std::atomic<bool> paused{ false };
 
     // 当前播放设备
-    SDL_AudioDeviceID current_device{0};
+    SDL_AudioDeviceID current_device{ 0 };
 
     // sdl音频流
-    SDL_AudioStream* audio_stream{nullptr};
+    SDL_AudioStream* audio_stream{ nullptr };
 
     // sdl推送循环线程
-    std::mutex source_mutex;
+    std::mutex  source_mutex;
     std::thread sdl_audio_thread;
 };
 }  // namespace ice

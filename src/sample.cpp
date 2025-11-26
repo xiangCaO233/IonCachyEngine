@@ -2,14 +2,16 @@
 #include <iostream>
 #include <memory>
 
-extern "C" {
+extern "C"
+{
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/mem.h>
 }
-int __main() {
+int __main()
+{
     // AVFormatContext* format = nullptr;
 
     // AVCALL_CHECK(avformat_open_input(&format, file, nullptr, nullptr));

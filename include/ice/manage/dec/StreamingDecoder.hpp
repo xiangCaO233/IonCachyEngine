@@ -7,10 +7,12 @@
 
 #include "ice/manage/dec/IDecoder.hpp"
 
-namespace ice {
+namespace ice
+{
 // TODO(xiang 2025-07-11): 实现流式解码器
-class StreamingDecoder : public IDecoder {
-   public:
+class StreamingDecoder : public IDecoder
+{
+public:
     // 工厂方法
     [[nodiscard]] static std::unique_ptr<StreamingDecoder> create(
         std::string_view path, const ice::AudioDataFormat& target_format,
@@ -26,11 +28,11 @@ class StreamingDecoder : public IDecoder {
 
     size_t num_frames() const override { return 0; }
 
-   private:
+private:
     // 构造StreamingDecoder
-    explicit StreamingDecoder(std::string_view path,
-                              const ice::AudioDataFormat& target_format,
-                              ThreadPool& thread_pool,
+    explicit StreamingDecoder(std::string_view                 path,
+                              const ice::AudioDataFormat&      target_format,
+                              ThreadPool&                      thread_pool,
                               std::shared_ptr<IDecoderFactory> factory);
 };
 

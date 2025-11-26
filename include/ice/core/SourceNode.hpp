@@ -10,9 +10,11 @@
 #include "ice/core/IAudioNode.hpp"
 #include "ice/core/PlayCallBack.hpp"
 
-namespace ice {
-class SourceNode : public IAudioNode {
-   public:
+namespace ice
+{
+class SourceNode : public IAudioNode
+{
+public:
     // 构造SourceNode
     explicit SourceNode(std::shared_ptr<AudioTrack> track);
     // 析构SourceNode
@@ -52,14 +54,15 @@ class SourceNode : public IAudioNode {
     inline void set_playpos(size_t frame_pos) { playback_pos.store(frame_pos); }
 
     // 添加回调
-    inline void add_playcallback(
-        const std::shared_ptr<PlayCallBack>& callback) {
+    inline void add_playcallback(const std::shared_ptr<PlayCallBack>& callback)
+    {
         callbacks.insert(callback);
     }
 
     // 移除回调
     inline void remove_playcallback(
-        const std::shared_ptr<PlayCallBack>& callback) {
+        const std::shared_ptr<PlayCallBack>& callback)
+    {
         callbacks.erase(callback);
     }
 
@@ -84,15 +87,16 @@ class SourceNode : public IAudioNode {
      * std::ratio<1, 1000> 代表毫秒)。
      * @param time_pos 从音轨起始点开始计算的时间段。
      */
-    template <typename Rep, typename Period>
-    inline void set_playpos(
-        const std::chrono::duration<Rep, Period>& time_pos) {
+    template<typename Rep, typename Period>
+    inline void set_playpos(const std::chrono::duration<Rep, Period>& time_pos)
+    {
         // 获取音轨的采样率
         const auto sample_rate =
             static_cast<double>(ice::ICEConfig::internal_format.samplerate);
-        if (sample_rate == 0) {
-            return;
-        }
+        if ( sample_rate == 0 )
+            {
+                return;
+            }
 
         // 将任何传入的时间单位，都安全地、精确地转换为“秒”
         // 我们使用一个以 double 为基础的 duration
@@ -105,7 +109,7 @@ class SourceNode : public IAudioNode {
         const auto frame_position = static_cast<size_t>(seconds * sample_rate);
 
         // 安全地设置播放位置 (边界检查)
-        const auto total_frames = track->num_frames();
+        const auto total_frames   = track->num_frames();
         const auto final_position = std::min(frame_position, total_frames);
 
         // 原子地存储
@@ -116,7 +120,8 @@ class SourceNode : public IAudioNode {
     inline size_t num_frames() const { return track->num_frames(); }
 
     // 获取音轨原始格式
-    inline const AudioDataFormat& format() const {
+    inline const AudioDataFormat& format() const
+    {
         return track->get_media_info().format;
     }
 
@@ -129,16 +134,18 @@ class SourceNode : public IAudioNode {
      *
      * @return std::chrono::nanoseconds 表示总时长的对象。
      */
-    [[nodiscard]] inline std::chrono::nanoseconds total_time() const {
+    [[nodiscard]] inline std::chrono::nanoseconds total_time() const
+    {
         // 步骤 1: 获取总帧数和采样率
         const size_t total_frames_val = num_frames();
-        const auto sample_rate =
+        const auto   sample_rate =
             static_cast<double>(ice::ICEConfig::internal_format.samplerate);
 
         // 防御性检查
-        if (sample_rate == 0 || total_frames_val == 0) {
-            return std::chrono::nanoseconds(0);
-        }
+        if ( sample_rate == 0 || total_frames_val == 0 )
+            {
+                return std::chrono::nanoseconds(0);
+            }
 
         // 计算总时长（以秒为单位的浮点数）
         // 总时长 = 总帧数 / (帧/秒)
@@ -149,7 +156,7 @@ class SourceNode : public IAudioNode {
         // 这是最关键、最能体现 std::chrono 威力的一步。
 
         // 创建一个以 double 为基础的秒单位的 duration 对象
-        using double_seconds = std::chrono::duration<double>;
+        using double_seconds   = std::chrono::duration<double>;
         const auto duration_fp = double_seconds(duration_in_seconds);
 
         // 使用 std::chrono::duration_cast 将其安全地转换为纳秒
@@ -159,7 +166,7 @@ class SourceNode : public IAudioNode {
             duration_fp);
     }
 
-   private:
+private:
     // 轨道指针
     std::shared_ptr<AudioTrack> track;
 
@@ -167,16 +174,16 @@ class SourceNode : public IAudioNode {
     std::set<std::shared_ptr<PlayCallBack>> callbacks;
 
     // 播放位置
-    std::atomic<size_t> playback_pos{0};
+    std::atomic<size_t> playback_pos{ 0 };
 
     // 音源音量
-    std::atomic<float> volume{0.4f};
+    std::atomic<float> volume{ 0.4f };
 
     // 音源是否循环(到结尾是否自动置零播放位置)
-    std::atomic<bool> is_looping{false};
+    std::atomic<bool> is_looping{ false };
 
     // 音源是否正在播放
-    std::atomic<bool> is_playing{false};
+    std::atomic<bool> is_playing{ false };
 
     // 应用音量到缓冲区
     void apply_volume(AudioBuffer& buffer) const;

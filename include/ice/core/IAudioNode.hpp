@@ -3,11 +3,13 @@
 
 #include "ice/manage/AudioBuffer.hpp"
 
-namespace ice {
+namespace ice
+{
 
 // 节点接口
-class IAudioNode {
-   public:
+class IAudioNode
+{
+public:
     // 构造IAudioNode
     IAudioNode() = default;
     // 析构IAudioNode

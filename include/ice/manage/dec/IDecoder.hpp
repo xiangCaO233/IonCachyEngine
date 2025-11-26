@@ -5,10 +5,12 @@
 #include <ice/manage/AudioBuffer.hpp>
 #include <span>
 
-namespace ice {
+namespace ice
+{
 class AudioTrack;
-class IDecoder {
-   public:
+class IDecoder
+{
+public:
     // 构造IDecoder
     explicit IDecoder() = default;
 

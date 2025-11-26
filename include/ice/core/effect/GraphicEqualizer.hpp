@@ -7,19 +7,22 @@
 #include <numbers>
 #include <vector>
 
-namespace ice {
+namespace ice
+{
 // EQ频段设置
-struct EQBandOptions {
+struct EQBandOptions
+{
     double center_freq_hz;
     // 默认Q值
-    double q_factor{std::numbers::sqrt2};
+    double q_factor{ std::numbers::sqrt2 };
     // 默认增益(dB)
-    double gain_db{0.0};
+    double gain_db{ 0.0 };
 };
 
 // 均衡器
-class GraphicEqualizer : public IEffectNode {
-   public:
+class GraphicEqualizer : public IEffectNode
+{
+public:
     // 构造时传入一个频段列表
     explicit GraphicEqualizer(const std::vector<double>& center_frequencies);
 
@@ -41,20 +44,22 @@ class GraphicEqualizer : public IEffectNode {
      * @param band_index 要修改的频段的索引 (从0开始)。
      * @param q          新的Q因子值，必须为正数。
      */
-    void set_band_q_factor(size_t band_index, float q) {
+    void set_band_q_factor(size_t band_index, float q)
+    {
         // 确保索引有效.且Q值为正数
-        if (band_index < bands.size() && q > 0.0f) {
-            bands[band_index].q_factor = q;
-            // 标记滤波器需要更新
-            needs_update = true;
-        }
+        if ( band_index < bands.size() && q > 0.0f )
+            {
+                bands[band_index].q_factor = q;
+                // 标记滤波器需要更新
+                needs_update = true;
+            }
     }
 
-   protected:
+protected:
     // 应用均衡器
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
-   private:
+private:
     // 当参数改变时,重新计算滤波器系数
     void update_filters();
 
@@ -66,10 +71,10 @@ class GraphicEqualizer : public IEffectNode {
     std::vector<std::vector<BiquadFilter>> filter_chains;
 
     // 采样率
-    double sample_rate{0.0};
+    double sample_rate{ 0.0 };
 
     // 滤波器系数是否需要重新计算
-    bool needs_update{true};
+    bool needs_update{ true };
 };
 
 }  // namespace ice

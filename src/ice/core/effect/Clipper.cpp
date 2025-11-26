@@ -1,6 +1,7 @@
 #include <ice/core/effect/Clipper.hpp>
 
-namespace ice {
+namespace ice
+{
 // 构造Clipper
 Clipper::Clipper() {}
 

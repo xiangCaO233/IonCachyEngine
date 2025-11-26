@@ -7,10 +7,12 @@
 #include "ice/core/IAudioNode.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 
-namespace ice {
+namespace ice
+{
 // 混音总线(可选)
-class MixBus : public IAudioNode {
-   public:
+class MixBus : public IAudioNode
+{
+public:
     // 构造MixBus
     MixBus() = default;
     // 析构MixBus
@@ -24,7 +26,7 @@ class MixBus : public IAudioNode {
 
     inline void clear() { sources.clear(); }
 
-   private:
+private:
     // 来源表
     std::set<std::shared_ptr<ice::IAudioNode>> sources;
 

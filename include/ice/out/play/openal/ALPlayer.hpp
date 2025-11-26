@@ -5,18 +5,21 @@
 
 #include "ice/out/IReceiver.hpp"
 
-namespace ice {
+namespace ice
+{
 struct ALCdevice;
-struct ALAudioDeviceInfo {
+struct ALAudioDeviceInfo
+{
     // 人类可读的设备名, e.g., "Realtek Digital Output"
     std::string name;
 };
 class ALBackend;
-class ALPlayer : public IReceiver {
-   public:
+class ALPlayer : public IReceiver
+{
+public:
     static std::atomic<bool> al_inited;
-    static bool init_backend();
-    static void quit_backend();
+    static bool              init_backend();
+    static void              quit_backend();
 
     // 列出输出设备
     static std::vector<ALAudioDeviceInfo> list_devices();
@@ -40,9 +43,9 @@ class ALPlayer : public IReceiver {
     // 查询状态
     bool is_running() const override;
 
-   private:
+private:
     std::unique_ptr<ALBackend> sdlimpl;
-    std::atomic<bool> paused{false};
+    std::atomic<bool>          paused{ false };
 };
 }  // namespace ice
 

@@ -20,7 +20,8 @@
 #include "ice/out/play/sdl/SDLPlayer.hpp"
 #include "ice/thread/ThreadPool.hpp"
 
-void test() {
+void test()
+{
     ice::ThreadPool thread_pool(8);
 #ifdef __APPLE__
     auto file1 = "/Users/2333xiang/Music/Tensions - チョコレーション.mp3";
@@ -42,33 +43,41 @@ void test() {
 #endif  //__APPLE__
     // test
     ice::AudioPool audiopool;
-    auto track1 = audiopool.get_or_load(thread_pool, file1);
-    track1 = audiopool.get_or_load(thread_pool, file1,
-                                   ice::CachingStrategy::STREAMING);
+    auto           track1 = audiopool.get_or_load(thread_pool, file1);
+    track1                = audiopool.get_or_load(
+        thread_pool, file1, ice::CachingStrategy::STREAMING);
 
     auto track2 = audiopool.get_or_load(thread_pool, file2);
-    track2 = audiopool.get_or_load(thread_pool, file2);
+    track2      = audiopool.get_or_load(thread_pool, file2);
 
     // 获取音频轨道信息
-    fmt::print("frames:{},{}\n", track1->get_media_info().frame_count,
+    fmt::print("frames:{},{}\n",
+               track1->get_media_info().frame_count,
                track2->get_media_info().frame_count);
-    fmt::print("channels:{},{}\n", track1->get_media_info().format.channels,
+    fmt::print("channels:{},{}\n",
+               track1->get_media_info().format.channels,
                track2->get_media_info().format.channels);
-    fmt::print("samplerate:{},{}\n", track1->get_media_info().format.samplerate,
+    fmt::print("samplerate:{},{}\n",
+               track1->get_media_info().format.samplerate,
                track2->get_media_info().format.samplerate);
 
     ice::ALPlayer::init_backend();
     auto ds = ice::ALPlayer::list_devices();
-    std::ranges::for_each(ds, [](const ice::ALAudioDeviceInfo& device) {
-        fmt::print("al devicename:{}\n", device.name);
-    });
+    std::ranges::for_each(
+        ds,
+        [](const ice::ALAudioDeviceInfo& device)
+            { fmt::print("al devicename:{}\n", device.name); });
 
     ice::SDLPlayer::init_backend();
 
     auto devices = ice::SDLPlayer::list_devices();
-    std::ranges::for_each(devices, [](const auto& device) {
-        fmt::print("deviceid:{},devicename:{}\n", device.id, device.name);
-    });
+    std::ranges::for_each(devices,
+                          [](const auto& device)
+                              {
+                                  fmt::print("deviceid:{},devicename:{}\n",
+                                             device.id,
+                                             device.name);
+                              });
 
     // auto selected_device = devices[0].id;
 
@@ -102,9 +111,9 @@ void test() {
 
     mixer->add_source(pitchalter);
 
-    std::vector<double> freqs = {31,   62,   125,  250,  500,
-                                 1000, 2000, 4000, 8000, 16000};
-    auto eq = std::make_shared<ice::GraphicEqualizer>(freqs);
+    std::vector<double> freqs = { 31,   62,   125,  250,  500,
+                                  1000, 2000, 4000, 8000, 16000 };
+    auto                eq    = std::make_shared<ice::GraphicEqualizer>(freqs);
 
     const double q = std::numbers::sqrt3;
 
@@ -161,40 +170,49 @@ void test() {
     fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
 
     // eq自动控制lambda
-    auto eq_controll = [&]() {
-        int count = 0;
-        while (count < 16) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2500ms));
+    auto eq_controll = [&]()
+        {
+            int count = 0;
+            while ( count < 16 )
+                {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(2500ms));
 
-            eq->set_band_gain_db(0, count * 3);
-            eq->set_band_gain_db(1, count * 3);
-            eq->set_band_gain_db(2, count * 3);
+                    eq->set_band_gain_db(0, count * 3);
+                    eq->set_band_gain_db(1, count * 3);
+                    eq->set_band_gain_db(2, count * 3);
 
-            fmt::print("[q={}]band [31hz,62hz,125hz] gain:{}db\n", q,
-                       count * 3);
+                    fmt::print("[q={}]band [31hz,62hz,125hz] gain:{}db\n",
+                               q,
+                               count * 3);
 
-            ++count;
-        }
-    };
+                    ++count;
+                }
+        };
 
     // pitch自动控制lambda
-    auto pitch_controll = [&]() {
-        int count = 0;
-        while (count < 16) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(7500ms));
-            pitchalter->set_pitch_shift(count * 1.5);
-            fmt::print("pitch alt:{}semitones\n", count * 1.5);
-            ++count;
-        }
-    };
+    auto pitch_controll = [&]()
+        {
+            int count = 0;
+            while ( count < 16 )
+                {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(7500ms));
+                    pitchalter->set_pitch_shift(count * 1.5);
+                    fmt::print("pitch alt:{}semitones\n", count * 1.5);
+                    ++count;
+                }
+        };
 
-    std::thread get_actual_play_ratio([&]() {
-        // eq_controll();
-        // pitch_controll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
-        fmt::print("actual playback ratio:{}\n",
-                   stretcher->get_actual_playback_ratio());
-    });
+    std::thread get_actual_play_ratio(
+        [&]()
+            {
+                // eq_controll();
+                // pitch_controll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
+                fmt::print("actual playback ratio:{}\n",
+                           stretcher->get_actual_playback_ratio());
+            });
     get_actual_play_ratio.detach();
 
     std::this_thread::sleep_for(total_time);
@@ -205,7 +223,8 @@ void test() {
     ice::SDLPlayer::quit_backend();
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
     ice::reset_allocation_counters();
     test();
     ice::print_allocation_stats();

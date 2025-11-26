@@ -4,7 +4,7 @@ project(IonCachyEngin)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
+message(STATUS "ENV:$ENV{PATH}")
 # 添加avx指令集编译选项
 if(APPLE)
 

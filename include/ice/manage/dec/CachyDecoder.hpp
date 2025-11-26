@@ -10,17 +10,20 @@
 #include <string_view>
 #include <vector>
 
-namespace ice {
-class CachyDecoder : public IDecoder {
+namespace ice
+{
+class CachyDecoder : public IDecoder
+{
     using ChannelData = std::vector<float>;
 
-   public:
+public:
     // 工厂方法
     [[nodiscard]] static std::unique_ptr<CachyDecoder> create(
         std::string_view path, const ice::AudioDataFormat& target_format,
         ThreadPool& thread_pool, std::shared_ptr<IDecoderFactory> factory);
 
-    size_t num_frames() const override {
+    size_t num_frames() const override
+    {
         const auto& data = get_data();
         // 确定下来的数据获取帧总数
         return data.pcm_data.empty() ? 0 : data.pcm_data[0].size();
@@ -32,10 +35,11 @@ class CachyDecoder : public IDecoder {
     size_t origin(std::vector<std::span<const float>>& origin_data,
                   size_t start_frame, size_t frame_count) override;
 
-   private:
+private:
     // 包含解码结果的结构体
-    struct DecodedData {
-        AudioDataFormat format;
+    struct DecodedData
+    {
+        AudioDataFormat                 format;
         std::vector<std::vector<float>> pcm_data;
     };
 

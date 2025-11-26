@@ -6,12 +6,14 @@
 #include "ice/core/IAudioNode.hpp"
 #include "ice/manage/AudioFormat.hpp"
 
-namespace ice {
+namespace ice
+{
 
-class IReceiver {
-   public:
+class IReceiver
+{
+public:
     // 构造IReceiver
-    explicit IReceiver(const AudioDataFormat &format);
+    explicit IReceiver(const AudioDataFormat& format);
 
     // 析构IReceiver
     virtual ~IReceiver() = default;
@@ -34,18 +36,20 @@ class IReceiver {
 
     // --- 数据源管理 ---
     // 设置要从中拉取数据的音频节点图的最终节点
-    virtual void set_source(std::shared_ptr<IAudioNode> source) {
+    virtual void set_source(std::shared_ptr<IAudioNode> source)
+    {
         data_source = source;
     }
 
-   protected:
-    [[nodiscard]] virtual std::shared_ptr<IAudioNode> get_source() const {
+protected:
+    [[nodiscard]] virtual std::shared_ptr<IAudioNode> get_source() const
+    {
         return data_source;
     }
 
-   private:
+private:
     // 数据来源
-    std::shared_ptr<IAudioNode> data_source{nullptr};
+    std::shared_ptr<IAudioNode> data_source{ nullptr };
 };
 
 }  // namespace ice

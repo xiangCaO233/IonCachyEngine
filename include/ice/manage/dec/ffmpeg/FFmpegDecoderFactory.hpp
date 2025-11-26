@@ -4,17 +4,19 @@
 #include <ice/manage/dec/IDecoderFactory.hpp>
 #include <memory>
 
-namespace ice {
+namespace ice
+{
 class FFmpegDecoderInstance;
-class FFmpegDecoderFactory : public IDecoderFactory {
-   public:
+class FFmpegDecoderFactory : public IDecoderFactory
+{
+public:
     // 探测文件元信息的通用接口
     void probe(std::string_view file_path,
-               MediaInfo& media_info) const override;
+               MediaInfo&       media_info) const override;
 
     // 创建解码器实例接口
     std::unique_ptr<IDecoderInstance> create_instance(
-        std::string_view file_path,
+        std::string_view            file_path,
         const ice::AudioDataFormat& target_format) const override;
 };
 }  // namespace ice

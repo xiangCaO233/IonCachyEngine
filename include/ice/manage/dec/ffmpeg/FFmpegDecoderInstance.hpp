@@ -6,12 +6,14 @@
 
 #include "ice/manage/AudioFormat.hpp"
 
-namespace ice {
+namespace ice
+{
 class FFmpegDecoder;
-class FFmpegDecoderInstance : public IDecoderInstance {
-   public:
+class FFmpegDecoderInstance : public IDecoderInstance
+{
+public:
     // 构造需要对应文件路径
-    explicit FFmpegDecoderInstance(std::string_view file_path,
+    explicit FFmpegDecoderInstance(std::string_view            file_path,
                                    const ice::AudioDataFormat& target_format);
 
     // 需要声明析构函数-隐藏ffmpeg实现细节
@@ -23,9 +25,9 @@ class FFmpegDecoderInstance : public IDecoderInstance {
     size_t read(float** buffer, size_t chunksize) override;
 
     const AudioDataFormat& get_source_format() const override;
-    size_t get_source_total_frames() const override;
+    size_t                 get_source_total_frames() const override;
 
-   private:
+private:
     std::unique_ptr<FFmpegDecoder> ffimpl;
 };
 }  // namespace ice

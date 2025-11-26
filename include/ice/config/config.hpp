@@ -5,16 +5,18 @@
 
 #include "ice/manage/AudioFormat.hpp"
 
-namespace ice {
+namespace ice
+{
 enum class CodecBackend;
 enum class CachingStrategy;
 
-class ICEConfig {
-   public:
+class ICEConfig
+{
+public:
     static AudioDataFormat internal_format;
-    static CodecBackend default_codec_backend;
+    static CodecBackend    default_codec_backend;
     static CachingStrategy default_caching_strategy;
-    static uint32_t default_buffer_size;
+    static uint32_t        default_buffer_size;
 };
 
 }  // namespace ice
