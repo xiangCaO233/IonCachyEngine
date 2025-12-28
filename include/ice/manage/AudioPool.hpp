@@ -52,7 +52,7 @@ public:
 
     // 载入文件到音频池
     template<std::convertible_to<std::string_view> StringLike>
-    [[nodiscard]] std::shared_ptr<AudioTrack>
+    [[nodiscard]] std::weak_ptr<AudioTrack>
     get_or_load(ThreadPool& thread_pool, const StringLike& file,
                 CachingStrategy strategy = CachingStrategy::CACHY)
     {
@@ -63,7 +63,7 @@ public:
             auto                                it = pool.find(sv_name);
             if ( it != pool.end() )
                 {
-                    if ( auto sp = it->second.lock() )
+                    if ( auto sp = it->second )
                         {
                             // 资源已缓存且有效-返回结果
                             return sp;
@@ -82,7 +82,7 @@ public:
         auto it = pool.find(sv_name);
         if ( it != pool.end() )
             {
-                if ( auto sp = it->second.lock() )
+                if ( auto sp = it->second )
                     {
                         // 另一个线程提前写入完成,直接返回它的节果
                         return sp;
@@ -110,7 +110,7 @@ private:
     // 解码器工厂实现
     std::shared_ptr<IDecoderFactory> decoder_factory;
     // 音频轨道池
-    std::unordered_map<std::string, std::weak_ptr<AudioTrack>, StringHash,
+    std::unordered_map<std::string, std::shared_ptr<AudioTrack>, StringHash,
                        std::equal_to<>>
         pool;
 };
