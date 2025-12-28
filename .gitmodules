@@ -1,0 +1,18 @@
+[submodule "3rdpty/sources/ffmpeg"]
+	path = 3rdpty/sources/ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "3rdpty/sources/rubberband"]
+	path = 3rdpty/sources/rubberband
+	url = https://github.com/breakfastquay/rubberband.git
+[submodule "3rdpty/sources/spdlog"]
+	path = 3rdpty/sources/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "3rdpty/sources/fmt"]
+	path = 3rdpty/sources/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "3rdpty/sources/openal"]
+	path = 3rdpty/sources/openal
+	url = https://github.com/kcat/openal-soft.git
+[submodule "3rdpty/sources/sdl"]
+	path = 3rdpty/sources/sdl
+	url = https://github.com/libsdl-org/SDL.git
