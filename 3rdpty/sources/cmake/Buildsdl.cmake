@@ -18,6 +18,9 @@ set(SDL_X11_XTEST
     CACHE BOOL "Disable SDL3 X11 Xtests" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "Disable SDL3 examples" FORCE)
 set(SDL_INSTALL OFF CACHE BOOL "Disable SDL3 install target" FORCE)
+set(SDL_UNIX_CONSOLE_BUILD
+    ON
+    CACHE BOOL "Build for console, skip windowing deps" FORCE)
 
 # --- 白名单：只开启绝对必要的核心模块 ---
 set(SDL_AUDIO ON CACHE BOOL "Enable Audio subsystem" FORCE)
