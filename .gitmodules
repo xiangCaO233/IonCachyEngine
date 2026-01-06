@@ -17,7 +17,7 @@
 [submodule "3rdpty/sources/openal"]
 	path = 3rdpty/sources/openal
 	url = https://github.com/kcat/openal-soft.git
-    branch = latest
+    branch = master
 [submodule "3rdpty/sources/sdl"]
 	path = 3rdpty/sources/sdl
 	url = https://github.com/libsdl-org/SDL.git
