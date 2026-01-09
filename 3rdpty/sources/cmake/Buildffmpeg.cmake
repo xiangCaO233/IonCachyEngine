@@ -59,7 +59,7 @@ endif()
 
 # 构造最终命令 (不要带引号展开变量)
 if(WIN32)
-    set(FFMPEG_CONFIGURE_CMD sh.exe ./configure ${FFMPEG_CONF_LIST})
+    set(FFMPEG_CONFIGURE_CMD sh.exe ${FFMPEG_SOURCE_DIR}/configure ${FFMPEG_CONF_LIST})
 else()
     set(FFMPEG_CONFIGURE_CMD ${FFMPEG_SOURCE_DIR}/configure ${FFMPEG_CONF_LIST})
 endif()
