@@ -7,9 +7,10 @@
 #include <ice/execptions/buffer_error.hpp>
 #include <ice/manage/AudioFormat.hpp>
 #include <vector>
-#ifdef __APPLE__
+
+#ifdef __clang__
 #    include <algorithm>
-#endif  //__APPLE__
+#endif  //__clang__
 namespace ice
 {
 #ifndef __linux__
@@ -32,19 +33,16 @@ public:
     void resize(const AudioDataFormat& format, size_t num_frames);
     void clear()
     {
-        for ( auto& channel_data : _data )
-            {
-                std::fill(channel_data.begin(), channel_data.end(), 0.0f);
-            }
+        for ( auto& channel_data : _data ) {
+            std::fill(channel_data.begin(), channel_data.end(), 0.0f);
+        }
     }
     void clear_from(size_t start_frame)
     {
-        for ( auto& channel_data : _data )
-            {
-                std::fill(channel_data.begin() + start_frame,
-                          channel_data.end(),
-                          0.0f);
-            }
+        for ( auto& channel_data : _data ) {
+            std::fill(
+                channel_data.begin() + start_frame, channel_data.end(), 0.0f);
+        }
     }
     // 数据访问 (提供与优化版本相同的接口)
     float** raw_ptrs()
@@ -64,23 +62,20 @@ public:
     // 核心操作：使用纯标量循环
     void operator+=(const AudioBuffer& other)
     {
-        if ( afmt != other.afmt || num_frames() != other.num_frames() )
-            {
-                throw ice::buffer_error(
-                    "AudioBuffer_Baseline format mismatch for mixing.");
-            }
+        if ( afmt != other.afmt || num_frames() != other.num_frames() ) {
+            throw ice::buffer_error(
+                "AudioBuffer_Baseline format mismatch for mixing.");
+        }
         const size_t   frames   = num_frames();
         const uint16_t channels = num_channels();
-        for ( uint16_t ch = 0; ch < channels; ++ch )
-            {
-                float*       dest = this->raw_ptrs()[ch];
-                const float* src  = other.raw_ptrs()[ch];
-                // **基准实现：纯粹的、未优化的标量循环**
-                for ( size_t i = 0; i < frames; ++i )
-                    {
-                        dest[i] += src[i];
-                    }
+        for ( uint16_t ch = 0; ch < channels; ++ch ) {
+            float*       dest = this->raw_ptrs()[ch];
+            const float* src  = other.raw_ptrs()[ch];
+            // **基准实现：纯粹的、未优化的标量循环**
+            for ( size_t i = 0; i < frames; ++i ) {
+                dest[i] += src[i];
             }
+        }
     }
 
 private:
@@ -117,8 +112,7 @@ public:
     using size_type       = std::size_t;
     using difference_type = std::ptrdiff_t;
 
-    template<typename U> struct rebind
-    {
+    template<typename U> struct rebind {
         using other = AlignedAllocator<U, Alignment>;
     };
 
@@ -130,15 +124,13 @@ public:
 
     pointer allocate(size_type n)
     {
-        if ( n > std::size_t(-1) / sizeof(T) )
-            {
-                throw std::bad_alloc();
-            }
+        if ( n > std::size_t(-1) / sizeof(T) ) {
+            throw std::bad_alloc();
+        }
         if ( auto p =
-                 static_cast<pointer>(_mm_malloc(n * sizeof(T), Alignment)) )
-            {
-                return p;
-            }
+                 static_cast<pointer>(_mm_malloc(n * sizeof(T), Alignment)) ) {
+            return p;
+        }
         throw std::bad_alloc();
     }
 
@@ -188,13 +180,12 @@ public:
         afmt                 = format;
         _original_num_frames = num_frames;
 
-        if ( afmt.channels == 0 || num_frames == 0 )
-            {
-                _contiguous_buffer.clear();
-                channel_pointers_.clear();
-                _aligned_num_frames = 0;
-                return;
-            }
+        if ( afmt.channels == 0 || num_frames == 0 ) {
+            _contiguous_buffer.clear();
+            channel_pointers_.clear();
+            _aligned_num_frames = 0;
+            return;
+        }
 
         // 同样，计算对齐后的帧数
         _aligned_num_frames =
@@ -210,38 +201,34 @@ public:
 
     inline void clear()
     {
-        if ( !_contiguous_buffer.empty() )
-            {
-                // 对于浮点数0,memset是安全且通常最快的
-                std::memset(_contiguous_buffer.data(),
-                            0,
-                            _contiguous_buffer.size() * sizeof(float));
-            }
+        if ( !_contiguous_buffer.empty() ) {
+            // 对于浮点数0,memset是安全且通常最快的
+            std::memset(_contiguous_buffer.data(),
+                        0,
+                        _contiguous_buffer.size() * sizeof(float));
+        }
     }
     void clear_from(size_t start_frame)
     {
-        if ( start_frame >= _original_num_frames )
-            {
-                return;
-            }
+        if ( start_frame >= _original_num_frames ) {
+            return;
+        }
 
         // 需要清零的帧数
         const size_t frames_to_clear = _original_num_frames - start_frame;
         if ( frames_to_clear == 0 ) return;
 
         // 逐声道清零
-        for ( uint16_t ch = 0; ch < afmt.channels; ++ch )
-            {
-                // 获取第 ch 声道的起始指针
-                float* channel_start_ptr = channel_pointers_[ch];
+        for ( uint16_t ch = 0; ch < afmt.channels; ++ch ) {
+            // 获取第 ch 声道的起始指针
+            float* channel_start_ptr = channel_pointers_[ch];
 
-                // 计算需要清零的内存区域的起始地址
-                float* clear_start_ptr = channel_start_ptr + start_frame;
+            // 计算需要清零的内存区域的起始地址
+            float* clear_start_ptr = channel_start_ptr + start_frame;
 
-                // 调用 memset
-                std::memset(
-                    clear_start_ptr, 0, frames_to_clear * sizeof(float));
-            }
+            // 调用 memset
+            std::memset(clear_start_ptr, 0, frames_to_clear * sizeof(float));
+        }
     }
 
     // 数据访问
@@ -271,11 +258,10 @@ public:
         float** dest_channels = this->raw_ptrs();
         float*  dest_L        = dest_channels[0];
         float*  dest_R        = dest_channels[1];
-        for ( size_t i = 0; i < num_frames; ++i )
-            {
-                dest_L[i] = src[i * 2 + 0];  // 写入左声道
-                dest_R[i] = src[i * 2 + 1];  // 写入右声道
-            }
+        for ( size_t i = 0; i < num_frames; ++i ) {
+            dest_L[i] = src[i * 2 + 0];  // 写入左声道
+            dest_R[i] = src[i * 2 + 1];  // 写入右声道
+        }
     }
     inline void write_interleaved_stereo(const float* src)
     {
@@ -284,52 +270,47 @@ public:
         const size_t aligned_frames = this->aligned_frames_per_channel();
 
         // 我们一次处理8个浮点数（4帧），所以循环步长为4
-        for ( size_t i = 0; i < aligned_frames; i += 4 )
-            {
-                // 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
-                // 我们一次加载两个 __m128 来组成一个 __m256
-                __m256 interleaved_vec = _mm256_loadu_ps(
-                    src + i * 2);  // 使用 unaligned load，因为源不保证对齐
+        for ( size_t i = 0; i < aligned_frames; i += 4 ) {
+            // 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
+            // 我们一次加载两个 __m128 来组成一个 __m256
+            __m256 interleaved_vec = _mm256_loadu_ps(
+                src + i * 2);  // 使用 unaligned load，因为源不保证对齐
 
-                // 解交错
-                // 目标:
-                //   - 一个寄存器包含 [L0, L1, L2, L3, ?, ?, ?, ?]
-                //   - 另一个寄存器包含 [R0, R1, R2, R3, ?, ?, ?, ?]
-                //
-                // 使用 _mm256_shuffle_ps, 控制码 0b11011000 (0xD8)
-                // 它将源向量的元素按 [2,0,3,1]
-                // 的模式重排，分别在低128位和高128位通道内 [L0,R0,L1,R1,
-                // L2,R2,L3,R3] -> [L0,L1,R0,R1, L2,L3,R2,R3]
-                __m256 shuffled =
-                    _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
+            // 解交错
+            // 目标:
+            //   - 一个寄存器包含 [L0, L1, L2, L3, ?, ?, ?, ?]
+            //   - 另一个寄存器包含 [R0, R1, R2, R3, ?, ?, ?, ?]
+            //
+            // 使用 _mm256_shuffle_ps, 控制码 0b11011000 (0xD8)
+            // 它将源向量的元素按 [2,0,3,1]
+            // 的模式重排，分别在低128位和高128位通道内 [L0,R0,L1,R1,
+            // L2,R2,L3,R3] -> [L0,L1,R0,R1, L2,L3,R2,R3]
+            __m256 shuffled =
+                _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
 
-                // 使用 _mm256_permute2f128_ps 跨128位通道重排
-                // 控制码 0b00100000 (0x20)
-                // 它将 shuffled 的低128位和高128位组合成最终的左声道向量
-                // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [L0,L1,L2,L3]
-                __m256 left_vec =
-                    _mm256_permute2f128_ps(shuffled, shuffled, 0x20);
+            // 使用 _mm256_permute2f128_ps 跨128位通道重排
+            // 控制码 0b00100000 (0x20)
+            // 它将 shuffled 的低128位和高128位组合成最终的左声道向量
+            // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [L0,L1,L2,L3]
+            __m256 left_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x20);
 
-                // 控制码 0b00110001 (0x31)
-                // 它将 shuffled 的高128位和低128位组合成最终的右声道向量
-                // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [R0,R1,R2,R3]
-                __m256 right_vec =
-                    _mm256_permute2f128_ps(shuffled, shuffled, 0x31);
+            // 控制码 0b00110001 (0x31)
+            // 它将 shuffled 的高128位和低128位组合成最终的右声道向量
+            // [L0,L1,R0,R1], [L2,L3,R2,R3] -> [R0,R1,R2,R3]
+            __m256 right_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x31);
 
-                // 将解交错后的向量写入各自的对齐内存中
-                _mm256_store_ps(dest[0] + i, left_vec);
-                _mm256_store_ps(dest[1] + i, right_vec);
-            }
+            // 将解交错后的向量写入各自的对齐内存中
+            _mm256_store_ps(dest[0] + i, left_vec);
+            _mm256_store_ps(dest[1] + i, right_vec);
+        }
     }
 
     // 核心操作
     inline void operator+=(const AudioBuffer& other)
     {
-        if ( afmt != other.afmt || num_frames() != other.num_frames() )
-            {
-                throw ice::buffer_error(
-                    "AudioBuffer format mismatch for mixing.");
-            }
+        if ( afmt != other.afmt || num_frames() != other.num_frames() ) {
+            throw ice::buffer_error("AudioBuffer format mismatch for mixing.");
+        }
 
         // 使用 ICE_RESTRICT 告知编译器指针不重叠，允许更激进的优化
         float* const* ICE_RESTRICT       all_dest_channels = this->raw_ptrs();
@@ -339,19 +320,17 @@ public:
         const uint16_t channels       = this->num_channels();
 
         // 循环结构保持不变，但现在它操作在连续内存上，缓存效率极高
-        for ( uint16_t ch = 0; ch < channels; ++ch )
-            {
-                float* ICE_RESTRICT       dest = all_dest_channels[ch];
-                const float* ICE_RESTRICT src  = all_src_channels[ch];
+        for ( uint16_t ch = 0; ch < channels; ++ch ) {
+            float* ICE_RESTRICT       dest = all_dest_channels[ch];
+            const float* ICE_RESTRICT src  = all_src_channels[ch];
 
-                for ( size_t i = 0; i < aligned_frames; i += SIMD_VECTOR_SIZE )
-                    {
-                        __m256 dest_vec   = _mm256_load_ps(dest + i);
-                        __m256 src_vec    = _mm256_load_ps(src + i);
-                        __m256 result_vec = _mm256_add_ps(dest_vec, src_vec);
-                        _mm256_store_ps(dest + i, result_vec);
-                    }
+            for ( size_t i = 0; i < aligned_frames; i += SIMD_VECTOR_SIZE ) {
+                __m256 dest_vec   = _mm256_load_ps(dest + i);
+                __m256 src_vec    = _mm256_load_ps(src + i);
+                __m256 result_vec = _mm256_add_ps(dest_vec, src_vec);
+                _mm256_store_ps(dest + i, result_vec);
             }
+        }
     }
 
 private:
@@ -370,19 +349,17 @@ private:
     // 内部辅助函数，用于根据 _contiguous_buffer 更新指针
     inline void sync_pointers()
     {
-        if ( afmt.channels == 0 )
-            {
-                channel_pointers_.clear();
-                return;
-            }
+        if ( afmt.channels == 0 ) {
+            channel_pointers_.clear();
+            return;
+        }
 
         channel_pointers_.resize(afmt.channels);
         float* base_ptr = _contiguous_buffer.data();
-        for ( uint16_t i = 0; i < afmt.channels; ++i )
-            {
-                // 指针指向连续内存块的正确偏移位置
-                channel_pointers_[i] = base_ptr + i * _aligned_num_frames;
-            }
+        for ( uint16_t i = 0; i < afmt.channels; ++i ) {
+            // 指针指向连续内存块的正确偏移位置
+            channel_pointers_[i] = base_ptr + i * _aligned_num_frames;
+        }
     }
 };
 #endif  //__APPLE__
