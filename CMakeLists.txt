@@ -5,7 +5,11 @@ cmake_minimum_required(VERSION 3.22)
 project(IonCachyEngine LANGUAGES CXX C)
 
 # 全局设置
-set(CMAKE_CXX_STANDARD 26)
+if(APPLE)
+    set(CMAKE_CXX_STANDARD 23)
+else()
+    set(CMAKE_CXX_STANDARD 26)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

@@ -71,12 +71,32 @@ add_dependencies(3rd_rubberband rubberband_project)
 
 # 使用绝对路径关联头文件和库
 target_include_directories(3rd_rubberband INTERFACE "${RUBBERBAND_INSTALL_DIR}/include")
-target_link_libraries(3rd_rubberband INTERFACE "${RUBBERBAND_STATIC_LIB}")
+target_link_libraries(3rd_rubberband 
+    INTERFACE
+    "${RUBBERBAND_STATIC_LIB}"
+)
+
+if(APPLE)
+    find_package(FFTW3 REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SAMPLERATE REQUIRED samplerate)
+    target_include_directories(3rd_rubberband INTERFACE ${FFTW3_INCLUDE_DIRS})
+    target_link_directories(3rd_rubberband INTERFACE "/opt/homebrew/lib")
+    target_link_libraries(3rd_rubberband
+        INTERFACE
+        "${FFTW3_LIBRARY_DIRS}/libfftw3.a"
+        "${SAMPLERATE_LIBRARIES}"
+    )
+endif()
 
 # 系统底层库链接
 if(WIN32)
     # MinGW-UCRT64 静态链接通常需要 pthread
     target_link_libraries(3rd_rubberband INTERFACE pthread)
 else()
-    target_link_libraries(3rd_rubberband INTERFACE m pthread)
+    target_link_libraries(3rd_rubberband INTERFACE m)
+    if(NOT APPLE)
+        target_link_libraries(3rd_rubberband INTERFACE pthread)
+    endif()
 endif()
+
