@@ -54,6 +54,6 @@ set(SDL_LIBUDEV OFF CACHE BOOL "Disable libudev support" FORCE) # udev 用于设
 
 # 将 SDL3 作为子项目包含进来
 add_subdirectory(${SDL_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/sdl_build
-    EXCLUDE_FROM_ALL)
+    EXCLUDE_FROM_ALL SYSTEM)
 
 set_target_properties(SDL3-static PROPERTIES POSITION_INDEPENDENT_CODE ON)

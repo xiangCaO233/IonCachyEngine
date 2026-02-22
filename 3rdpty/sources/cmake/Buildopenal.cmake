@@ -38,7 +38,7 @@ set(ALSOFT_BACKEND_SDL3
 
 # 它会自己处理 PIC、编译器标志等
 add_subdirectory(${OPENAL_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/openal_build
-                 EXCLUDE_FROM_ALL)
+                 EXCLUDE_FROM_ALL SYSTEM)
 
 # OpenAL Soft 在不同平台有不同的系统依赖，我们需要手动添加
 if(APPLE)

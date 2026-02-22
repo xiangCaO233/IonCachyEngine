@@ -28,7 +28,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 确保在 Visual Studio 等 IDE 中不会把 fmt 的目标显示在顶层
 add_subdirectory(${FMT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/fmt_build
-                 EXCLUDE_FROM_ALL)
+                 EXCLUDE_FROM_ALL SYSTEM)
 
 # 为 fmt 目标开启位置无关代码（PIC）
 

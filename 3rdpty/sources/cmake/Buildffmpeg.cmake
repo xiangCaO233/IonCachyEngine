@@ -29,6 +29,13 @@ set(FFMPEG_CONF_LIST
     --prefix=${FFMPEG_INSTALL_DIR}
     --arch=${FFMPEG_ARCH} # 自动探测的结果
     --target-os=${FFMPEG_TARGET_OS} # 自动探测的结果
+    # --- 指定与顶层项目相同的编译器和工具链 ---
+    --cc=${CMAKE_C_COMPILER}
+    --cxx=${CMAKE_CXX_COMPILER}
+    --ar=${CMAKE_AR}
+    --nm=${CMAKE_NM}
+    --ranlib=${CMAKE_RANLIB}
+    # -----------------------------------
     --disable-all
     --disable-autodetect
     --enable-avcodec

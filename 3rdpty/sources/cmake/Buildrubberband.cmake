@@ -1,11 +1,10 @@
 include(ExternalProject)
 
-# =========================================================================
-# 1. 自动映射 CMake 到 Meson 的构建类型
-# =========================================================================
+# 自动映射 CMake 到 Meson 的构建类型
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(RB_BUILD_TYPE "debug")
-    # Debug 模式下我们不需要 march=native 干扰调试，或者保持开启以确保 DSP 性能
+    # Debug 模式下不需要 march=native 干扰调试
+    # 或保持开启以确保 DSP 性能
     set(RB_FLAGS "-g")
 else()
     set(RB_BUILD_TYPE "release")
@@ -16,14 +15,14 @@ message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
 # 定义项目路径配置
 # 强制使用绝对路径，并显著缩短构建路径深度
-# 将构建目录移至 CMAKE_BINARY_DIR (即 cmake-build-xxx 根部)，而不是嵌套在 3rdpty 文件夹深处
-get_filename_component(RUBBERBAND_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sources/rubberband" ABSOLUTE)
+# 将构建目录移至 CMAKE_BINARY_DIR (即 cmake-build-xxx 根部)，
+# 而非嵌套在 3rdpty 文件夹深处
+get_filename_component(RUBBERBAND_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../sources/rubberband" ABSOLUTE)
 set(RUBBERBAND_BUILD_DIR "${CMAKE_BINARY_DIR}/rb_bld")
 set(RUBBERBAND_INSTALL_DIR "${CMAKE_BINARY_DIR}/rb_inst")
 
-# =========================================================================
-# 3. 构造 Meson 配置参数
-# =========================================================================
+# 构造 Meson 配置参数
 set(MESON_SETUP_ARGS
         --prefix=${RUBBERBAND_INSTALL_DIR}
         --libdir=lib
@@ -71,7 +70,7 @@ add_dependencies(3rd_rubberband rubberband_project)
 
 # 使用绝对路径关联头文件和库
 target_include_directories(3rd_rubberband INTERFACE "${RUBBERBAND_INSTALL_DIR}/include")
-target_link_libraries(3rd_rubberband 
+target_link_libraries(3rd_rubberband
     INTERFACE
     "${RUBBERBAND_STATIC_LIB}"
 )

@@ -33,4 +33,4 @@ set(SPDLOG_BUILD_PIC
 # 将 spdlog 作为子项目包含进来 在调用 add_subdirectory 之前，我们已经通过 3rd_fmt (fmt) 提供了 fmt::fmt
 # target spdlog 的 CMake 脚本会自动 find_package(fmt) 或直接找到这个 target
 add_subdirectory(${SPDLOG_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/spdlog_build
-                 EXCLUDE_FROM_ALL)
+                 EXCLUDE_FROM_ALL SYSTEM)
