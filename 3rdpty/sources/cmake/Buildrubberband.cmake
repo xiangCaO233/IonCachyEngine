@@ -191,6 +191,17 @@ if(APPLE)
 	)
 endif()
 
+if(UNIX AND NOT APPLE)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(FFTW3 REQUIRED fftw3)
+	pkg_check_modules(SAMPLERATE REQUIRED samplerate)
+	target_link_libraries(3rd_rubberband
+		INTERFACE
+			${FFTW3_LIBRARIES}
+			${SAMPLERATE_LIBRARIES}
+	)
+endif()
+
 # 系统底层库链接
 if(WIN32)
 	if(MSVC)
