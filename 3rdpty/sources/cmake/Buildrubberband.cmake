@@ -2,6 +2,10 @@ if(MSVC)
 	# 手动把正确的 fftw3 share 路径加入
 	set(FFTW3_DIR "${VCPKG_ROOT}/installed/x64-windows-static/share/fftw3")
 	find_package(FFTW3 CONFIG REQUIRED)
+	set(SampleRate_DIR
+		"${VCPKG_ROOT}/installed/x64-windows-static/share/SampleRate"
+	)
+	find_package(SampleRate CONFIG REQUIRED)
 endif()
 
 include(ExternalProject)
@@ -174,6 +178,7 @@ add_dependencies(3rd_rubberband rubberband_project)
 target_include_directories(3rd_rubberband
 	INTERFACE "${RUBBERBAND_INSTALL_DIR}/include"
 )
+message(STATUS "Include Rubberband headers: ${RUBBERBAND_INSTALL_DIR}/include")
 target_link_libraries(3rd_rubberband
 	INTERFACE "${RUBBERBAND_STATIC_LIB}"
 )

@@ -2,7 +2,7 @@
 if(MSVC)
 	# 手动把正确的 ffmpeg share 路径加入
 	list(APPEND CMAKE_MODULE_PATH
-		"${VCPKG_ROOT}/installed/x64-windows/share/ffmpeg"
+		"${VCPKG_ROOT}/installed/x64-windows-static/share/ffmpeg"
 	)
 	find_package(FFMPEG REQUIRED)
 	add_library(3rd_ffmpeg INTERFACE)
