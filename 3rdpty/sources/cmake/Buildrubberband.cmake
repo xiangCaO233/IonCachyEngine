@@ -60,6 +60,7 @@ if(MSVC)
 		--prefix=${RUBBERBAND_INSTALL_DIR}
 		--libdir=lib
 		--buildtype=${RB_BUILD_TYPE}
+		-Db_vscrt=mt
 		-Ddefault_library=static
 		-Dtests=disabled
 		-Dcmdline=disabled
