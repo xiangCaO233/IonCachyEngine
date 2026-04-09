@@ -38,6 +38,15 @@ if(MSVC)
 	# 1. 指向 vcpkg 目录
 	set(VCPKG_INSTALLED_PATH "${VCPKG_ROOT}/installed/x64-windows-static")
 
+	# 根据主项目的构建类型决定 Meson 的参数
+	if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+		set(RUBBERBAND_BUILD_TYPE "debug")
+		set(RUBBERBAND_CRT "mtd") # 对应 MSVC 的 /MTd
+	else()
+		set(RUBBERBAND_BUILD_TYPE "release")
+		set(RUBBERBAND_CRT "mt") # 对应 MSVC 的 /MT
+	endif()
+
 	# 2. 找到 vcpkg 里的 pkgconf.exe
 	# vcpkg 通常把工具放在 tools/pkgconf 目录下
 	set(PKG_CONFIG_EXE
@@ -60,7 +69,7 @@ if(MSVC)
 		--prefix=${RUBBERBAND_INSTALL_DIR}
 		--libdir=lib
 		--buildtype=${RB_BUILD_TYPE}
-		-Db_vscrt=mt
+		-Db_vscrt=${RUBBERBAND_CRT}
 		-Ddefault_library=static
 		-Dtests=disabled
 		-Dcmdline=disabled
