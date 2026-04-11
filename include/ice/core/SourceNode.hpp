@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <ice/manage/AudioTrack.hpp>
 #include <memory>
 #include <set>
@@ -93,10 +94,9 @@ public:
         // 获取音轨的采样率
         const auto sample_rate =
             static_cast<double>(ice::ICEConfig::internal_format.samplerate);
-        if ( sample_rate == 0 )
-            {
-                return;
-            }
+        if ( sample_rate == 0 ) {
+            return;
+        }
 
         // 将任何传入的时间单位，都安全地、精确地转换为“秒”
         // 我们使用一个以 double 为基础的 duration
@@ -114,6 +114,22 @@ public:
 
         // 原子地存储
         set_playpos(final_position);
+    }
+
+    /**
+     * @brief 设置预定的开始帧（相对于参考源）
+     */
+    inline void set_scheduled_start_frame(size_t frame)
+    {
+        scheduled_start_frame.store(frame);
+    }
+
+    /**
+     * @brief 设置参考位置提供者（通常是 BGM 的播放位置）
+     */
+    inline void set_reference_pos_provider(std::function<size_t()> provider)
+    {
+        ref_pos_provider = std::move(provider);
     }
 
     // 获取音轨总帧数
@@ -142,10 +158,9 @@ public:
             static_cast<double>(ice::ICEConfig::internal_format.samplerate);
 
         // 防御性检查
-        if ( sample_rate == 0 || total_frames_val == 0 )
-            {
-                return std::chrono::nanoseconds(0);
-            }
+        if ( sample_rate == 0 || total_frames_val == 0 ) {
+            return std::chrono::nanoseconds(0);
+        }
 
         // 计算总时长（以秒为单位的浮点数）
         // 总时长 = 总帧数 / (帧/秒)
@@ -184,6 +199,12 @@ private:
 
     // 音源是否正在播放
     std::atomic<bool> is_playing{ false };
+
+    // 预定的开始帧（相对于参考源）
+    std::atomic<size_t> scheduled_start_frame{ 0 };
+
+    // 参考位置提供者
+    std::function<size_t()> ref_pos_provider;
 
     // 应用音量到缓冲区
     void apply_volume(AudioBuffer& buffer) const;
