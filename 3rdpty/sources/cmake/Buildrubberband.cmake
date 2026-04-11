@@ -47,11 +47,14 @@ if(MSVC)
 		set(RUBBERBAND_CRT "mt") # 对应 MSVC 的 /MT
 	endif()
 
-	# 2. 找到 vcpkg 里的 pkgconf.exe
-	# vcpkg 通常把工具放在 tools/pkgconf 目录下
-	set(PKG_CONFIG_EXE
-		"${VCPKG_ROOT}/installed/x64-windows/tools/pkgconf/pkgconf.exe"
-	)
+	# 2. 找到 pkg-config
+	# 交叉编译时必须使用 Linux 原生的 pkg-config
+	set(PKG_CONFIG_EXE "/usr/bin/pkg-config")
+	if(CMAKE_CROSSCOMPILING)
+		# 强制使用系统 pkg-config
+		find_program(PKG_CONFIG_SYSTEM NAMES pkg-config)
+		set(PKG_CONFIG_EXE "${PKG_CONFIG_SYSTEM}")
+	endif()
 
 	# 3. 构造环境变量
 	# 核心：设置 PKG_CONFIG 指向执行文件，设置 PKG_CONFIG_PATH 指向 .pc 文件所在位置
@@ -102,6 +105,7 @@ if(MSVC)
 		meson
 		setup
 		${MESON_SETUP_ARGS}
+		--native-file=/dev/null # 强制重新检测环境
 		"${RUBBERBAND_BUILD_DIR}"
 		"${RUBBERBAND_SOURCE_DIR}"
 
