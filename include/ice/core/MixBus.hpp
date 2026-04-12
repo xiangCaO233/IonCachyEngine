@@ -2,6 +2,7 @@
 #define ICE_MIXBUS_HPP
 
 #include <memory>
+#include <mutex>
 #include <set>
 
 #include "ice/core/IAudioNode.hpp"
@@ -24,11 +25,18 @@ public:
 
     void remove_source(std::shared_ptr<IAudioNode> src);
 
-    inline void clear() { sources.clear(); }
+    inline void clear()
+    {
+        std::lock_guard<std::mutex> lock(sources_mutex);
+        sources.clear();
+    }
 
 private:
     // 来源表
     std::set<std::shared_ptr<ice::IAudioNode>> sources;
+
+    // 保护 sources 的互斥锁
+    std::mutex sources_mutex;
 
     // 缓存的缓冲区
     AudioBuffer temp_buffer;

@@ -22,10 +22,21 @@ public:
     inline void set_playback_ratio(double desired_ratio)
     {
         // 在这里可以对 desired_ratio 进行范围检查
-        if ( desired_ratio >= 0.05 && desired_ratio <= 10.0 )
-            {
-                desired_playback_ratio.store(desired_ratio);
-            }
+        if ( desired_ratio >= 0.05 && desired_ratio <= 10.0 ) {
+            desired_playback_ratio.store(desired_ratio);
+        }
+    }
+
+    /**
+     * @brief 设置期望的音高偏移（半音为单位）。
+     *        0为原音高，>0为升高，<0为降低。
+     * @param semitones 期望的音高偏移半音数。
+     */
+    inline void set_pitch_semitones(double semitones)
+    {
+        if ( semitones >= -24.0 && semitones <= 24.0 ) {
+            desired_pitch_semitones.store(semitones);
+        }
     }
 
     /**
@@ -39,6 +50,11 @@ public:
         return actual_playback_ratio.load();
     }
 
+    [[nodiscard]] inline double get_pitch_semitones() const
+    {
+        return desired_pitch_semitones.load();
+    }
+
 protected:
     // 应用效果实现
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
@@ -46,6 +62,7 @@ protected:
 private:
     // 期望值
     std::atomic<double> desired_playback_ratio{ 1.0 };
+    std::atomic<double> desired_pitch_semitones{ 0.0 };
     // 实际值
     std::atomic<double> actual_playback_ratio{ 1.0 };
     // 实际拉伸倍率
