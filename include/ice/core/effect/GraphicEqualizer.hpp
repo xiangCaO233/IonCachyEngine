@@ -10,8 +10,7 @@
 namespace ice
 {
 // EQ频段设置
-struct EQBandOptions
-{
+struct EQBandOptions {
     double center_freq_hz;
     // 默认Q值
     double q_factor{ std::numbers::sqrt2 };
@@ -47,13 +46,49 @@ public:
     void set_band_q_factor(size_t band_index, float q)
     {
         // 确保索引有效.且Q值为正数
-        if ( band_index < bands.size() && q > 0.0f )
-            {
-                bands[band_index].q_factor = q;
-                // 标记滤波器需要更新
-                needs_update = true;
-            }
+        if ( band_index < bands.size() && q > 0.0f ) {
+            bands[band_index].q_factor = q;
+            // 标记滤波器需要更新
+            needs_update = true;
+        }
     }
+
+    /**
+     * @brief 获取频段数量
+     */
+    size_t get_band_count() const { return bands.size(); }
+
+    /**
+     * @brief 获取指定频段的中心频率
+     */
+    double get_band_frequency(size_t band_index) const
+    {
+        return band_index < bands.size() ? bands[band_index].center_freq_hz
+                                         : 0.0;
+    }
+
+    /**
+     * @brief 获取指定频段的增益(dB)
+     */
+    double get_band_gain_db(size_t band_index) const
+    {
+        return band_index < bands.size() ? bands[band_index].gain_db : 0.0;
+    }
+
+    /**
+     * @brief 获取指定频段的Q因子
+     */
+    double get_band_q_factor(size_t band_index) const
+    {
+        return band_index < bands.size() ? bands[band_index].q_factor : 1.0;
+    }
+
+    /**
+     * @brief 获取 EQ 在指定频率处的整体幅频响应
+     * @param frequency 目标频率 (Hz)
+     * @return 幅度增益 (线性值)
+     */
+    double get_total_magnitude_response(double frequency) const;
 
 protected:
     // 应用均衡器

@@ -17,6 +17,14 @@ public:
     // 对一个音频块进行处理
     void process(float* data, size_t num_frames);
 
+    /**
+     * @brief 获取滤波器在指定频率处的幅频响应 (增益)
+     * @param frequency 目标频率 (Hz)
+     * @param sample_rate 采样率
+     * @return 幅度增益 (线性值)
+     */
+    double get_magnitude_response(double frequency, double sample_rate) const;
+
 private:
     // 滤波器系数
     double b0{ 1.0 };

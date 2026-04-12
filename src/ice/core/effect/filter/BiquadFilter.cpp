@@ -1,4 +1,5 @@
 #include <cmath>
+#include <complex>
 #include <ice/core/effect/filter/BiquadFilter.hpp>
 #include <numbers>
 
@@ -33,21 +34,37 @@ void BiquadFilter::set_peaking(double sample_rate, double center_freq_hz,
 
 void BiquadFilter::process(float* data, size_t num_frames)
 {
-    for ( size_t i = 0; i < num_frames; ++i )
-        {
-            double in = data[i];
+    for ( size_t i = 0; i < num_frames; ++i ) {
+        double in = data[i];
 
-            // 应用滤波器公式
-            double out = b0 * in + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        // 应用滤波器公式
+        double out = b0 * in + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
 
-            // 更新状态
-            x2 = x1;
-            x1 = in;
-            y2 = y1;
-            y1 = out;
+        // 更新状态
+        x2 = x1;
+        x1 = in;
+        y2 = y1;
+        y1 = out;
 
-            // 写回输出
-            data[i] = static_cast<float>(out);
-        }
+        // 写回输出
+        data[i] = static_cast<float>(out);
+    }
 }
+
+double BiquadFilter::get_magnitude_response(double frequency,
+                                            double sample_rate) const
+{
+    const double w = 2.0 * std::numbers::pi * frequency / sample_rate;
+
+    // H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
+    // z^-1 = cos(w) - j*sin(w)
+    const std::complex<double> z_inv1(std::cos(w), -std::sin(w));
+    const std::complex<double> z_inv2 = z_inv1 * z_inv1;
+
+    std::complex<double> num = b0 + b1 * z_inv1 + b2 * z_inv2;
+    std::complex<double> den = 1.0 + a1 * z_inv1 + a2 * z_inv2;
+
+    return std::abs(num / den);
+}
+
 }  // namespace ice
