@@ -87,6 +87,10 @@ if(MSVC)
 		"-Dcpp_args=${RB_FLAGS}"
 	)
 
+	if(CMAKE_CROSSCOMPILING)
+		list(APPEND MESON_SETUP_ARGS "--cross-file=${CMAKE_SOURCE_DIR}/cmake/toolchain/meson-cross-cl.toml")
+	endif()
+
 	# 确定库文件产物路径
 	# MinGW 环境下 Meson 通常生成 librubberband.a
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
