@@ -48,8 +48,11 @@ if(MSVC)
 	endif()
 
 	# 2. 找到 pkg-config
-	# 交叉编译时必须使用 Linux 原生的 pkg-config
-	set(PKG_CONFIG_EXE "/usr/bin/pkg-config")
+	find_program(PKG_CONFIG_EXE NAMES pkg-config pkgconf PATHS "C:/msys64/mingw64/bin" "C:/msys64/usr/bin")
+	if(NOT PKG_CONFIG_EXE)
+		set(PKG_CONFIG_EXE "pkg-config")
+	endif()
+
 	if(CMAKE_CROSSCOMPILING)
 		# 强制使用系统 pkg-config
 		find_program(PKG_CONFIG_SYSTEM NAMES pkg-config)
@@ -92,8 +95,8 @@ if(MSVC)
 	endif()
 
 	# 确定库文件产物路径
-	# MinGW 环境下 Meson 通常生成 librubberband.a
-	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
+	# MSVC 下 Meson 通常生成 rubberband-static.lib
+	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
 
 	# 5. 修改 ExternalProject_Add
 	ExternalProject_Add(
@@ -109,7 +112,7 @@ if(MSVC)
 		meson
 		setup
 		${MESON_SETUP_ARGS}
-		--native-file=/dev/null # 强制重新检测环境
+		--native-file=NUL # 强制重新检测环境
 		"${RUBBERBAND_BUILD_DIR}"
 		"${RUBBERBAND_SOURCE_DIR}"
 
