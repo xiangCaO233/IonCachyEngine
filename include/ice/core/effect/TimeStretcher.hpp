@@ -4,6 +4,7 @@
 #include <atomic>
 #include <ice/core/effect/rubberband/RStretcher.hpp>
 #include <memory>
+#include <mutex>
 
 #include "ice/core/effect/IEffectNode.hpp"
 
@@ -55,6 +56,9 @@ public:
         return desired_pitch_semitones.load();
     }
 
+    void               set_quality(TimeStretchQuality quality);
+    TimeStretchQuality get_quality() const { return m_quality; }
+
 protected:
     // 应用效果实现
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
@@ -70,6 +74,11 @@ private:
 
     // 拉伸器
     std::unique_ptr<RStretcher> stretcher;
+
+    TimeStretchQuality m_quality{ TimeStretchQuality::Finer };
+
+    // 用于保护 stretcher 重建的互斥锁
+    std::mutex stretcher_mutex;
 };
 
 }  // namespace ice

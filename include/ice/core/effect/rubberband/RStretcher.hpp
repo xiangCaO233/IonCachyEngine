@@ -11,29 +11,51 @@
 
 namespace ice
 {
+enum class TimeStretchQuality {
+    Fast,      // R2 + Short
+    Balanced,  // R2 + Standard
+    Finer,     // R3 + Short
+    Best       // R3 + Standard
+};
+
 class RStretcher
 {
 public:
     // 构造RStretcher
-    explicit RStretcher(const AudioDataFormat& format)
+    explicit RStretcher(const AudioDataFormat& format,
+                        TimeStretchQuality quality = TimeStretchQuality::Finer)
     {
-        rubberband_stretcher = std::make_unique<
-            RubberBand::RubberBandStretcher>(
-            format.samplerate,
-            format.channels,
-            RubberBand::RubberBandStretcher::OptionProcessRealTime |  // 实时
-                RubberBand::RubberBandStretcher::
-                    OptionEngineFiner |  // R3引擎,时间精确
-                RubberBand::RubberBandStretcher::
-                    OptionChannelsTogether |  // 所有声道一起分析
-                RubberBand::RubberBandStretcher::
-                    OptionWindowStandard |  // 标准窗口
-                RubberBand::RubberBandStretcher::
-                    OptionPitchHighQuality  // 高质量
-                | RubberBand::RubberBandStretcher::
-                      OptionThreadingAuto,  // 自动选择线程
-            stretcher_ratio.load(),
-            palt_ratio.load());
+        int options = RubberBand::RubberBandStretcher::OptionProcessRealTime |
+                      RubberBand::RubberBandStretcher::OptionChannelsTogether |
+                      RubberBand::RubberBandStretcher::OptionPitchHighQuality |
+                      RubberBand::RubberBandStretcher::OptionThreadingAuto;
+
+        switch ( quality ) {
+        case TimeStretchQuality::Fast:
+            options |= RubberBand::RubberBandStretcher::OptionEngineFaster |
+                       RubberBand::RubberBandStretcher::OptionWindowShort;
+            break;
+        case TimeStretchQuality::Balanced:
+            options |= RubberBand::RubberBandStretcher::OptionEngineFaster |
+                       RubberBand::RubberBandStretcher::OptionWindowStandard;
+            break;
+        case TimeStretchQuality::Finer:
+            options |= RubberBand::RubberBandStretcher::OptionEngineFiner |
+                       RubberBand::RubberBandStretcher::OptionWindowShort;
+            break;
+        case TimeStretchQuality::Best:
+            options |= RubberBand::RubberBandStretcher::OptionEngineFiner |
+                       RubberBand::RubberBandStretcher::OptionWindowStandard;
+            break;
+        }
+
+        rubberband_stretcher =
+            std::make_unique<RubberBand::RubberBandStretcher>(
+                format.samplerate,
+                format.channels,
+                options,
+                stretcher_ratio.load(),
+                palt_ratio.load());
     };
 
     // 析构RStretcher
@@ -67,38 +89,33 @@ public:
         // 从 RubberBand 中取出所有可用的数据，直到填满输出缓冲区
         size_t total_retrieved = 0;
 
-        while ( total_retrieved < output_frames_capacity )
-            {
-                int avail = rubberband_stretcher->available();
-                if ( avail <= 0 )
-                    {
-                        // 没有更多可用的样本了，退出
-                        break;
-                    }
-
-                size_t frames_to_retrieve = std::min(
-                    (size_t)avail, output_frames_capacity - total_retrieved);
-
-                // 准备一个临时的指针数组，指向输出缓冲区的正确偏移位置
-                std::vector<float*> output_ptrs(num_channels);
-                for ( uint16_t ch = 0; ch < num_channels; ++ch )
-                    {
-                        output_ptrs[ch] =
-                            output.raw_ptrs()[ch] + total_retrieved;
-                    }
-
-                auto actual = rubberband_stretcher->retrieve(
-                    output_ptrs.data(), frames_to_retrieve);
-                if ( actual <= 0 ) break;
-
-                total_retrieved += actual;
+        while ( total_retrieved < output_frames_capacity ) {
+            int avail = rubberband_stretcher->available();
+            if ( avail <= 0 ) {
+                // 没有更多可用的样本了，退出
+                break;
             }
+
+            size_t frames_to_retrieve = std::min(
+                (size_t)avail, output_frames_capacity - total_retrieved);
+
+            // 准备一个临时的指针数组，指向输出缓冲区的正确偏移位置
+            std::vector<float*> output_ptrs(num_channels);
+            for ( uint16_t ch = 0; ch < num_channels; ++ch ) {
+                output_ptrs[ch] = output.raw_ptrs()[ch] + total_retrieved;
+            }
+
+            auto actual = rubberband_stretcher->retrieve(output_ptrs.data(),
+                                                         frames_to_retrieve);
+            if ( actual <= 0 ) break;
+
+            total_retrieved += actual;
+        }
 
         // 如果取出的数据不足以填满输出缓冲区，将剩余部分清零
-        if ( total_retrieved < output_frames_capacity )
-            {
-                output.clear_from(total_retrieved);
-            }
+        if ( total_retrieved < output_frames_capacity ) {
+            output.clear_from(total_retrieved);
+        }
     }
 
 private:

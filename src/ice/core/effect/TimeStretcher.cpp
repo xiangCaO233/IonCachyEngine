@@ -73,9 +73,10 @@ void TimeStretcher::process(AudioBuffer& buffer)
 // 应用效果实现
 void TimeStretcher::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
+    std::lock_guard<std::mutex> lock(stretcher_mutex);
     if ( !stretcher ) {
         // 需要拉伸且不存在拉伸器-在此初始化
-        stretcher = std::make_unique<RStretcher>(input.afmt);
+        stretcher = std::make_unique<RStretcher>(input.afmt, m_quality);
     }
     // 更新拉伸倍率
     if ( stretcher->get_stretch_ratio() != actual_stretch_ratio.load() ) {
@@ -93,5 +94,14 @@ void TimeStretcher::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 
     // 执行拉伸
     stretcher->process(output, input);
+}
+
+void TimeStretcher::set_quality(TimeStretchQuality quality)
+{
+    std::lock_guard<std::mutex> lock(stretcher_mutex);
+    if ( m_quality != quality ) {
+        m_quality = quality;
+        stretcher.reset();  // 下一次 apply_effect 时会重建
+    }
 }
 }  // namespace ice
