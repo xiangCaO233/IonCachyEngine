@@ -1,3 +1,4 @@
+#include <cstring>
 #include <ice/core/IAudioNode.hpp>
 #include <ice/core/MixBus.hpp>
 #include <vector>
@@ -27,6 +28,19 @@ void MixBus::process(AudioBuffer& buffer)
 
         // 混合到上游请求的buffer中
         buffer += temp_buffer;
+    }
+
+    // 应用静音
+    if ( m_muteLeft || m_muteRight ) {
+        float** ptns = buffer.raw_ptrs();
+        if ( ptns ) {
+            if ( m_muteLeft && buffer.num_channels() > 0 ) {
+                std::memset(ptns[0], 0, buffer.num_frames() * sizeof(float));
+            }
+            if ( m_muteRight && buffer.num_channels() > 1 ) {
+                std::memset(ptns[1], 0, buffer.num_frames() * sizeof(float));
+            }
+        }
     }
 }
 

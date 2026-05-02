@@ -1,6 +1,7 @@
 #ifndef ICE_MIXBUS_HPP
 #define ICE_MIXBUS_HPP
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -31,6 +32,11 @@ public:
         sources.clear();
     }
 
+    void set_mute_left(bool mute) { m_muteLeft = mute; }
+    void set_mute_right(bool mute) { m_muteRight = mute; }
+    bool is_mute_left() const { return m_muteLeft; }
+    bool is_mute_right() const { return m_muteRight; }
+
 private:
     // 来源表
     std::set<std::shared_ptr<ice::IAudioNode>> sources;
@@ -40,6 +46,10 @@ private:
 
     // 缓存的缓冲区
     AudioBuffer temp_buffer;
+
+    // 静音标志
+    std::atomic<bool> m_muteLeft{ false };
+    std::atomic<bool> m_muteRight{ false };
 };
 }  // namespace ice
 
