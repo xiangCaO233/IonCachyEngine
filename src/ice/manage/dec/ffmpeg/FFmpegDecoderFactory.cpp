@@ -42,18 +42,31 @@ private:
 };
 
 // 探测文件元信息
-void FFmpegDecoderFactory::probe(std::string_view file_path,
+bool FFmpegDecoderFactory::probe(std::string_view file_path,
                                  MediaInfo&       media_info) const
 {
-    FFmpegFormat fffmt(file_path);
-    AVCALL_CHECK(avformat_find_stream_info(fffmt.get(), nullptr))
+    const std::string path_str(file_path);
+    AVFormatContext*  fmt_ctx{ nullptr };
+
+    if ( avformat_open_input(&fmt_ctx, path_str.c_str(), nullptr, nullptr) < 0 )
+        {
+            return false;
+        }
+
+    auto cleanup = [&]() { avformat_close_input(&fmt_ctx); };
+
+    if ( avformat_find_stream_info(fmt_ctx, nullptr) < 0 )
+        {
+            cleanup();
+            return false;
+        }
 
     // find audio stream
     int audio_stream_index{ -1 };
-    for ( int i = 0; i < fffmt.get()->nb_streams; i++ )
+    for ( int i = 0; i < fmt_ctx->nb_streams; i++ )
         {
             // codecpar stores decoder info
-            if ( fffmt.get()->streams[i]->codecpar->codec_type ==
+            if ( fmt_ctx->streams[i]->codecpar->codec_type ==
                  AVMEDIA_TYPE_AUDIO )
                 {
                     audio_stream_index = i;
@@ -62,13 +75,14 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
         }
     if ( audio_stream_index == -1 )
         {
-            fmt::print("there\'s no audio stream");
+            fmt::print("there\'s no audio stream in {}\n", file_path);
             media_info.format.channels = 0;
-            throw ice::load_error("find stream failed");
+            cleanup();
+            return false;
         }
 
     // 获取音频流的参数
-    auto& audio_stream = fffmt.get()->streams[audio_stream_index];
+    auto& audio_stream = fmt_ctx->streams[audio_stream_index];
     auto& codec_params = audio_stream->codecpar;
 
     media_info.format.channels   = codec_params->ch_layout.nb_channels;
@@ -86,29 +100,29 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
     else
         {
             // 某些容器格式可能在顶层 context 中有 duration
-            if ( fffmt.get()->duration > 0 )
+            if ( fmt_ctx->duration > 0 )
                 {
                     // AV_TIME_BASE_Q
                     media_info.frame_count =
-                        av_rescale_q(fffmt.get()->duration,
+                        av_rescale_q(fmt_ctx->duration,
                                      { 1, AV_TIME_BASE },
                                      { 1, (int)media_info.format.samplerate });
                 }
             else
                 {
-                    fmt::print("file {} duration unknown", file_path);
+                    fmt::print("file {} duration unknown\n", file_path);
                     // 表示未知
                     media_info.frame_count = 0;
                 }
         }
 
-    media_info.bitrate = fffmt.get()->bit_rate;
+    media_info.bitrate = fmt_ctx->bit_rate;
     // 4. 从字典中获取元数据
     const AVDictionaryEntry* tag = nullptr;
 
     // 获取艺术家
     tag = av_dict_get(
-        fffmt.get()->metadata, "artist", nullptr, AV_DICT_IGNORE_SUFFIX);
+        fmt_ctx->metadata, "artist", nullptr, AV_DICT_IGNORE_SUFFIX);
     if ( tag )
         {
             media_info.artist = std::string(tag->value);
@@ -116,7 +130,7 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
 
     // 获取专辑
     tag = av_dict_get(
-        fffmt.get()->metadata, "album", nullptr, AV_DICT_IGNORE_SUFFIX);
+        fmt_ctx->metadata, "album", nullptr, AV_DICT_IGNORE_SUFFIX);
     if ( tag )
         {
             media_info.album = std::string(tag->value);
@@ -124,16 +138,16 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
 
     // 获取标题
     tag = av_dict_get(
-        fffmt.get()->metadata, "title", nullptr, AV_DICT_IGNORE_SUFFIX);
+        fmt_ctx->metadata, "title", nullptr, AV_DICT_IGNORE_SUFFIX);
     if ( tag )
         {
             media_info.title = std::string(tag->value);
         }
 
     // 查找并提取专辑封面
-    for ( unsigned int i = 0; i < fffmt.get()->nb_streams; ++i )
+    for ( unsigned int i = 0; i < fmt_ctx->nb_streams; ++i )
         {
-            const AVStream* stream = fffmt.get()->streams[i];
+            const AVStream* stream = fmt_ctx->streams[i];
             if ( stream->disposition & AV_DISPOSITION_ATTACHED_PIC )
                 {
                     const AVPacket& packet = stream->attached_pic;
@@ -150,6 +164,8 @@ void FFmpegDecoderFactory::probe(std::string_view file_path,
                         }
                 }
         }
+    cleanup();
+    return true;
 }
 
 // 创建解码器实例

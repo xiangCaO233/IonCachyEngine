@@ -19,7 +19,7 @@ public:
     virtual ~IDecoderFactory() = default;
 
     // 探测文件元信息的通用接口
-    virtual void probe(std::string_view file_path,
+    virtual bool probe(std::string_view file_path,
                        MediaInfo&       media_info) const = 0;
 
     // 创建解码器实例接口

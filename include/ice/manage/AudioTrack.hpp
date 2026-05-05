@@ -65,7 +65,7 @@ private:
     // 私有构造函数，强制使用工厂方法
     AudioTrack(std::string_view p, ThreadPool& thread_pool,
                std::shared_ptr<IDecoderFactory> decoder_factory,
-               CachingStrategy                  strategy);
+               CachingStrategy strategy, const MediaInfo& info);
     // 媒体信息
     MediaInfo media_info;
 

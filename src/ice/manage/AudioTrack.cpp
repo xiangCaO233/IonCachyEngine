@@ -12,18 +12,21 @@ namespace ice
     std::string_view path, ThreadPool& thread_pool,
     std::shared_ptr<IDecoderFactory> decoder_factory, CachingStrategy strategy)
 {
+    MediaInfo info;
+    if ( !decoder_factory->probe(path, info) )
+        {
+            return nullptr;
+        }
     return std::shared_ptr<AudioTrack>(
-        new AudioTrack(path, thread_pool, decoder_factory, strategy));
+        new AudioTrack(path, thread_pool, decoder_factory, strategy, info));
 };
 
 // 私有构造函数，强制使用工厂方法
 AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
                        std::shared_ptr<IDecoderFactory> decoder_factory,
-                       CachingStrategy                  strategy)
-    : file_path(path)
+                       CachingStrategy strategy, const MediaInfo& info)
+    : file_path(path), media_info(info)
 {
-    // 探测文件格式
-    decoder_factory->probe(file_path, media_info);
 
     switch ( strategy )
         {
