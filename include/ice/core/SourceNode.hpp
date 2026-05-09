@@ -67,6 +67,9 @@ public:
         callbacks.erase(callback);
     }
 
+    float get_left_level() const { return m_leftLevel.load(); }
+    float get_right_level() const { return m_rightLevel.load(); }
+
     // 根据时间(us)
     /**
      * @brief 根据一个时间段来设置播放位置。
@@ -205,6 +208,10 @@ private:
 
     // 参考位置提供者
     std::function<size_t()> ref_pos_provider;
+
+    // 响度电平
+    std::atomic<float> m_leftLevel{ 0.0f };
+    std::atomic<float> m_rightLevel{ 0.0f };
 
     // 应用音量到缓冲区
     void apply_volume(AudioBuffer& buffer) const;

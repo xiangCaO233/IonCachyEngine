@@ -42,6 +42,36 @@ void MixBus::process(AudioBuffer& buffer)
             }
         }
     }
+
+    // 计算峰值响度 (Peak Level)
+    float   maxL = 0.0f;
+    float   maxR = 0.0f;
+    float** data = buffer.raw_ptrs();
+    if ( data ) {
+        if ( buffer.num_channels() > 0 ) {
+            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
+                float v = std::abs(data[0][i]);
+                if ( v > maxL ) maxL = v;
+            }
+        }
+        if ( buffer.num_channels() > 1 ) {
+            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
+                float v = std::abs(data[1][i]);
+                if ( v > maxR ) maxR = v;
+            }
+        } else if ( buffer.num_channels() > 0 ) {
+            maxR = maxL;
+        }
+    }
+
+    // 更新电平 (简单衰减算法，让 UI 显示更平滑)
+    // 注意：这里是在音频线程，我们只需存入瞬时峰值或缓慢衰减
+    float oldL = m_leftLevel.load();
+    float oldR = m_rightLevel.load();
+
+    // 如果新值大则瞬间上升，否则缓慢下降
+    m_leftLevel.store(maxL > oldL ? maxL : oldL * 0.95f);
+    m_rightLevel.store(maxR > oldR ? maxR : oldR * 0.95f);
 }
 
 void MixBus::add_source(std::shared_ptr<IAudioNode> src)

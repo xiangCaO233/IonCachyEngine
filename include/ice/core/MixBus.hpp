@@ -37,6 +37,9 @@ public:
     bool is_mute_left() const { return m_muteLeft; }
     bool is_mute_right() const { return m_muteRight; }
 
+    float get_left_level() const { return m_leftLevel.load(); }
+    float get_right_level() const { return m_rightLevel.load(); }
+
 private:
     // 来源表
     std::set<std::shared_ptr<ice::IAudioNode>> sources;
@@ -50,6 +53,10 @@ private:
     // 静音标志
     std::atomic<bool> m_muteLeft{ false };
     std::atomic<bool> m_muteRight{ false };
+
+    // 响度电平 (0.0 ~ 1.0+)
+    std::atomic<float> m_leftLevel{ 0.0f };
+    std::atomic<float> m_rightLevel{ 0.0f };
 };
 }  // namespace ice
 

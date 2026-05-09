@@ -106,6 +106,33 @@ void SourceNode::process(AudioBuffer& buffer)
     if ( volume != 1.f ) {
         apply_volume(buffer);
     }
+
+    // 计算峰值响度 (Peak Level)
+    float   maxL = 0.0f;
+    float   maxR = 0.0f;
+    float** data = buffer.raw_ptrs();
+    if ( data && is_playing.load() ) {
+        if ( buffer.num_channels() > 0 ) {
+            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
+                float v = std::abs(data[0][i]);
+                if ( v > maxL ) maxL = v;
+            }
+        }
+        if ( buffer.num_channels() > 1 ) {
+            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
+                float v = std::abs(data[1][i]);
+                if ( v > maxR ) maxR = v;
+            }
+        } else if ( buffer.num_channels() > 0 ) {
+            maxR = maxL;
+        }
+    }
+
+    // 更新电平 (简单衰减算法)
+    float oldL = m_leftLevel.load();
+    float oldR = m_rightLevel.load();
+    m_leftLevel.store(maxL > oldL ? maxL : oldL * 0.95f);
+    m_rightLevel.store(maxR > oldR ? maxR : oldR * 0.95f);
 }
 // 应用音量到缓冲区
 void SourceNode::apply_volume(AudioBuffer& buffer) const
