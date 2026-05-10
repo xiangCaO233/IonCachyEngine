@@ -83,9 +83,10 @@ if(MSVC)
 		-Dladspa=disabled
 		-Dlv2=disabled
 		-Djni=disabled
-		-Dfft=fftw
+        -Dfft=fftw
 		-Dresampler=libsamplerate
-		# 这里不再需要手动传 -I 和 -L，因为 pkg-config 会处理好一切
+		"-Dextra_include_dirs=${VCPKG_INSTALLED_PATH}/include"
+		"-Dextra_lib_dirs=${VCPKG_INSTALLED_PATH}/lib"
 		"-Dc_args=${RB_FLAGS}"
 		"-Dcpp_args=${RB_FLAGS}"
 	)
