@@ -1,20 +1,10 @@
-if(MSVC)
-	# 手动把正确的 fftw3 share 路径加入
-	set(FFTW3_DIR "${VCPKG_ROOT}/installed/x64-windows-static/share/fftw3")
-	find_package(FFTW3 CONFIG REQUIRED)
-	set(SampleRate_DIR
-		"${VCPKG_ROOT}/installed/x64-windows-static/share/SampleRate"
-	)
-	find_package(SampleRate CONFIG REQUIRED)
-endif()
+# 3rdpty/sources/cmake/Buildrubberband.cmake
 
 include(ExternalProject)
 
 # 自动映射 CMake 到 Meson 的构建类型
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 	set(RB_BUILD_TYPE "debug")
-	# Debug 模式下不需要 march=native 干扰调试
-	# 或保持开启以确保 DSP 性能
 	set(RB_FLAGS "-g")
 else()
 	set(RB_BUILD_TYPE "release")
@@ -24,9 +14,6 @@ endif()
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
 # 定义项目路径配置
-# 强制使用绝对路径，并显著缩短构建路径深度
-# 将构建目录移至 CMAKE_BINARY_DIR (即 cmake-build-xxx 根部)，
-# 而非嵌套在 3rdpty 文件夹深处
 get_filename_component(RUBBERBAND_SOURCE_DIR
 	"${CMAKE_CURRENT_SOURCE_DIR}/../sources/rubberband"
 	ABSOLUTE
@@ -34,10 +21,26 @@ get_filename_component(RUBBERBAND_SOURCE_DIR
 set(RUBBERBAND_BUILD_DIR "${CMAKE_BINARY_DIR}/rb_bld")
 set(RUBBERBAND_INSTALL_DIR "${CMAKE_BINARY_DIR}/rb_inst")
 
-if(MSVC)
-	# 1. 指向 vcpkg 目录
-	set(VCPKG_INSTALLED_PATH "${VCPKG_ROOT}/installed/x64-windows-static")
+# 本地依赖路径 (FFTW3 和 libsamplerate)
+# FFTW3 来自 ExternalProject_Add (fftw_project)
+set(FFTW_INST_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_inst")
+set(LOCAL_FFTW3_INCLUDE "${FFTW_INST_DIR}/include")
+set(LOCAL_FFTW3_LIB_DIR "${FFTW_INST_DIR}/lib")
 
+# libsamplerate 来自 Buildlibsamplerate.cmake (samplerate 目标)
+set(SAMPLERATE_SRC_DIR "${CMAKE_CURRENT_LIST_DIR}/../libsamplerate")
+set(SAMPLERATE_BIN_DIR "${CMAKE_BINARY_DIR}/3rdpty/libsamplerate")
+set(LOCAL_SAMPLERATE_INCLUDE "${SAMPLERATE_SRC_DIR}/src;${SAMPLERATE_BIN_DIR}")
+set(LOCAL_SAMPLERATE_LIB_DIR "${CMAKE_BINARY_DIR}/3rdpty/libsamplerate")
+
+set(EXTRA_INC_LIST "${LOCAL_FFTW3_INCLUDE}" "${SAMPLERATE_SRC_DIR}/src" "${SAMPLERATE_BIN_DIR}")
+set(EXTRA_LIB_LIST "${LOCAL_FFTW3_LIB_DIR}" "${LOCAL_SAMPLERATE_LIB_DIR}")
+
+# Convert lists to comma-separated strings for Meson array options
+string(REPLACE ";" "," EXTRA_INC_STR "${EXTRA_INC_LIST}")
+string(REPLACE ";" "," EXTRA_LIB_STR "${EXTRA_LIB_LIST}")
+
+if(MSVC)
 	# 根据主项目的构建类型决定 Meson 的参数
 	if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 		set(RUBBERBAND_BUILD_TYPE "debug")
@@ -47,30 +50,23 @@ if(MSVC)
 		set(RUBBERBAND_CRT "mt") # 对应 MSVC 的 /MT
 	endif()
 
-	# 2. 找到 pkg-config
+	# 找到 pkg-config
 	find_program(PKG_CONFIG_EXE NAMES pkg-config pkgconf PATHS "C:/msys64/mingw64/bin" "C:/msys64/usr/bin")
 	if(NOT PKG_CONFIG_EXE)
 		set(PKG_CONFIG_EXE "pkg-config")
 	endif()
 
-	if(CMAKE_CROSSCOMPILING)
-		# 强制使用系统 pkg-config
-		find_program(PKG_CONFIG_SYSTEM NAMES pkg-config)
-		set(PKG_CONFIG_EXE "${PKG_CONFIG_SYSTEM}")
-	endif()
-
-	# 3. 构造环境变量
-	# 核心：设置 PKG_CONFIG 指向执行文件，设置 PKG_CONFIG_PATH 指向 .pc 文件所在位置
+	# 构造环境变量
 	set(MESON_ENV
 		${CMAKE_COMMAND}
 		-E
 		env
 		"PKG_CONFIG=${PKG_CONFIG_EXE}"
-		"PKG_CONFIG_PATH=${VCPKG_INSTALLED_PATH}/lib/pkgconfig"
-		"CMAKE_PREFIX_PATH=" # 关键：清空它，防止 Meson 又跑去用 CMake 找依赖
+		"PKG_CONFIG_PATH=" # 清空它，确保不使用系统包
+		"CMAKE_PREFIX_PATH="
 	)
 
-	# 4. 构造参数
+	# 构造参数
 	set(MESON_SETUP_ARGS
 		--prefix=${RUBBERBAND_INSTALL_DIR}
 		--libdir=lib
@@ -85,8 +81,8 @@ if(MSVC)
 		-Djni=disabled
         -Dfft=fftw
 		-Dresampler=libsamplerate
-		"-Dextra_include_dirs=${VCPKG_INSTALLED_PATH}/include"
-		"-Dextra_lib_dirs=${VCPKG_INSTALLED_PATH}/lib"
+		"-Dextra_include_dirs=${EXTRA_INC_STR}"
+		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
 		"-Dc_args=${RB_FLAGS}"
 		"-Dcpp_args=${RB_FLAGS}"
 	)
@@ -96,50 +92,26 @@ if(MSVC)
 	endif()
 
 	# 确定库文件产物路径
-	# MSVC 下 Meson 通常生成 rubberband-static.lib
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
 
-	# 5. 修改 ExternalProject_Add
 	ExternalProject_Add(
 		rubberband_project
-		SOURCE_DIR
-		"${RUBBERBAND_SOURCE_DIR}"
-		BINARY_DIR
-		"${RUBBERBAND_BUILD_DIR}"
-
+		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
+		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
+		DEPENDS fftw_project samplerate
 		CONFIGURE_COMMAND
 		${MESON_ENV}
-		# 注入环境变量
-		meson
-		setup
-		${MESON_SETUP_ARGS}
-		--native-file=NUL # 强制重新检测环境
-		"${RUBBERBAND_BUILD_DIR}"
-		"${RUBBERBAND_SOURCE_DIR}"
-
-		BUILD_COMMAND
-		${MESON_ENV}
-		# 编译时也建议带上环境
-		meson
-		compile
-		-C
-		"${RUBBERBAND_BUILD_DIR}"
-
-		INSTALL_COMMAND
-		meson
-		install
-		-C
-		"${RUBBERBAND_BUILD_DIR}"
-
-		BUILD_BYPRODUCTS
-		"${RUBBERBAND_STATIC_LIB}"
+		meson setup ${MESON_SETUP_ARGS} --native-file=NUL "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
+		BUILD_COMMAND ${MESON_ENV} meson compile -C "${RUBBERBAND_BUILD_DIR}"
+		INSTALL_COMMAND meson install -C "${RUBBERBAND_BUILD_DIR}"
+		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 else()
 	# 构造 Meson 配置参数
 	set(MESON_SETUP_ARGS
 		--prefix=${RUBBERBAND_INSTALL_DIR}
 		--libdir=lib
-		--buildtype=${RB_BUILD_TYPE} # 核心：映射构建类型
+		--buildtype=${RB_BUILD_TYPE}
 		-Ddefault_library=static
 		-Dtests=disabled
 		-Dcmdline=disabled
@@ -149,92 +121,41 @@ else()
 		-Djni=disabled
 		-Dfft=fftw
 		-Dresampler=libsamplerate
+		"-Dextra_include_dirs=${EXTRA_INC_STR}"
+		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
 		"-Dc_args=${RB_FLAGS}"
 		"-Dcpp_args=${RB_FLAGS}"
 	)
-	# 确定库文件产物路径
-	# MinGW 环境下 Meson 通常生成 librubberband.a
+	
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
-	# 构建外部项目
+	
 	ExternalProject_Add(
 		rubberband_project
-		SOURCE_DIR
-		"${RUBBERBAND_SOURCE_DIR}"
-		BINARY_DIR
-		"${RUBBERBAND_BUILD_DIR}"
-
-		# 在 CONFIGURE_COMMAND 中显式指定构建目录和源码目录的绝对路径
-		# 这会覆盖 Meson 默认生成的脆弱相对路径
-		CONFIGURE_COMMAND
-		meson
-		setup
-		${MESON_SETUP_ARGS}
-		"${RUBBERBAND_BUILD_DIR}"
-		"${RUBBERBAND_SOURCE_DIR}"
-
-		BUILD_COMMAND
-		meson
-		compile
-		-C
-		"${RUBBERBAND_BUILD_DIR}"
-		INSTALL_COMMAND
-		meson
-		install
-		-C
-		"${RUBBERBAND_BUILD_DIR}"
-
-		# 定义产物，帮助 Ninja 理解依赖
-		BUILD_BYPRODUCTS
-		"${RUBBERBAND_STATIC_LIB}"
+		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
+		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
+		DEPENDS fftw_project samplerate
+		CONFIGURE_COMMAND meson setup ${MESON_SETUP_ARGS} "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
+		BUILD_COMMAND meson compile -C "${RUBBERBAND_BUILD_DIR}"
+		INSTALL_COMMAND meson install -C "${RUBBERBAND_BUILD_DIR}"
+		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 endif()
 
 # 封装为 CMake 接口库
-# 预先创建 include 目录防止 CMake 配置阶段因为找不到目录报错
 file(MAKE_DIRECTORY "${RUBBERBAND_INSTALL_DIR}/include")
 
 add_library(3rd_rubberband INTERFACE)
 add_dependencies(3rd_rubberband rubberband_project)
 
-# 使用绝对路径关联头文件和库
-target_include_directories(3rd_rubberband
-	INTERFACE "${RUBBERBAND_INSTALL_DIR}/include"
-)
-message(STATUS "Include Rubberband headers: ${RUBBERBAND_INSTALL_DIR}/include")
-target_link_libraries(3rd_rubberband
-	INTERFACE "${RUBBERBAND_STATIC_LIB}"
-)
+target_include_directories(3rd_rubberband INTERFACE "${RUBBERBAND_INSTALL_DIR}/include")
+target_link_libraries(3rd_rubberband INTERFACE "${RUBBERBAND_STATIC_LIB}")
 
-if(APPLE)
-	find_package(FFTW3 REQUIRED)
-	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(SAMPLERATE REQUIRED samplerate)
-	target_include_directories(3rd_rubberband INTERFACE ${FFTW3_INCLUDE_DIRS})
-	target_link_directories(3rd_rubberband INTERFACE "/opt/homebrew/lib")
-	target_link_libraries(3rd_rubberband
-		INTERFACE
-			"${FFTW3_LIBRARY_DIRS}/libfftw3.a"
-			"${SAMPLERATE_LIBRARIES}"
-	)
-endif()
-
-if(UNIX AND NOT APPLE)
-	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(FFTW3 REQUIRED fftw3)
-	pkg_check_modules(SAMPLERATE REQUIRED samplerate)
-	target_link_libraries(3rd_rubberband
-		INTERFACE
-			${FFTW3_LIBRARIES}
-			${SAMPLERATE_LIBRARIES}
-	)
-endif()
+# 链接依赖的静态库
+target_link_libraries(3rd_rubberband INTERFACE 3rd_fftw3 3rd_libsamplerate)
 
 # 系统底层库链接
 if(WIN32)
-	if(MSVC)
-
-	else()
-		# MinGW-UCRT64 静态链接通常需要 pthread
+	if(NOT MSVC)
 		target_link_libraries(3rd_rubberband INTERFACE pthread)
 	endif()
 else()

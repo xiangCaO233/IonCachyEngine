@@ -4,6 +4,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(arch-probe)
 include(Buildffmpeg)
+include(Buildfftw)
+include(Buildlibsamplerate)
 include(Buildrubberband)
 include(Buildfmt)
 include(Buildspdlog)
