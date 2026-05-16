@@ -13,6 +13,7 @@ ExternalProject_Add(fftw_project
     SOURCE_DIR "${FFTW_SOURCE_DIR}"
     BINARY_DIR "${FFTW_BINARY_DIR}"
     INSTALL_DIR "${FFTW_INSTALL_DIR}"
+    UPDATE_COMMAND ""
     CMAKE_ARGS
         -DCMAKE_INSTALL_PREFIX=${FFTW_INSTALL_DIR}
         -DCMAKE_INSTALL_LIBDIR=lib
@@ -23,6 +24,8 @@ ExternalProject_Add(fftw_project
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_INSTALL_MESSAGE=NEVER
+    INSTALL_COMMAND sh -c "test -f '${FFTW_INSTALL_DIR}/lib/libfftw3.a' || ${CMAKE_COMMAND} --build . --target install"
     BUILD_BYPRODUCTS 
         "${FFTW_INSTALL_DIR}/lib/libfftw3.a"
         "${FFTW_INSTALL_DIR}/lib/fftw3.lib"

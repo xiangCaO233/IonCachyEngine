@@ -35,9 +35,8 @@ else()
 	set(ICE_FFMPEG_CFLAGS "")
 
 	if(MSVC)
-
 	else()
-		set(ICE_FFMPEG_CFLAGS "-march=native")
+		set(ICE_FFMPEG_CFLAGS "")
 	endif()
 
 	# 定义 FFmpeg 编译参数 (使用 LIST 格式，避免空格引起的引号问题)
@@ -122,6 +121,7 @@ else()
 		ffmpeg_project
 		SOURCE_DIR
 		${FFMPEG_SOURCE_DIR}
+		UPDATE_COMMAND ""
 		CONFIGURE_COMMAND
 		${FFMPEG_CONFIGURE_CMD}
 		# 统一使用 make，Windows MSVC 环境下 FFmpeg 也通常需要适配好的 make (如 Git Bash 里的)
@@ -130,14 +130,9 @@ else()
 		-j${PROCESSOR_COUNT}
 		# 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
 		INSTALL_COMMAND
-		make
-		install
-		COMMAND
-		${CMAKE_COMMAND}
-		-E
-		rm
-		-rf
-		${FFMPEG_INSTALL_DIR}/share
+		sh
+		-c
+		"test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || (make install && ${CMAKE_COMMAND} -E rm -rf ${FFMPEG_INSTALL_DIR}/share)"
 		BUILD_BYPRODUCTS
 		${FFMPEG_BYPRODUCTS}
 	)

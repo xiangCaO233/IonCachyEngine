@@ -8,7 +8,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 	set(RB_FLAGS "-g")
 else()
 	set(RB_BUILD_TYPE "release")
-	set(RB_FLAGS "-O3 -march=native")
+	set(RB_FLAGS "-O3")
 endif()
 
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
@@ -99,11 +99,12 @@ if(MSVC)
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
+		UPDATE_COMMAND ""
 		CONFIGURE_COMMAND
 		${MESON_ENV}
 		meson setup ${MESON_SETUP_ARGS} --native-file=NUL "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
 		BUILD_COMMAND ${MESON_ENV} meson compile -C "${RUBBERBAND_BUILD_DIR}"
-		INSTALL_COMMAND meson install -C "${RUBBERBAND_BUILD_DIR}"
+		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 else()
@@ -134,9 +135,10 @@ else()
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
+		UPDATE_COMMAND ""
 		CONFIGURE_COMMAND meson setup ${MESON_SETUP_ARGS} "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
 		BUILD_COMMAND meson compile -C "${RUBBERBAND_BUILD_DIR}"
-		INSTALL_COMMAND meson install -C "${RUBBERBAND_BUILD_DIR}"
+		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 endif()
