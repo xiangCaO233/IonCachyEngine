@@ -116,6 +116,12 @@ else()
 	message(STATUS "Debug: FFmpeg Configure Command is")
 	message(STATUS "${FFMPEG_CONFIGURE_CMD}")
 
+	# 转换为字符串以便在 sh -c 中使用
+	set(FFMPEG_CONFIGURE_CMD_STR "")
+	foreach(arg IN LISTS FFMPEG_CONFIGURE_CMD)
+		set(FFMPEG_CONFIGURE_CMD_STR "${FFMPEG_CONFIGURE_CMD_STR} \"${arg}\"")
+	endforeach()
+
 	# 执行构建
 	ExternalProject_Add(
 		ffmpeg_project
@@ -123,11 +129,10 @@ else()
 		${FFMPEG_SOURCE_DIR}
 		UPDATE_COMMAND ""
 		CONFIGURE_COMMAND
-		${FFMPEG_CONFIGURE_CMD}
+		sh -c "test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || ${FFMPEG_CONFIGURE_CMD_STR}"
 		# 统一使用 make，Windows MSVC 环境下 FFmpeg 也通常需要适配好的 make (如 Git Bash 里的)
 		BUILD_COMMAND
-		make
-		-j${PROCESSOR_COUNT}
+		sh -c "test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || make -j${PROCESSOR_COUNT}"
 		# 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
 		INSTALL_COMMAND
 		sh

@@ -94,16 +94,20 @@ if(MSVC)
 	# 确定库文件产物路径
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
 
+	# 将列表转换为字符串，以便在 sh -c 中使用
+	set(MESON_SETUP_ARGS_STR "")
+	foreach(arg IN LISTS MESON_SETUP_ARGS)
+		set(MESON_SETUP_ARGS_STR "${MESON_SETUP_ARGS_STR} \"${arg}\"")
+	endforeach()
+
 	ExternalProject_Add(
 		rubberband_project
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
 		UPDATE_COMMAND ""
-		CONFIGURE_COMMAND
-		${MESON_ENV}
-		meson setup ${MESON_SETUP_ARGS} --native-file=NUL "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
-		BUILD_COMMAND ${MESON_ENV} meson compile -C "${RUBBERBAND_BUILD_DIR}"
+		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='' CMAKE_PREFIX_PATH='' meson setup ${MESON_SETUP_ARGS_STR} --native-file=NUL '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
+		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='' CMAKE_PREFIX_PATH='' meson compile -C '${RUBBERBAND_BUILD_DIR}'"
 		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
@@ -130,14 +134,20 @@ else()
 	
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
 	
+	# 将列表转换为字符串，以便在 sh -c 中使用
+	set(MESON_SETUP_ARGS_STR "")
+	foreach(arg IN LISTS MESON_SETUP_ARGS)
+		set(MESON_SETUP_ARGS_STR "${MESON_SETUP_ARGS_STR} \"${arg}\"")
+	endforeach()
+
 	ExternalProject_Add(
 		rubberband_project
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
 		UPDATE_COMMAND ""
-		CONFIGURE_COMMAND meson setup ${MESON_SETUP_ARGS} "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
-		BUILD_COMMAND meson compile -C "${RUBBERBAND_BUILD_DIR}"
+		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || meson setup ${MESON_SETUP_ARGS_STR} '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
+		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson compile -C '${RUBBERBAND_BUILD_DIR}'"
 		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
