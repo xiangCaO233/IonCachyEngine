@@ -13,6 +13,45 @@ endif()
 
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
+# Determine LTO flags for Clang/GCC
+set(RB_LTO_FLAGS "")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
+	set(RB_LTO_FLAGS "-flto=thin")
+endif()
+
+# Determine PGO flags
+set(RB_PGO_FLAGS "")
+if(MMM_PGO_INSTRUMENT)
+	set(RB_PGO_FLAGS "-fprofile-instr-generate")
+elseif(MMM_PGO_USE)
+	get_filename_component(ABS_PGO_DATA "${MMM_PGO_DATA}" ABSOLUTE)
+	set(RB_PGO_FLAGS "-fprofile-instr-use=${ABS_PGO_DATA}")
+endif()
+
+# Combine extra compile and link flags
+set(RB_EXTRA_FLAGS_LIST "")
+if(NOT "${RB_LTO_FLAGS}" STREQUAL "")
+	list(APPEND RB_EXTRA_FLAGS_LIST "${RB_LTO_FLAGS}")
+endif()
+if(NOT "${RB_PGO_FLAGS}" STREQUAL "")
+	list(APPEND RB_EXTRA_FLAGS_LIST "${RB_PGO_FLAGS}")
+endif()
+
+string(REPLACE ";" " " RB_EXTRA_FLAGS "${RB_EXTRA_FLAGS_LIST}")
+
+set(C_ARGS_VAL "${RB_FLAGS}")
+set(CPP_ARGS_VAL "${RB_FLAGS}")
+set(C_LINK_ARGS_VAL "")
+set(CPP_LINK_ARGS_VAL "")
+
+if(NOT "${RB_EXTRA_FLAGS}" STREQUAL "")
+	set(C_ARGS_VAL "${C_ARGS_VAL} ${RB_EXTRA_FLAGS}")
+	set(CPP_ARGS_VAL "${CPP_ARGS_VAL} ${RB_EXTRA_FLAGS}")
+	set(C_LINK_ARGS_VAL "${RB_EXTRA_FLAGS}")
+	set(CPP_LINK_ARGS_VAL "${RB_EXTRA_FLAGS}")
+	message(STATUS "Rubberband Extra Build Flags (LTO/PGO): ${RB_EXTRA_FLAGS}")
+endif()
+
 # 定义项目路径配置
 get_filename_component(RUBBERBAND_SOURCE_DIR
 	"${CMAKE_CURRENT_SOURCE_DIR}/../sources/rubberband"
@@ -83,9 +122,13 @@ if(MSVC)
 		-Dresampler=libsamplerate
 		"-Dextra_include_dirs=${EXTRA_INC_STR}"
 		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
-		"-Dc_args=${RB_FLAGS}"
-		"-Dcpp_args=${RB_FLAGS}"
+		"-Dc_args=${C_ARGS_VAL}"
+		"-Dcpp_args=${CPP_ARGS_VAL}"
 	)
+
+	if(NOT "${C_LINK_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dc_link_args=${C_LINK_ARGS_VAL}" "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
+	endif()
 
 	if(CMAKE_CROSSCOMPILING)
 		list(APPEND MESON_SETUP_ARGS "--cross-file=${CMAKE_SOURCE_DIR}/cmake/toolchain/meson-cross-cl.toml")
@@ -128,9 +171,13 @@ else()
 		-Dresampler=libsamplerate
 		"-Dextra_include_dirs=${EXTRA_INC_STR}"
 		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
-		"-Dc_args=${RB_FLAGS}"
-		"-Dcpp_args=${RB_FLAGS}"
+		"-Dc_args=${C_ARGS_VAL}"
+		"-Dcpp_args=${CPP_ARGS_VAL}"
 	)
+
+	if(NOT "${C_LINK_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dc_link_args=${C_LINK_ARGS_VAL}" "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
+	endif()
 	
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
 	
