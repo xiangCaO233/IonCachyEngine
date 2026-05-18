@@ -22,7 +22,7 @@ endif()
 # Determine PGO flags
 set(RB_PGO_FLAGS "")
 if(MMM_PGO_INSTRUMENT)
-	set(RB_PGO_FLAGS "-fprofile-instr-generate")
+	set(RB_PGO_FLAGS "-fprofile-instr-generate=%t/MusicMapMaker/mmm_pgo_%m_%p.profraw")
 elseif(MMM_PGO_USE)
 	get_filename_component(ABS_PGO_DATA "${MMM_PGO_DATA}" ABSOLUTE)
 	set(RB_PGO_FLAGS "-fprofile-instr-use=${ABS_PGO_DATA}")
