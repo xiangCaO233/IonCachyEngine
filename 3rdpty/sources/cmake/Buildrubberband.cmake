@@ -16,7 +16,7 @@ message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 # Determine LTO flags for Clang/GCC
 set(RB_LTO_FLAGS "")
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
-	set(RB_LTO_FLAGS "-flto=thin")
+	list(APPEND RB_LTO_FLAGS "-flto=thin" "-fsplit-lto-unit")
 endif()
 
 # Determine PGO flags
@@ -35,8 +35,8 @@ endif()
 
 # Combine extra compile and link flags
 set(RB_EXTRA_FLAGS_LIST "")
-if(NOT "${RB_LTO_FLAGS}" STREQUAL "")
-	list(APPEND RB_EXTRA_FLAGS_LIST "${RB_LTO_FLAGS}")
+if(RB_LTO_FLAGS)
+	list(APPEND RB_EXTRA_FLAGS_LIST ${RB_LTO_FLAGS})
 endif()
 if(NOT "${RB_PGO_FLAGS}" STREQUAL "")
 	list(APPEND RB_EXTRA_FLAGS_LIST "${RB_PGO_FLAGS}")
@@ -192,15 +192,18 @@ else()
 		set(MESON_SETUP_ARGS_STR "${MESON_SETUP_ARGS_STR} \"${arg}\"")
 	endforeach()
 
+	# Meson does not automatically inherit CMake's compiler/toolchain selection.
+	set(MESON_TOOLCHAIN_ENV "CC='${CMAKE_C_COMPILER}' CXX='${CMAKE_CXX_COMPILER}' AR='${CMAKE_AR}' RANLIB='${CMAKE_RANLIB}' NM='${CMAKE_NM}'")
+
 	ExternalProject_Add(
 		rubberband_project
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
 		UPDATE_COMMAND ""
-		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || meson setup ${MESON_SETUP_ARGS_STR} '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
-		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson compile -C '${RUBBERBAND_BUILD_DIR}'"
-		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
+		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || ${MESON_TOOLCHAIN_ENV} meson setup ${MESON_SETUP_ARGS_STR} '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
+		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || ${MESON_TOOLCHAIN_ENV} meson compile -C '${RUBBERBAND_BUILD_DIR}'"
+		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || ${MESON_TOOLCHAIN_ENV} meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 endif()
