@@ -4,6 +4,9 @@
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp>
 
+#include <algorithm>
+#include <cstring>
+
 #include "ice/execptions/load_error.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 #include "ice/manage/AudioFormat.hpp"
@@ -111,6 +114,8 @@ public:
 
         // 打开解码器
         AVCALL_CHECK(avcodec_open2(avcodec_ctx, avcodec, nullptr))
+        m_duplicateMonoToTargetChannels =
+            avcodec_ctx->ch_layout.nb_channels == 1 && ice_format.channels > 1;
         // 分配内存并循环解码
         // 用于存放从文件中读取的压缩数据包
         avpacket = av_packet_alloc();
@@ -200,12 +205,11 @@ public:
                     std::min(chunksize - frames_decoded_total,
                              conversion_buffer_remains);
 
-                for ( uint16_t ch = 0; ch < avcodec_ctx->ch_layout.nb_channels;
-                      ++ch ) {
+                for ( uint16_t ch = 0; ch < ice_format.channels; ++ch ) {
                     const float* src  = conversion_buffer.raw_ptrs()[ch] +
                                         conversion_buffer_offset;
                     float*       dest = buffer[ch] + frames_decoded_total;
-                    memcpy(dest, src, frames_to_copy * sizeof(float));
+                    std::memcpy(dest, src, frames_to_copy * sizeof(float));
                 }
 
                 frames_decoded_total += frames_to_copy;
@@ -231,6 +235,8 @@ public:
                                 avframe->nb_samples);
 
                 if ( converted_count > 0 ) {
+                    duplicateMonoChannelToTargetChannels(
+                        static_cast<size_t>(converted_count));
                     // 更新我们内部缓冲区的剩余帧数
                     conversion_buffer_remains = converted_count;
                 }
@@ -264,6 +270,8 @@ public:
                                     nullptr,
                                     0);
                     if ( flushed_count > 0 ) {
+                        duplicateMonoChannelToTargetChannels(
+                            static_cast<size_t>(flushed_count));
                         // 再从临时缓冲区拷贝到最终位置
                         size_t frames_needed = chunksize - frames_decoded_total;
                         size_t frames_to_copy =
@@ -274,7 +282,8 @@ public:
                                 conversion_buffer.raw_ptrs()[ch] +
                                 conversion_buffer_offset;
                             float* dest = buffer[ch] + frames_decoded_total;
-                            memcpy(dest, src, frames_to_copy * sizeof(float));
+                            std::memcpy(
+                                dest, src, frames_to_copy * sizeof(float));
                         }
                         frames_decoded_total += frames_to_copy;
                     }
@@ -294,6 +303,23 @@ public:
     inline size_t frames() const { return total_frames; }
 
 private:
+    /// @brief 将单声道转换结果复制到所有目标声道，保证 mono
+    /// 文件以居中立体声输出。
+    void duplicateMonoChannelToTargetChannels(size_t frame_count)
+    {
+        if ( !m_duplicateMonoToTargetChannels || frame_count == 0 ||
+             ice_format.channels < 2 ) {
+            return;
+        }
+
+        float**      channel_ptrs = conversion_buffer.raw_ptrs();
+        const float* mono_src     = channel_ptrs[0];
+        for ( uint16_t ch = 1; ch < ice_format.channels; ++ch ) {
+            std::memcpy(
+                channel_ptrs[ch], mono_src, frame_count * sizeof(float));
+        }
+    }
+
     AVFormatContext* avfmt_ctx{ nullptr };
     AVCodecContext*  avcodec_ctx{ nullptr };
     const AVCodec*   avcodec{ nullptr };
@@ -302,6 +328,8 @@ private:
     SwrContext*      swr_ctx{ nullptr };
     AudioDataFormat  ice_format;
     AudioBuffer      conversion_buffer;
+    /// @brief 标记当前源文件是否需要在解码后复制单声道到目标多声道。
+    bool m_duplicateMonoToTargetChannels{ false };
     // 新增：记录上一次转换后，在 conversion_buffer 中还剩下多少帧
     size_t conversion_buffer_remains = 0;
     // 新增：记录上一次转换后，我们从缓冲区的哪个位置开始拷贝的
