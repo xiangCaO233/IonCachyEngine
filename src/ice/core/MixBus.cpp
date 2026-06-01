@@ -30,16 +30,32 @@ void MixBus::process(AudioBuffer& buffer)
         buffer += temp_buffer;
     }
 
-    // 应用静音
-    if ( m_muteLeft || m_muteRight ) {
-        float** ptns = buffer.raw_ptrs();
-        if ( ptns ) {
-            if ( m_muteLeft && buffer.num_channels() > 0 ) {
-                std::memset(ptns[0], 0, buffer.num_frames() * sizeof(float));
+    // 应用声道输出模式
+    float** ptns = buffer.raw_ptrs();
+    if ( ptns ) {
+        const size_t frames = buffer.num_frames();
+        switch ( get_channel_mode() ) {
+        case MixBusChannelMode::MuteLeft:
+            if ( buffer.num_channels() > 0 ) {
+                std::memset(ptns[0], 0, frames * sizeof(float));
             }
-            if ( m_muteRight && buffer.num_channels() > 1 ) {
-                std::memset(ptns[1], 0, buffer.num_frames() * sizeof(float));
+            break;
+        case MixBusChannelMode::MuteRight:
+            if ( buffer.num_channels() > 1 ) {
+                std::memset(ptns[1], 0, frames * sizeof(float));
             }
+            break;
+        case MixBusChannelMode::CopyLeftToRight:
+            if ( buffer.num_channels() > 1 ) {
+                std::memcpy(ptns[1], ptns[0], frames * sizeof(float));
+            }
+            break;
+        case MixBusChannelMode::CopyRightToLeft:
+            if ( buffer.num_channels() > 1 ) {
+                std::memcpy(ptns[0], ptns[1], frames * sizeof(float));
+            }
+            break;
+        case MixBusChannelMode::Stereo: break;
         }
     }
 
