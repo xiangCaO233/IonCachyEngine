@@ -3,15 +3,36 @@
 #include <al.h>
 #include <alc.h>
 #include <fmt/base.h>
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
+
+#ifdef _WIN32
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#endif
+
+extern "C" {
+using LPALSOFTLOGCALLBACK = void(ALC_APIENTRY*)(void* userptr, char level,
+                                                const char* message,
+                                                int         length) noexcept;
+void ALC_APIENTRY alsoft_set_log_callback(LPALSOFTLOGCALLBACK callback,
+                                          void*               userptr) noexcept;
+}
 
 #ifndef AL_FORMAT_MONO_FLOAT32
 #    define AL_FORMAT_MONO_FLOAT32 0x10010
@@ -29,7 +50,14 @@ namespace ice
 {
 namespace
 {
-constexpr size_t kOpenALBufferCount = 4;
+constexpr size_t   kOpenALBufferCount       = 8;
+constexpr uint32_t kOpenALMinBufferFrames   = 2048;
+constexpr size_t   kOpenALSoftLogBufferSize = 4096;
+
+std::mutex                                 g_openALSoftLogMutex;
+std::array<char, kOpenALSoftLogBufferSize> g_openALSoftLogBuffer{};
+size_t                                     g_openALSoftLogLength{ 0 };
+bool                                       g_openALSoftLogInstalled{ false };
 
 /// @brief OpenAL 空间化参数缓存。
 struct ALSpatialState {
@@ -55,16 +83,194 @@ struct ALSpatialState {
     float rolloffFactor{ 1.0f };
 };
 
-/// @brief 检查并输出 OpenAL 错误。
-bool checkALError(const char* operation)
+/// @brief Set an environment variable when the caller did not provide one.
+/// @param name Environment variable name.
+/// @param value Environment variable value.
+void setEnvironmentDefault(const char* name, const char* value)
+{
+    const char* currentValue = std::getenv(name);
+    if ( currentValue && *currentValue ) {
+        return;
+    }
+
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 0);
+#endif
+}
+
+/// @brief Configure OpenAL Soft defaults before its first real initialization.
+void configureOpenALSoftEnvironment()
+{
+#ifdef _WIN32
+    setEnvironmentDefault("ALSOFT_DRIVERS", "winmm,dsound,wasapi");
+#endif
+    setEnvironmentDefault("ALSOFT_LOGLEVEL", "2");
+}
+
+/// @brief Raise the OpenAL feeder thread priority on Windows.
+/// @warning Low-frequency thread setup only; do not add per-buffer logging or
+/// blocking calls here.
+void configureOpenALThreadPriority()
+{
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+}
+
+/// @brief Append a raw text fragment to the captured OpenAL Soft log buffer.
+/// @param text Text fragment.
+/// @param length Text fragment length.
+void appendOpenALSoftLogText(const char* text, size_t length) noexcept
+{
+    if ( !text || length == 0 ||
+         g_openALSoftLogLength >= kOpenALSoftLogBufferSize - 1 ) {
+        return;
+    }
+
+    const size_t available =
+        kOpenALSoftLogBufferSize - 1 - g_openALSoftLogLength;
+    const size_t copyLength = std::min(length, available);
+    std::memcpy(
+        g_openALSoftLogBuffer.data() + g_openALSoftLogLength, text, copyLength);
+    g_openALSoftLogLength += copyLength;
+    g_openALSoftLogBuffer[g_openALSoftLogLength] = '\0';
+}
+
+/// @brief Capture an OpenAL Soft log callback message.
+/// @param userptr Unused callback user pointer.
+/// @param level OpenAL Soft log level code.
+/// @param message Log message text.
+/// @param length Log message length.
+void openALSoftLogCallback(void* userptr, char level, const char* message,
+                           int length) noexcept
+{
+    (void)userptr;
+    if ( !message || length <= 0 ) {
+        return;
+    }
+
+    std::lock_guard lock(g_openALSoftLogMutex);
+    if ( g_openALSoftLogLength != 0 ) {
+        appendOpenALSoftLogText("\n", 1);
+    }
+
+    appendOpenALSoftLogText("[", 1);
+    appendOpenALSoftLogText(&level, 1);
+    appendOpenALSoftLogText("] ", 2);
+    appendOpenALSoftLogText(message, static_cast<size_t>(length));
+}
+
+/// @brief Install the OpenAL Soft log callback once.
+void installOpenALSoftLogCallback()
+{
+    std::lock_guard lock(g_openALSoftLogMutex);
+    if ( g_openALSoftLogInstalled ) {
+        return;
+    }
+
+    alsoft_set_log_callback(openALSoftLogCallback, nullptr);
+    g_openALSoftLogInstalled = true;
+}
+
+/// @brief Clear captured OpenAL Soft log messages.
+void resetOpenALSoftLog()
+{
+    std::lock_guard lock(g_openALSoftLogMutex);
+    g_openALSoftLogLength    = 0;
+    g_openALSoftLogBuffer[0] = '\0';
+}
+
+/// @brief Get a snapshot of captured OpenAL Soft log messages.
+/// @return Captured log text.
+std::string getOpenALSoftLogSnapshot()
+{
+    std::lock_guard lock(g_openALSoftLogMutex);
+    return std::string(g_openALSoftLogBuffer.data(), g_openALSoftLogLength);
+}
+
+/// @brief Append captured OpenAL Soft log messages to an error string.
+/// @param errorMessage Destination error message.
+void appendOpenALSoftLogDetail(std::string& errorMessage)
+{
+    const std::string log = getOpenALSoftLogSnapshot();
+    if ( log.empty() ) {
+        return;
+    }
+
+    errorMessage += " OpenAL Soft log: ";
+    errorMessage += log;
+}
+
+/// @brief Convert an ALC error code to a readable name.
+/// @param error ALC error code.
+/// @return Static readable error name.
+const char* getALCErrorName(ALCenum error)
+{
+    switch ( error ) {
+    case ALC_NO_ERROR: return "ALC_NO_ERROR";
+    case ALC_INVALID_DEVICE: return "ALC_INVALID_DEVICE";
+    case ALC_INVALID_CONTEXT: return "ALC_INVALID_CONTEXT";
+    case ALC_INVALID_ENUM: return "ALC_INVALID_ENUM";
+    case ALC_INVALID_VALUE: return "ALC_INVALID_VALUE";
+    case ALC_OUT_OF_MEMORY: return "ALC_OUT_OF_MEMORY";
+    default: return "ALC_UNKNOWN_ERROR";
+    }
+}
+
+/// @brief Convert an AL error code to a readable name.
+/// @param error AL error code.
+/// @return Static readable error name.
+const char* getALErrorName(ALenum error)
+{
+    switch ( error ) {
+    case AL_NO_ERROR: return "AL_NO_ERROR";
+    case AL_INVALID_NAME: return "AL_INVALID_NAME";
+    case AL_INVALID_ENUM: return "AL_INVALID_ENUM";
+    case AL_INVALID_VALUE: return "AL_INVALID_VALUE";
+    case AL_INVALID_OPERATION: return "AL_INVALID_OPERATION";
+    case AL_OUT_OF_MEMORY: return "AL_OUT_OF_MEMORY";
+    default: return "AL_UNKNOWN_ERROR";
+    }
+}
+
+/// @brief Build a readable ALC failure message.
+/// @param operation Failed OpenAL operation name.
+/// @param device Device used to query the latest ALC error.
+/// @return Readable failure message.
+std::string formatALCErrorMessage(const char* operation, ALCdevice* device)
+{
+    const ALCenum error = alcGetError(device);
+    if ( error == ALC_NO_ERROR ) {
+        return fmt::format("OpenAL {} failed.", operation);
+    }
+
+    return fmt::format("OpenAL {} failed: {} (0x{:x}).",
+                       operation,
+                       getALCErrorName(error),
+                       static_cast<int>(error));
+}
+
+/// @brief Check and report the latest AL error.
+/// @param operation Failed OpenAL operation name.
+/// @param lastError Optional destination for caller-side diagnostics.
+/// @return true when no AL error is pending.
+bool checkALError(const char* operation, std::string* lastError = nullptr)
 {
     const ALenum error = alGetError();
     if ( error == AL_NO_ERROR ) {
         return true;
     }
 
-    fmt::print(
-        "OpenAL {} failed: 0x{:x}\n", operation, static_cast<int>(error));
+    const std::string message = fmt::format("OpenAL {} failed: {} (0x{:x}).",
+                                            operation,
+                                            getALErrorName(error),
+                                            static_cast<int>(error));
+    fmt::print("{}\n", message);
+    if ( lastError ) {
+        *lastError = message;
+    }
     return false;
 }
 
@@ -152,7 +358,9 @@ ALPlayer::ALPlayer(const AudioDataFormat& format)
     , m_playFormat(format)
     , m_backend(std::make_unique<ALBackend>())
 {
-    m_buffer.resize(m_playFormat, ICEConfig::default_buffer_size);
+    m_buffer.resize(m_playFormat,
+                    std::max<uint32_t>(ICEConfig::default_buffer_size,
+                                       kOpenALMinBufferFrames));
 }
 
 ALPlayer::~ALPlayer()
@@ -162,6 +370,8 @@ ALPlayer::~ALPlayer()
 
 bool ALPlayer::init_backend()
 {
+    configureOpenALSoftEnvironment();
+    installOpenALSoftLogCallback();
     al_inited.store(true);
     return true;
 }
@@ -199,11 +409,53 @@ std::vector<ALAudioDeviceInfo> ALPlayer::list_devices()
 
 bool ALPlayer::open()
 {
-    return open({});
+    if ( open({}) ) {
+        return true;
+    }
+
+    const std::string defaultError = m_lastError;
+    const auto        devices      = list_devices();
+    std::string       fallbackErrors;
+
+    for ( const auto& device : devices ) {
+        if ( device.name.empty() ) {
+            continue;
+        }
+
+        if ( open(device.name) ) {
+            return true;
+        }
+
+        if ( !fallbackErrors.empty() ) {
+            fallbackErrors += " ";
+        }
+        fallbackErrors += fmt::format("[{}: {}]", device.name, m_lastError);
+    }
+
+    m_lastError = defaultError;
+    if ( !fallbackErrors.empty() ) {
+        m_lastError += " Fallback devices also failed: ";
+        m_lastError += fallbackErrors;
+    }
+    return false;
+}
+
+const std::string& ALPlayer::getLastError() const
+{
+    return m_lastError;
+}
+
+const std::string& ALPlayer::getOpenedDeviceName() const
+{
+    return m_openedDeviceName;
 }
 
 bool ALPlayer::open(std::string_view deviceName)
 {
+    m_lastError.clear();
+    m_openedDeviceName.clear();
+    resetOpenALSoftLog();
+
     if ( m_backend->device || m_backend->context ) {
         close();
     }
@@ -214,20 +466,52 @@ bool ALPlayer::open(std::string_view deviceName)
 
     m_backend->device = alcOpenDevice(openName);
     if ( !m_backend->device ) {
-        fmt::print("Failed to open OpenAL device\n");
+        m_lastError = fmt::format(
+            "OpenAL device open failed: {}.",
+            deviceNameStorage.empty() ? "default device" : deviceNameStorage);
+        appendOpenALSoftLogDetail(m_lastError);
+        fmt::print("{}\n", m_lastError);
         return false;
     }
 
-    m_backend->context = alcCreateContext(m_backend->device, nullptr);
+    const ALCenum openError = alcGetError(m_backend->device);
+    if ( openError != ALC_NO_ERROR ) {
+        m_lastError = fmt::format(
+            "OpenAL device open reported error for {}: {} "
+            "(0x{:x}).",
+            deviceNameStorage.empty() ? "default device" : deviceNameStorage,
+            getALCErrorName(openError),
+            static_cast<int>(openError));
+        appendOpenALSoftLogDetail(m_lastError);
+        fmt::print("{}\n", m_lastError);
+        alcCloseDevice(m_backend->device);
+        m_backend->device = nullptr;
+        return false;
+    }
+
+    const std::array<ALCint, 5> contextAttributes{ ALC_FREQUENCY,
+                                                   static_cast<ALCint>(
+                                                       m_playFormat.samplerate),
+                                                   ALC_REFRESH,
+                                                   60,
+                                                   0 };
+    m_backend->context =
+        alcCreateContext(m_backend->device, contextAttributes.data());
     if ( !m_backend->context ) {
-        fmt::print("Failed to create OpenAL context\n");
+        m_lastError =
+            formatALCErrorMessage("context creation", m_backend->device);
+        appendOpenALSoftLogDetail(m_lastError);
+        fmt::print("{}\n", m_lastError);
         alcCloseDevice(m_backend->device);
         m_backend->device = nullptr;
         return false;
     }
 
     if ( alcMakeContextCurrent(m_backend->context) != ALC_TRUE ) {
-        fmt::print("Failed to make OpenAL context current\n");
+        m_lastError =
+            formatALCErrorMessage("make context current", m_backend->device);
+        appendOpenALSoftLogDetail(m_lastError);
+        fmt::print("{}\n", m_lastError);
         alcDestroyContext(m_backend->context);
         alcCloseDevice(m_backend->device);
         m_backend->context = nullptr;
@@ -237,14 +521,16 @@ bool ALPlayer::open(std::string_view deviceName)
 
     alGetError();
     alGenSources(1, &m_backend->source);
-    if ( !checkALError("alGenSources") ) {
+    if ( !checkALError("alGenSources", &m_lastError) ) {
+        appendOpenALSoftLogDetail(m_lastError);
         close();
         return false;
     }
 
     alGenBuffers(static_cast<ALsizei>(m_backend->buffers.size()),
                  m_backend->buffers.data());
-    if ( !checkALError("alGenBuffers") ) {
+    if ( !checkALError("alGenBuffers", &m_lastError) ) {
+        appendOpenALSoftLogDetail(m_lastError);
         close();
         return false;
     }
@@ -260,7 +546,17 @@ bool ALPlayer::open(std::string_view deviceName)
     alDistanceModel(AL_INVERSE_DISTANCE_CLAMPED);
     applySpatialState();
 
-    return checkALError("open");
+    if ( !checkALError("open", &m_lastError) ) {
+        appendOpenALSoftLogDetail(m_lastError);
+        close();
+        return false;
+    }
+
+    const ALCchar* openedDeviceName =
+        alcGetString(m_backend->device, ALC_DEVICE_SPECIFIER);
+    m_openedDeviceName =
+        openedDeviceName ? openedDeviceName : deviceNameStorage;
+    return true;
 }
 
 void ALPlayer::close()
@@ -292,15 +588,24 @@ void ALPlayer::close()
     alcCloseDevice(m_backend->device);
     m_backend->context = nullptr;
     m_backend->device  = nullptr;
+    m_openedDeviceName.clear();
 }
 
 bool ALPlayer::start()
 {
-    if ( m_running.load() || !m_backend->context || m_backend->source == 0 ||
-         !m_backend->buffersReady ) {
+    if ( m_running.load() ) {
+        m_lastError = "OpenAL playback thread is already running.";
         return false;
     }
 
+    if ( !m_backend->context || m_backend->source == 0 ||
+         !m_backend->buffersReady ) {
+        m_lastError =
+            "OpenAL playback backend is not fully initialized before start.";
+        return false;
+    }
+
+    m_lastError.clear();
     m_running.store(true);
     m_paused.store(false);
     m_rebuildQueuedBuffers.store(false);
@@ -392,6 +697,8 @@ void ALPlayer::set_spatial_parameters(float directionX, float directionY,
 
 void ALPlayer::audio_thread_loop()
 {
+    configureOpenALThreadPriority();
+
     std::vector<float>        floatScratch;
     std::vector<std::int16_t> int16Scratch;
     floatScratch.reserve(m_buffer.num_frames() *

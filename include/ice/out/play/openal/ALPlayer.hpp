@@ -57,6 +57,15 @@ public:
     /// @return 成功时返回 true。
     bool open(std::string_view deviceName);
 
+    /// @brief Get the latest OpenAL backend failure detail.
+    /// @return Last backend error message, or an empty string when no error is
+    /// recorded.
+    const std::string& getLastError() const;
+
+    /// @brief Get the successfully opened OpenAL device name.
+    /// @return Current device name, or an empty string when no device is open.
+    const std::string& getOpenedDeviceName() const;
+
     /// @brief 关闭 OpenAL 设备并释放资源。
     void close() override;
 
@@ -123,6 +132,12 @@ private:
 
     /// @brief OpenAL 设备、上下文、源和 buffer 句柄。
     std::unique_ptr<ALBackend> m_backend;
+
+    /// @brief Latest OpenAL backend failure detail for caller-side logging.
+    std::string m_lastError;
+
+    /// @brief Name of the successfully opened OpenAL playback device.
+    std::string m_openedDeviceName;
 
     /// @brief 播放线程是否处于运行状态。
     std::atomic<bool> m_running{ false };
