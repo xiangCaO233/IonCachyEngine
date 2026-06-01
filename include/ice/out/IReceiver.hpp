@@ -1,7 +1,7 @@
-#ifndef ICE_IRECEIVER_HPP
-#define ICE_IRECEIVER_HPP
+#pragma once
 
 #include <memory>
+#include <utility>
 
 #include "ice/core/IAudioNode.hpp"
 #include "ice/manage/AudioFormat.hpp"
@@ -9,49 +9,55 @@
 namespace ice
 {
 
+/// @brief 音频输出接收端接口。
 class IReceiver
 {
 public:
-    // 构造IReceiver
+    /// @brief 构造接收端。
+    /// @param format 接收端期望的音频格式。
     explicit IReceiver(const AudioDataFormat& format);
 
-    // 析构IReceiver
+    /// @brief 析构接收端。
     virtual ~IReceiver() = default;
 
-    // 状态管理
-    // 打开后端设备或文件,进行所有必要的准备工作
+    /// @brief 打开后端设备或文件。
+    /// @return 成功时返回 true。
     virtual bool open() = 0;
 
-    // 关闭后端,释放所有资源
+    /// @brief 关闭后端并释放所有资源。
     virtual void close() = 0;
 
-    // 开始拉取数据并播放/写入
+    /// @brief 开始拉取数据并播放或写入。
+    /// @return 成功时返回 true。
     virtual bool start() = 0;
 
-    // 停止拉取数据
+    /// @brief 停止拉取数据。
     virtual void stop() = 0;
 
-    // 查询状态
+    /// @brief 查询接收端是否正在运行。
     virtual bool is_running() const = 0;
 
-    // --- 数据源管理 ---
-    // 设置要从中拉取数据的音频节点图的最终节点
+    /// @brief 设置音频图最终输出节点。
+    /// @param source 要从中拉取数据的音频节点。
+    /// @warning
+    /// 播放线程可能读取该指针；调用方应在低频路径设置，避免播放热路径频繁改动。
     virtual void set_source(std::shared_ptr<IAudioNode> source)
     {
-        data_source = source;
+        data_source = std::move(source);
     }
 
 protected:
-    [[nodiscard]] virtual std::shared_ptr<IAudioNode> get_source() const
+    /// @brief 获取当前音频图最终输出节点。
+    /// @return 音频节点共享指针引用。
+    /// @warning 音频热路径访问：返回引用以避免每个 buffer 复制 shared_ptr。
+    [[nodiscard]] virtual const std::shared_ptr<IAudioNode>& get_source() const
     {
         return data_source;
     }
 
 private:
-    // 数据来源
+    /// @brief 当前音频图最终输出节点。
     std::shared_ptr<IAudioNode> data_source{ nullptr };
 };
 
 }  // namespace ice
-
-#endif  // ICE_IRECEIVER_HPP
