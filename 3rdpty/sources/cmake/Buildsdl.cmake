@@ -57,3 +57,6 @@ add_subdirectory(${SDL_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/sdl_build
     EXCLUDE_FROM_ALL SYSTEM)
 
 set_target_properties(SDL3-static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(3rd_sdl3 INTERFACE)
+target_link_libraries(3rd_sdl3 INTERFACE SDL3-static)
+target_include_directories(3rd_sdl3 INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../sources/sdl/include")
