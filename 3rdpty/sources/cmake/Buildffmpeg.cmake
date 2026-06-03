@@ -62,7 +62,7 @@ else()
 
 	find_package(PkgConfig QUIET)
 	if(PkgConfig_FOUND)
-		pkg_check_modules(ICE_LIBMP3LAME QUIET lame)
+		pkg_check_modules(ICE_LIBMP3LAME QUIET IMPORTED_TARGET lame)
 	endif()
 	if(ICE_LIBMP3LAME_FOUND)
 		list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
@@ -292,6 +292,10 @@ else()
 
 	# --- 封装接口库 ---
 	set(FFMPEG_LIBS ${FFMPEG_BYPRODUCTS}) # 直接利用上面定义的产物列表
+	set(FFMPEG_EXTERNAL_LIBRARIES "")
+	if(ICE_FFMPEG_HAS_LIBMP3LAME)
+		list(APPEND FFMPEG_EXTERNAL_LIBRARIES PkgConfig::ICE_LIBMP3LAME)
+	endif()
 
 	if(WIN32)
 		set(FFMPEG_PLATFORM_LIBRARIES
@@ -329,6 +333,7 @@ else()
 	target_link_libraries(3rd_ffmpeg
 		INTERFACE
 			${FFMPEG_LIBS}
+			${FFMPEG_EXTERNAL_LIBRARIES}
 			${FFMPEG_PLATFORM_LIBRARIES}
 	)
 endif()
