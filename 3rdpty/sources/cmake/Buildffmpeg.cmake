@@ -39,6 +39,128 @@ else()
 		set(ICE_FFMPEG_CFLAGS "")
 	endif()
 
+	# 音频白名单覆盖当前播放器可解码类型，并补齐可用的原生编码器。
+	set(ICE_FFMPEG_AUDIO_DECODERS
+		flac
+		mp3
+		aac
+		vorbis
+		opus
+		pcm_s16le
+		pcm_s24le
+		pcm_f32le
+	)
+	set(ICE_FFMPEG_AUDIO_ENCODERS
+		flac
+		aac
+		vorbis
+		opus
+		pcm_s16le
+		pcm_s24le
+		pcm_f32le
+	)
+
+	find_package(PkgConfig QUIET)
+	if(PkgConfig_FOUND)
+		pkg_check_modules(ICE_LIBMP3LAME QUIET lame)
+	endif()
+	if(ICE_LIBMP3LAME_FOUND)
+		list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
+		set(ICE_FFMPEG_HAS_LIBMP3LAME TRUE)
+	else()
+		set(ICE_FFMPEG_HAS_LIBMP3LAME FALSE)
+	endif()
+
+	# 常见 BG 视频格式预留：优先编译原生解码器；编码器只启用无外部依赖项。
+	set(ICE_FFMPEG_VIDEO_DECODERS
+		h264
+		hevc
+		mpeg4
+		mpeg2video
+		vp8
+		vp9
+		av1
+		mjpeg
+		png
+	)
+	set(ICE_FFMPEG_VIDEO_ENCODERS
+		mpeg4
+		mjpeg
+		png
+	)
+
+	set(ICE_FFMPEG_DEMUXERS
+		aac
+		avi
+		flac
+		flv
+		h264
+		hevc
+		ivf
+		m4v
+		matroska
+		mov
+		mp3
+		mpeg
+		mpegts
+		ogg
+		wav
+	)
+	set(ICE_FFMPEG_MUXERS
+		adts
+		avi
+		flac
+		flv
+		m4v
+		matroska
+		mov
+		mp3
+		mp4
+		mpeg
+		mpegts
+		ogg
+		wav
+		webm
+	)
+	set(ICE_FFMPEG_PARSERS
+		aac
+		aac_latm
+		av1
+		flac
+		h264
+		hevc
+		mjpeg
+		mpeg4video
+		mpegaudio
+		opus
+		png
+		vorbis
+		vp8
+		vp9
+	)
+	set(ICE_FFMPEG_BSFS
+		aac_adtstoasc
+		av1_frame_merge
+		av1_frame_split
+		h264_mp4toannexb
+		hevc_mp4toannexb
+		vp9_superframe
+		vp9_superframe_split
+	)
+
+	string(JOIN "," ICE_FFMPEG_DECODER_LIST
+		${ICE_FFMPEG_AUDIO_DECODERS}
+		${ICE_FFMPEG_VIDEO_DECODERS}
+	)
+	string(JOIN "," ICE_FFMPEG_ENCODER_LIST
+		${ICE_FFMPEG_AUDIO_ENCODERS}
+		${ICE_FFMPEG_VIDEO_ENCODERS}
+	)
+	string(JOIN "," ICE_FFMPEG_DEMUXER_LIST ${ICE_FFMPEG_DEMUXERS})
+	string(JOIN "," ICE_FFMPEG_MUXER_LIST ${ICE_FFMPEG_MUXERS})
+	string(JOIN "," ICE_FFMPEG_PARSER_LIST ${ICE_FFMPEG_PARSERS})
+	string(JOIN "," ICE_FFMPEG_BSF_LIST ${ICE_FFMPEG_BSFS})
+
 	# 定义 FFmpeg 编译参数 (使用 LIST 格式，避免空格引起的引号问题)
 	set(FFMPEG_CONF_LIST
 		--prefix=${FFMPEG_INSTALL_DIR}
@@ -56,20 +178,30 @@ else()
 		--enable-avcodec
 		--enable-avformat
 		--enable-swresample
+		--enable-swscale
 		--enable-avutil
+		--enable-zlib
 		--disable-programs
 		--disable-doc
 		--enable-static
 		--disable-shared
 		--enable-pic # FFmpeg 内部会自动处理一部分 PIC 逻辑
-		--enable-decoder=flac,mp3,aac,vorbis,opus,pcm_s16le,pcm_s24le,pcm_f32le
-		--enable-demuxer=flac,mp3,mov,ogg,wav,matroska
-		--enable-parser=flac,mpegaudio,aac,vorbis,opus
+		--enable-decoder=${ICE_FFMPEG_DECODER_LIST}
+		--enable-encoder=${ICE_FFMPEG_ENCODER_LIST}
+		--enable-demuxer=${ICE_FFMPEG_DEMUXER_LIST}
+		--enable-muxer=${ICE_FFMPEG_MUXER_LIST}
+		--enable-parser=${ICE_FFMPEG_PARSER_LIST}
+		--enable-bsf=${ICE_FFMPEG_BSF_LIST}
 		--enable-protocol=file
 		"--extra-cflags=${ICE_FFMPEG_CFLAGS}"
 		"--extra-cxxflags=${ICE_FFMPEG_CFLAGS}"
 		"--extra-ldflags=${ICE_FFMPEG_CFLAGS}" # LDFLAGS 也需要 PIC
 	)
+	if(ICE_FFMPEG_HAS_LIBMP3LAME)
+		list(APPEND FFMPEG_CONF_LIST --enable-libmp3lame)
+	else()
+		message(STATUS "FFmpeg: libmp3lame not found; MP3 re-encode disabled")
+	endif()
 
 	# 调试标志 (直接 append 到 list)
 	if(CMAKE_BUILD_TYPE
@@ -109,9 +241,21 @@ else()
 	set(FFMPEG_BYPRODUCTS
 		${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}
 		${FFMPEG_LIB_DIR}/${LIB_PREFIX}avcodec${LIB_EXT}
+		${FFMPEG_LIB_DIR}/${LIB_PREFIX}swscale${LIB_EXT}
 		${FFMPEG_LIB_DIR}/${LIB_PREFIX}swresample${LIB_EXT}
 		${FFMPEG_LIB_DIR}/${LIB_PREFIX}avutil${LIB_EXT}
 	)
+
+	string(SHA256 ICE_FFMPEG_CONFIG_HASH "${FFMPEG_CONF_LIST}")
+	set(FFMPEG_CONFIG_STAMP
+		"${FFMPEG_INSTALL_DIR}/.mmm_ffmpeg_${ICE_FFMPEG_CONFIG_HASH}.stamp"
+	)
+	set(FFMPEG_READY_TEST "test -f '${FFMPEG_CONFIG_STAMP}'")
+	foreach(byproduct IN LISTS FFMPEG_BYPRODUCTS)
+		set(FFMPEG_READY_TEST
+			"${FFMPEG_READY_TEST} && test -f '${byproduct}'"
+		)
+	endforeach()
 
 	message(STATUS "Debug: FFmpeg Configure Command is")
 	message(STATUS "${FFMPEG_CONFIGURE_CMD}")
@@ -129,17 +273,18 @@ else()
 		${FFMPEG_SOURCE_DIR}
 		UPDATE_COMMAND ""
 		CONFIGURE_COMMAND
-		sh -c "test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || ${FFMPEG_CONFIGURE_CMD_STR}"
+		sh -c "${FFMPEG_READY_TEST} || (rm -rf '${FFMPEG_INSTALL_DIR}' && ${FFMPEG_CONFIGURE_CMD_STR})"
 		# 统一使用 make，Windows MSVC 环境下 FFmpeg 也通常需要适配好的 make (如 Git Bash 里的)
 		BUILD_COMMAND
-		sh -c "test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || make -j${PROCESSOR_COUNT}"
+		sh -c "${FFMPEG_READY_TEST} || make -j${PROCESSOR_COUNT}"
 		# 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
 		INSTALL_COMMAND
 		sh
 		-c
-		"test -f '${FFMPEG_LIB_DIR}/${LIB_PREFIX}avformat${LIB_EXT}' || (make install && ${CMAKE_COMMAND} -E rm -rf ${FFMPEG_INSTALL_DIR}/share)"
+		"${FFMPEG_READY_TEST} || (make install && ${CMAKE_COMMAND} -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && ${CMAKE_COMMAND} -E touch '${FFMPEG_CONFIG_STAMP}')"
 		BUILD_BYPRODUCTS
 		${FFMPEG_BYPRODUCTS}
+		${FFMPEG_CONFIG_STAMP}
 	)
 
 	# 确保头文件目录存在，防止 CMake 配置阶段报错
