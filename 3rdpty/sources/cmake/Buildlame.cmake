@@ -1,0 +1,63 @@
+# 3rdpty/sources/cmake/Buildlame.cmake
+
+include(ExternalProject)
+include(ProcessorCount)
+
+ProcessorCount(ICE_LAME_PROCESSOR_COUNT)
+if(ICE_LAME_PROCESSOR_COUNT EQUAL 0)
+    set(ICE_LAME_PROCESSOR_COUNT 1)
+endif()
+
+set(ICE_LAME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../lame")
+set(ICE_LAME_BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/lame_bld")
+set(ICE_LAME_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/lame_inst")
+set(ICE_LAME_INCLUDE_DIR "${ICE_LAME_INSTALL_DIR}/include")
+set(ICE_LAME_LIBRARY_DIR "${ICE_LAME_INSTALL_DIR}/lib")
+
+if(MSVC)
+    set(ICE_LAME_STATIC_LIBRARY "${ICE_LAME_LIBRARY_DIR}/mp3lame.lib")
+else()
+    set(ICE_LAME_STATIC_LIBRARY "${ICE_LAME_LIBRARY_DIR}/libmp3lame.a")
+endif()
+
+set(ICE_LAME_C_FLAGS "${CMAKE_C_FLAGS}")
+if(NOT MSVC)
+    string(APPEND ICE_LAME_C_FLAGS " -fPIC")
+endif()
+
+ExternalProject_Add(lame_project
+    SOURCE_DIR "${ICE_LAME_SOURCE_DIR}"
+    BINARY_DIR "${ICE_LAME_BINARY_DIR}"
+    INSTALL_DIR "${ICE_LAME_INSTALL_DIR}"
+    UPDATE_COMMAND ""
+    CONFIGURE_COMMAND
+        ${CMAKE_COMMAND} -E env
+            CC=${CMAKE_C_COMPILER}
+            AR=${CMAKE_AR}
+            RANLIB=${CMAKE_RANLIB}
+            CFLAGS=${ICE_LAME_C_FLAGS}
+            ${ICE_LAME_SOURCE_DIR}/configure
+                --prefix=${ICE_LAME_INSTALL_DIR}
+                --libdir=${ICE_LAME_LIBRARY_DIR}
+                --includedir=${ICE_LAME_INCLUDE_DIR}
+                --disable-shared
+                --enable-static
+                --with-pic
+                --disable-frontend
+                --disable-mp3x
+                --disable-mp3rtp
+                --disable-gtktest
+                --disable-decoder
+                --disable-libmpg123
+    BUILD_COMMAND make -j${ICE_LAME_PROCESSOR_COUNT}
+    INSTALL_COMMAND sh -c "test -f '${ICE_LAME_STATIC_LIBRARY}' || make install"
+    BUILD_BYPRODUCTS "${ICE_LAME_STATIC_LIBRARY}"
+)
+
+file(MAKE_DIRECTORY "${ICE_LAME_INCLUDE_DIR}")
+file(MAKE_DIRECTORY "${ICE_LAME_LIBRARY_DIR}")
+
+add_library(3rd_lame INTERFACE)
+add_dependencies(3rd_lame lame_project)
+target_include_directories(3rd_lame INTERFACE "${ICE_LAME_INCLUDE_DIR}")
+target_link_libraries(3rd_lame INTERFACE "${ICE_LAME_STATIC_LIBRARY}")

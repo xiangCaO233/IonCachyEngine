@@ -1,0 +1,49 @@
+# 3rdpty/sources/cmake/Buildzlib.cmake
+
+include(ExternalProject)
+
+set(ICE_ZLIB_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../zlib")
+set(ICE_ZLIB_BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/zlib_bld")
+set(ICE_ZLIB_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/zlib_inst")
+set(ICE_ZLIB_INCLUDE_DIR "${ICE_ZLIB_INSTALL_DIR}/include")
+set(ICE_ZLIB_LIBRARY_DIR "${ICE_ZLIB_INSTALL_DIR}/lib")
+set(ICE_ZLIB_PKGCONFIG_DIR "${ICE_ZLIB_LIBRARY_DIR}/pkgconfig")
+
+if(MSVC)
+    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs.lib")
+elseif(WIN32)
+    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs.a")
+else()
+    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libz.a")
+endif()
+
+ExternalProject_Add(zlib_project
+    SOURCE_DIR "${ICE_ZLIB_SOURCE_DIR}"
+    BINARY_DIR "${ICE_ZLIB_BINARY_DIR}"
+    INSTALL_DIR "${ICE_ZLIB_INSTALL_DIR}"
+    UPDATE_COMMAND ""
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=${ICE_ZLIB_INSTALL_DIR}
+        -DCMAKE_INSTALL_LIBDIR=lib
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_INSTALL_MESSAGE=NEVER
+        -DZLIB_BUILD_SHARED=OFF
+        -DZLIB_BUILD_STATIC=ON
+        -DZLIB_BUILD_TESTING=OFF
+        -DZLIB_INSTALL=ON
+    INSTALL_COMMAND sh -c "test -f '${ICE_ZLIB_STATIC_LIBRARY}' || ${CMAKE_COMMAND} --build . --target install"
+    BUILD_BYPRODUCTS
+        "${ICE_ZLIB_STATIC_LIBRARY}"
+        "${ICE_ZLIB_PKGCONFIG_DIR}/zlib.pc"
+)
+
+file(MAKE_DIRECTORY "${ICE_ZLIB_INCLUDE_DIR}")
+file(MAKE_DIRECTORY "${ICE_ZLIB_LIBRARY_DIR}")
+file(MAKE_DIRECTORY "${ICE_ZLIB_PKGCONFIG_DIR}")
+
+add_library(3rd_zlib INTERFACE)
+add_dependencies(3rd_zlib zlib_project)
+target_include_directories(3rd_zlib INTERFACE "${ICE_ZLIB_INCLUDE_DIR}")
+target_link_libraries(3rd_zlib INTERFACE "${ICE_ZLIB_STATIC_LIBRARY}")

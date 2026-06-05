@@ -33,10 +33,17 @@ else()
 
 	# 跨平台编译器标志构造
 	set(ICE_FFMPEG_CFLAGS "")
+	set(ICE_FFMPEG_LDFLAGS "")
+	set(ICE_FFMPEG_PKG_CONFIG_PATH "${ICE_ZLIB_PKGCONFIG_DIR}")
 
 	if(MSVC)
 	else()
-		set(ICE_FFMPEG_CFLAGS "")
+		set(ICE_FFMPEG_CFLAGS
+			"-I${ICE_ZLIB_INCLUDE_DIR} -I${ICE_LAME_INCLUDE_DIR} -fPIC"
+		)
+		set(ICE_FFMPEG_LDFLAGS
+			"-L${ICE_ZLIB_LIBRARY_DIR} -L${ICE_LAME_LIBRARY_DIR} -fPIC"
+		)
 	endif()
 
 	# 音频白名单覆盖当前播放器可解码类型，并补齐可用的原生编码器。
@@ -60,16 +67,7 @@ else()
 		pcm_f32le
 	)
 
-	find_package(PkgConfig QUIET)
-	if(PkgConfig_FOUND)
-		pkg_check_modules(ICE_LIBMP3LAME QUIET IMPORTED_TARGET lame)
-	endif()
-	if(ICE_LIBMP3LAME_FOUND)
-		list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
-		set(ICE_FFMPEG_HAS_LIBMP3LAME TRUE)
-	else()
-		set(ICE_FFMPEG_HAS_LIBMP3LAME FALSE)
-	endif()
+	list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
 
 	# 常见 BG 视频格式预留：优先编译原生解码器；编码器只启用无外部依赖项。
 	set(ICE_FFMPEG_VIDEO_DECODERS
@@ -186,6 +184,7 @@ else()
 		--enable-static
 		--disable-shared
 		--enable-pic # FFmpeg 内部会自动处理一部分 PIC 逻辑
+		--pkg-config-flags=--static
 		--enable-decoder=${ICE_FFMPEG_DECODER_LIST}
 		--enable-encoder=${ICE_FFMPEG_ENCODER_LIST}
 		--enable-demuxer=${ICE_FFMPEG_DEMUXER_LIST}
@@ -195,13 +194,10 @@ else()
 		--enable-protocol=file
 		"--extra-cflags=${ICE_FFMPEG_CFLAGS}"
 		"--extra-cxxflags=${ICE_FFMPEG_CFLAGS}"
-		"--extra-ldflags=${ICE_FFMPEG_CFLAGS}" # LDFLAGS 也需要 PIC
+		"--extra-ldflags=${ICE_FFMPEG_LDFLAGS}" # LDFLAGS 也需要 PIC
+		"--extra-libs=-lmp3lame -lz"
 	)
-	if(ICE_FFMPEG_HAS_LIBMP3LAME)
-		list(APPEND FFMPEG_CONF_LIST --enable-libmp3lame)
-	else()
-		message(STATUS "FFmpeg: libmp3lame not found; MP3 re-encode disabled")
-	endif()
+	list(APPEND FFMPEG_CONF_LIST --enable-libmp3lame)
 
 	# 调试标志 (直接 append 到 list)
 	if(CMAKE_BUILD_TYPE
@@ -220,12 +216,25 @@ else()
 	# 构造最终命令 (不要带引号展开变量)
 	if(WIN32)
 		set(FFMPEG_CONFIGURE_CMD
+			${CMAKE_COMMAND}
+			-E
+			env
+			"PKG_CONFIG_PATH=${ICE_FFMPEG_PKG_CONFIG_PATH}"
+			"PKG_CONFIG_LIBDIR=${ICE_FFMPEG_PKG_CONFIG_PATH}"
 			sh.exe
 			${FFMPEG_SOURCE_DIR}/configure
 			${FFMPEG_CONF_LIST}
 		)
 	else()
-		set(FFMPEG_CONFIGURE_CMD ${FFMPEG_SOURCE_DIR}/configure ${FFMPEG_CONF_LIST})
+		set(FFMPEG_CONFIGURE_CMD
+			${CMAKE_COMMAND}
+			-E
+			env
+			"PKG_CONFIG_PATH=${ICE_FFMPEG_PKG_CONFIG_PATH}"
+			"PKG_CONFIG_LIBDIR=${ICE_FFMPEG_PKG_CONFIG_PATH}"
+			${FFMPEG_SOURCE_DIR}/configure
+			${FFMPEG_CONF_LIST}
+		)
 	endif()
 
 	# 动态库后缀处理
@@ -272,6 +281,9 @@ else()
 		SOURCE_DIR
 		${FFMPEG_SOURCE_DIR}
 		UPDATE_COMMAND ""
+		DEPENDS
+		zlib_project
+		lame_project
 		CONFIGURE_COMMAND
 		sh -c "${FFMPEG_READY_TEST} || (rm -rf '${FFMPEG_INSTALL_DIR}' && ${FFMPEG_CONFIGURE_CMD_STR})"
 		# 统一使用 make，Windows MSVC 环境下 FFmpeg 也通常需要适配好的 make (如 Git Bash 里的)
@@ -292,10 +304,10 @@ else()
 
 	# --- 封装接口库 ---
 	set(FFMPEG_LIBS ${FFMPEG_BYPRODUCTS}) # 直接利用上面定义的产物列表
-	set(FFMPEG_EXTERNAL_LIBRARIES "")
-	if(ICE_FFMPEG_HAS_LIBMP3LAME)
-		list(APPEND FFMPEG_EXTERNAL_LIBRARIES PkgConfig::ICE_LIBMP3LAME)
-	endif()
+	set(FFMPEG_EXTERNAL_LIBRARIES
+		${ICE_LAME_STATIC_LIBRARY}
+		${ICE_ZLIB_STATIC_LIBRARY}
+	)
 
 	if(WIN32)
 		set(FFMPEG_PLATFORM_LIBRARIES
@@ -319,12 +331,11 @@ else()
 			"-framework VideoToolbox"
 			"-framework Security"
 			bz2
-			z
 			m
 			iconv
 		)
 	else()
-		set(FFMPEG_PLATFORM_LIBRARIES z m pthread lzma bz2 dl)
+		set(FFMPEG_PLATFORM_LIBRARIES m pthread lzma bz2 dl)
 	endif()
 
 	add_library(3rd_ffmpeg INTERFACE)

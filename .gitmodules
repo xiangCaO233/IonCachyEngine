@@ -22,3 +22,11 @@
 	path = 3rdpty/sources/sdl
 	url = https://github.com/libsdl-org/SDL.git
     branch = master
+[submodule "3rdpty/sources/zlib"]
+	path = 3rdpty/sources/zlib
+	url = https://github.com/madler/zlib.git
+	branch = develop
+[submodule "3rdpty/sources/lame"]
+	path = 3rdpty/sources/lame
+	url = https://github.com/lameproject/lame.git
+	branch = master
