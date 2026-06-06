@@ -190,6 +190,14 @@ public:
 
         // 寻道后解码器内部的状态可能是不一致的,需要刷新
         avcodec_flush_buffers(avcodec_ctx);
+        av_packet_unref(avpacket);
+        av_frame_unref(avframe);
+        conversion_buffer_remains = 0;
+        conversion_buffer_offset  = 0;
+        if ( swr_ctx ) {
+            swr_close(swr_ctx);
+            AVCALL_CHECKRETB(swr_init(swr_ctx))
+        }
         return true;
     }
 
@@ -227,10 +235,12 @@ public:
 
             if ( ret == 0 ) {
                 // 将整个原生帧转换到的内部缓冲区
+                const int output_capacity =
+                    ensure_conversion_buffer_capacity(avframe->nb_samples);
                 int converted_count =
                     swr_convert(swr_ctx,
                                 (uint8_t**)conversion_buffer.raw_ptrs(),
-                                conversion_buffer.num_frames(),
+                                output_capacity,
                                 (const uint8_t**)avframe->data,
                                 avframe->nb_samples);
 
@@ -263,10 +273,12 @@ public:
                 int flushed_count;
                 do {
                     // 先冲洗到临时缓冲区
+                    const int output_capacity =
+                        ensure_conversion_buffer_capacity(0);
                     flushed_count =
                         swr_convert(swr_ctx,
                                     (uint8_t**)conversion_buffer.raw_ptrs(),
-                                    conversion_buffer.num_frames(),
+                                    output_capacity,
                                     nullptr,
                                     0);
                     if ( flushed_count > 0 ) {
@@ -303,6 +315,27 @@ public:
     inline size_t frames() const { return total_frames; }
 
 private:
+    /// @brief 确保重采样输出缓冲能容纳当前输入可能产生的所有帧。
+    /// @param input_sample_count 即将送入 swr_convert 的输入采样帧数。
+    /// @return 可传给 swr_convert 的输出容量。
+    int ensure_conversion_buffer_capacity(int input_sample_count)
+    {
+        int required =
+            swr_ctx ? swr_get_out_samples(swr_ctx, input_sample_count) : 0;
+        if ( required <= 0 ) {
+            required = static_cast<int>(conversion_buffer.num_frames());
+        }
+        if ( required <= 0 ) {
+            required = 1;
+        }
+
+        const auto required_frames = static_cast<size_t>(required);
+        if ( required_frames > conversion_buffer.num_frames() ) {
+            conversion_buffer.resize(ice_format, required_frames);
+        }
+        return static_cast<int>(conversion_buffer.num_frames());
+    }
+
     /// @brief 将单声道转换结果复制到所有目标声道，保证 mono
     /// 文件以居中立体声输出。
     void duplicateMonoChannelToTargetChannels(size_t frame_count)
