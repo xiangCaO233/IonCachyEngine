@@ -56,7 +56,9 @@ public:
     void invalidate(std::string_view file)
     {
         std::unique_lock<std::shared_mutex> lock(pool_mutex);
-        pool.erase(file);
+        if ( auto it = pool.find(file); it != pool.end() ) {
+            pool.erase(it);
+        }
     }
 
     // 载入文件到音频池
