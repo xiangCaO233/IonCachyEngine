@@ -25,30 +25,45 @@ if(NOT MSVC)
     string(APPEND ICE_LAME_C_FLAGS " -fPIC")
 endif()
 
+set(ICE_LAME_CONFIGURE_SCRIPT "${ICE_LAME_SOURCE_DIR}/configure")
+set(ICE_LAME_CONFIGURE_COMMAND
+    ${CMAKE_COMMAND} -E env
+        "CC=${CMAKE_C_COMPILER}"
+        "AR=${CMAKE_AR}"
+        "RANLIB=${CMAKE_RANLIB}"
+        "CFLAGS=${ICE_LAME_C_FLAGS}"
+)
+
+if(WIN32)
+    find_program(ICE_LAME_SH_EXECUTABLE NAMES sh.exe sh bash.exe bash)
+    if(NOT ICE_LAME_SH_EXECUTABLE)
+        message(FATAL_ERROR "LAME requires sh.exe or bash.exe to run configure on Windows")
+    endif()
+    list(APPEND ICE_LAME_CONFIGURE_COMMAND "${ICE_LAME_SH_EXECUTABLE}")
+endif()
+
+list(APPEND ICE_LAME_CONFIGURE_COMMAND
+    "${ICE_LAME_CONFIGURE_SCRIPT}"
+    --prefix=${ICE_LAME_INSTALL_DIR}
+    --libdir=${ICE_LAME_LIBRARY_DIR}
+    --includedir=${ICE_LAME_INCLUDE_DIR}
+    --disable-shared
+    --enable-static
+    --with-pic
+    --disable-frontend
+    --disable-mp3x
+    --disable-mp3rtp
+    --disable-gtktest
+    --disable-decoder
+    --disable-libmpg123
+)
+
 ExternalProject_Add(lame_project
     SOURCE_DIR "${ICE_LAME_SOURCE_DIR}"
     BINARY_DIR "${ICE_LAME_BINARY_DIR}"
     INSTALL_DIR "${ICE_LAME_INSTALL_DIR}"
     UPDATE_COMMAND ""
-    CONFIGURE_COMMAND
-        ${CMAKE_COMMAND} -E env
-            CC=${CMAKE_C_COMPILER}
-            AR=${CMAKE_AR}
-            RANLIB=${CMAKE_RANLIB}
-            CFLAGS=${ICE_LAME_C_FLAGS}
-            ${ICE_LAME_SOURCE_DIR}/configure
-                --prefix=${ICE_LAME_INSTALL_DIR}
-                --libdir=${ICE_LAME_LIBRARY_DIR}
-                --includedir=${ICE_LAME_INCLUDE_DIR}
-                --disable-shared
-                --enable-static
-                --with-pic
-                --disable-frontend
-                --disable-mp3x
-                --disable-mp3rtp
-                --disable-gtktest
-                --disable-decoder
-                --disable-libmpg123
+    CONFIGURE_COMMAND ${ICE_LAME_CONFIGURE_COMMAND}
     BUILD_COMMAND make -j${ICE_LAME_PROCESSOR_COUNT}
     INSTALL_COMMAND sh -c "test -f '${ICE_LAME_STATIC_LIBRARY}' || make install"
     BUILD_BYPRODUCTS "${ICE_LAME_STATIC_LIBRARY}"
