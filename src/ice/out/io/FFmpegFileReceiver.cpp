@@ -36,12 +36,22 @@ struct OutputFormatSelection {
     AVCodecID codecOverride{ AV_CODEC_ID_NONE };
 };
 
+/// @brief 将文件系统路径转换为 FFmpeg 使用的 UTF-8 字符串。
+/// @param path 文件系统路径。
+/// @return UTF-8 路径字符串。
+std::string path_to_utf8(const std::filesystem::path& path)
+{
+    auto u8Path = path.u8string();
+    return std::string(reinterpret_cast<const char*>(u8Path.c_str()),
+                       u8Path.size());
+}
+
 /// @brief 转为小写扩展名。
 /// @param path 输出路径。
 /// @return 小写扩展名。
 std::string lowercase_extension(const std::filesystem::path& path)
 {
-    std::string extension = path.extension().string();
+    std::string extension = path_to_utf8(path.extension());
     std::transform(
         extension.begin(),
         extension.end(),
@@ -439,7 +449,7 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
-    const std::string           outputPath = m_outputPath.string();
+    const std::string           outputPath = path_to_utf8(m_outputPath);
     const OutputFormatSelection outputSelection =
         select_output_format(m_outputPath);
     int ret = avformat_alloc_output_context2(&m_formatContext,
