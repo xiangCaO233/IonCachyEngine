@@ -9,12 +9,47 @@ set(ICE_ZLIB_INCLUDE_DIR "${ICE_ZLIB_INSTALL_DIR}/include")
 set(ICE_ZLIB_LIBRARY_DIR "${ICE_ZLIB_INSTALL_DIR}/lib")
 set(ICE_ZLIB_PKGCONFIG_DIR "${ICE_ZLIB_LIBRARY_DIR}/pkgconfig")
 
+string(TOLOWER "${CMAKE_BUILD_TYPE}" ICE_ZLIB_BUILD_TYPE_LOWER)
+set(ICE_ZLIB_DEBUG_POSTFIX "")
+if(ICE_ZLIB_BUILD_TYPE_LOWER STREQUAL "debug")
+    set(ICE_ZLIB_DEBUG_POSTFIX "d")
+endif()
+
 if(MSVC)
-    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs.lib")
+    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs${ICE_ZLIB_DEBUG_POSTFIX}.lib")
 elseif(WIN32)
-    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs.a")
+    set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libzs${ICE_ZLIB_DEBUG_POSTFIX}.a")
 else()
     set(ICE_ZLIB_STATIC_LIBRARY "${ICE_ZLIB_LIBRARY_DIR}/libz.a")
+endif()
+
+set(ICE_ZLIB_BUILD_BYPRODUCTS
+    "${ICE_ZLIB_STATIC_LIBRARY}"
+    "${ICE_ZLIB_PKGCONFIG_DIR}/zlib.pc"
+)
+set(ICE_ZLIB_READY_TEST "test -f '${ICE_ZLIB_STATIC_LIBRARY}'")
+set(ICE_ZLIB_INSTALL_COMMAND "${CMAKE_COMMAND} --build . --target install")
+if(WIN32)
+    set(ICE_ZLIB_COMPAT_LIBRARIES)
+    if(MSVC)
+        list(APPEND ICE_ZLIB_COMPAT_LIBRARIES "${ICE_ZLIB_LIBRARY_DIR}/libz.lib")
+        if(NOT ICE_ZLIB_DEBUG_POSTFIX STREQUAL "")
+            list(APPEND ICE_ZLIB_COMPAT_LIBRARIES "${ICE_ZLIB_LIBRARY_DIR}/libzs.lib")
+        endif()
+    else()
+        list(APPEND ICE_ZLIB_COMPAT_LIBRARIES "${ICE_ZLIB_LIBRARY_DIR}/libz.a")
+        if(NOT ICE_ZLIB_DEBUG_POSTFIX STREQUAL "")
+            list(APPEND ICE_ZLIB_COMPAT_LIBRARIES "${ICE_ZLIB_LIBRARY_DIR}/libzs.a")
+        endif()
+    endif()
+
+    foreach(compatLibrary IN LISTS ICE_ZLIB_COMPAT_LIBRARIES)
+        set(ICE_ZLIB_READY_TEST "${ICE_ZLIB_READY_TEST} && test -f '${compatLibrary}'")
+        set(ICE_ZLIB_INSTALL_COMMAND
+            "${ICE_ZLIB_INSTALL_COMMAND} && ${CMAKE_COMMAND} -E copy_if_different '${ICE_ZLIB_STATIC_LIBRARY}' '${compatLibrary}'"
+        )
+        list(APPEND ICE_ZLIB_BUILD_BYPRODUCTS "${compatLibrary}")
+    endforeach()
 endif()
 
 ExternalProject_Add(zlib_project
@@ -33,10 +68,9 @@ ExternalProject_Add(zlib_project
         -DZLIB_BUILD_STATIC=ON
         -DZLIB_BUILD_TESTING=OFF
         -DZLIB_INSTALL=ON
-    INSTALL_COMMAND sh -c "test -f '${ICE_ZLIB_STATIC_LIBRARY}' || ${CMAKE_COMMAND} --build . --target install"
+    INSTALL_COMMAND sh -c "${ICE_ZLIB_READY_TEST} || (${ICE_ZLIB_INSTALL_COMMAND})"
     BUILD_BYPRODUCTS
-        "${ICE_ZLIB_STATIC_LIBRARY}"
-        "${ICE_ZLIB_PKGCONFIG_DIR}/zlib.pc"
+        ${ICE_ZLIB_BUILD_BYPRODUCTS}
 )
 
 file(MAKE_DIRECTORY "${ICE_ZLIB_INCLUDE_DIR}")
