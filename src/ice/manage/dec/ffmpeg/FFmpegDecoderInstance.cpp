@@ -16,6 +16,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
+#include <libavcodec/defs.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
@@ -56,6 +57,14 @@ bool check_av_call_ret_bool(int ret)
         return false;
     }
     return true;
+}
+
+/// @brief 判断解码错误是否可以按播放器容错策略跳过。
+/// @param ret FFmpeg 返回的错误码。
+/// @return 可以跳过并继续读取后续 packet 时返回 true。
+bool is_recoverable_decode_error(int ret)
+{
+    return ret == AVERROR_INVALIDDATA;
 }
 
 /// @brief 判断 FFmpeg 声道布局是否可直接交给重采样器。
@@ -211,6 +220,9 @@ public:
         // 它告诉解码器要处理的数据的采样率,声道,格式等信息
         AVCALL_CHECK(avcodec_parameters_to_context(avcodec_ctx, codec_params))
 
+        avcodec_ctx->err_recognition |= AV_EF_IGNORE_ERR;
+        avcodec_ctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
+
         // 打开解码器
         AVCALL_CHECK(avcodec_open2(avcodec_ctx, avcodec, nullptr))
 
@@ -300,8 +312,9 @@ public:
         avcodec_flush_buffers(avcodec_ctx);
         av_packet_unref(avpacket);
         av_frame_unref(avframe);
-        conversion_buffer_remains = 0;
-        conversion_buffer_offset  = 0;
+        conversion_buffer_remains   = 0;
+        conversion_buffer_offset    = 0;
+        m_pendingPacketTargetFrames = 0;
         if ( swr_ctx ) {
             swr_close(swr_ctx);
             AVCALL_CHECKRETB(swr_init(swr_ctx))
@@ -309,7 +322,10 @@ public:
         return true;
     }
 
-    // 解码数据
+    /// @brief 解码数据并在坏包/坏帧上保留已解出的音频。
+    /// @param buffer 输出缓冲区，按声道平面排列。
+    /// @param chunksize 本次请求的目标帧数。
+    /// @return 实际写入的目标帧数。
     size_t decode(float** buffer, size_t chunksize)
     {
         size_t frames_decoded_total = 0;
@@ -359,6 +375,7 @@ public:
                     conversion_buffer_remains = converted_count;
                 }
                 av_frame_unref(avframe);
+                m_pendingPacketTargetFrames = 0;
 
                 continue;
             } else if ( ret == AVERROR(EAGAIN) ) {
@@ -367,13 +384,26 @@ public:
                 int read_ret = av_read_frame(avfmt_ctx, avpacket);
                 if ( read_ret == AVERROR_EOF ) {
                     // 发送空pack
-                    AVCALL_CHECK(avcodec_send_packet(avcodec_ctx, nullptr));
+                    m_pendingPacketTargetFrames = 0;
+                    const int flushRet =
+                        avcodec_send_packet(avcodec_ctx, nullptr);
+                    if ( flushRet < 0 && flushRet != AVERROR_EOF ) {
+                        break;
+                    }
                     // 不需要continue，下一次while循环会处理解码器的EOF
                 } else if ( read_ret < 0 ) {
                     // 读文件出错，终止
                     break;
                 } else if ( avpacket->stream_index == stream_index ) {
-                    AVCALL_CHECK(avcodec_send_packet(avcodec_ctx, avpacket));
+                    m_pendingPacketTargetFrames =
+                        estimatePacketTargetFrames(avpacket);
+                    const int sendRet =
+                        avcodec_send_packet(avcodec_ctx, avpacket);
+                    if ( sendRet < 0 ) {
+                        if ( !recoverFromDecodeError(sendRet) ) {
+                            break;
+                        }
+                    }
                 }
             } else if ( ret == AVERROR_EOF ) {
                 // 解码器已被完全清空，没有更多帧了
@@ -410,6 +440,8 @@ public:
                 } while ( flushed_count > 0 );
                 // 到达文件末尾，跳出整个while循环
                 break;
+            } else if ( recoverFromDecodeError(ret) ) {
+                continue;
             } else {
                 // 发生了一个真正的解码错误
                 break;
@@ -423,6 +455,62 @@ public:
     inline size_t frames() const { return total_frames; }
 
 private:
+    /// @brief 估算当前 packet 在目标采样率下占用的帧数。
+    /// @param packet 由 FFmpeg 读取到的压缩音频包。
+    /// @return packet 时长对应的目标帧数；未知时返回 0。
+    size_t estimatePacketTargetFrames(const AVPacket* packet) const
+    {
+        if ( !packet || packet->duration <= 0 || stream_index < 0 ||
+             ice_format.samplerate == 0 ) {
+            return 0;
+        }
+
+        const AVRational targetTimeBase{
+            1, static_cast<int>(ice_format.samplerate)
+        };
+        const int64_t targetFrames =
+            av_rescale_q(packet->duration,
+                         avfmt_ctx->streams[stream_index]->time_base,
+                         targetTimeBase);
+        return targetFrames > 0 ? static_cast<size_t>(targetFrames) : 0;
+    }
+
+    /// @brief 对可恢复解码错误执行跳过和静音补偿。
+    /// @param ret FFmpeg 返回的错误码。
+    /// @return 错误已处理并可以继续解码时返回 true。
+    bool recoverFromDecodeError(int ret)
+    {
+        if ( !is_recoverable_decode_error(ret) ) {
+            return false;
+        }
+
+        queueRecoveredSilence(m_pendingPacketTargetFrames);
+        m_pendingPacketTargetFrames = 0;
+        av_frame_unref(avframe);
+        avcodec_flush_buffers(avcodec_ctx);
+        return true;
+    }
+
+    /// @brief 将损坏 packet 的时长补成静音，保持时间轴尽量不漂移。
+    /// @param frame_count 需要补偿的目标帧数。
+    void queueRecoveredSilence(size_t frame_count)
+    {
+        if ( frame_count == 0 || ice_format.channels == 0 ) {
+            return;
+        }
+
+        if ( frame_count > conversion_buffer.num_frames() ) {
+            conversion_buffer.resize(ice_format, frame_count);
+        }
+
+        for ( uint16_t ch = 0; ch < ice_format.channels; ++ch ) {
+            std::fill_n(conversion_buffer.raw_ptrs()[ch], frame_count, 0.0F);
+        }
+
+        conversion_buffer_offset  = 0;
+        conversion_buffer_remains = frame_count;
+    }
+
     /// @brief 确保重采样输出缓冲能容纳当前输入可能产生的所有帧。
     /// @param input_sample_count 即将送入 swr_convert 的输入采样帧数。
     /// @return 可传给 swr_convert 的输出容量。
@@ -471,6 +559,8 @@ private:
     AudioBuffer      conversion_buffer;
     /// @brief 标记当前源文件是否需要在解码后复制单声道到目标多声道。
     bool m_duplicateMonoToTargetChannels{ false };
+    /// @brief 最近送入解码器的 packet 在目标采样率下的估算帧数。
+    size_t m_pendingPacketTargetFrames{ 0 };
     // 新增：记录上一次转换后，在 conversion_buffer 中还剩下多少帧
     size_t conversion_buffer_remains = 0;
     // 新增：记录上一次转换后，我们从缓冲区的哪个位置开始拷贝的
