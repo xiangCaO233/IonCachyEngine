@@ -5,7 +5,9 @@
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "ice/execptions/load_error.hpp"
 #include "ice/manage/AudioBuffer.hpp"
@@ -15,32 +17,128 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
 #include <libswresample/swresample.h>
 }
 
-#define AVCALL_CHECK(func)                          \
-    if ( int ret = func < 0 ) {                     \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];      \
-        av_strerror(ret, errbuf, sizeof(errbuf));   \
-        throw ice::load_error(std::string(errbuf)); \
-    }
-#define AVCALL_CHECKRETB(func)                    \
-    if ( int ret = func < 0 ) {                   \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];    \
-        av_strerror(ret, errbuf, sizeof(errbuf)); \
-        fmt::print("averr: {}", errbuf);          \
-        return false;                             \
-    }
-#define AVCALL_CHECKRETV(func)                    \
-    if ( int ret = func < 0 ) {                   \
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];    \
-        av_strerror(ret, errbuf, sizeof(errbuf)); \
-        fmt::print("averr: {}", errbuf);          \
-        return ret;                               \
-    }
-
 namespace ice
 {
+namespace
+{
+
+/// @brief 将 FFmpeg 错误码转换为可读文本。
+/// @param code FFmpeg 返回的错误码。
+/// @return 错误信息字符串。
+std::string ffmpeg_error_string(int code)
+{
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+    av_strerror(code, errbuf, sizeof(errbuf));
+    return std::string(errbuf);
+}
+
+/// @brief 检查 FFmpeg 调用返回值，失败时抛出项目既有 load_error。
+/// @param ret FFmpeg 调用返回值。
+void check_av_call(int ret)
+{
+    if ( ret < 0 ) {
+        throw ice::load_error(ffmpeg_error_string(ret));
+    }
+}
+
+/// @brief 检查 FFmpeg 调用返回值，失败时打印错误并返回 false。
+/// @param ret FFmpeg 调用返回值。
+/// @return 成功时返回 true。
+bool check_av_call_ret_bool(int ret)
+{
+    if ( ret < 0 ) {
+        fmt::print("averr: {}", ffmpeg_error_string(ret));
+        return false;
+    }
+    return true;
+}
+
+/// @brief 判断 FFmpeg 声道布局是否可直接交给重采样器。
+/// @param layout 待检查布局。
+/// @return 布局有效时返回 true。
+bool is_usable_channel_layout(const AVChannelLayout& layout)
+{
+    return layout.nb_channels > 0 && layout.order != AV_CHANNEL_ORDER_UNSPEC &&
+           av_channel_layout_check(&layout) > 0;
+}
+
+/// @brief 解析源音频声道数，用于布局缺失时兜底。
+/// @param codec_ctx 已打开的解码器上下文。
+/// @param codec_params 音频流参数。
+/// @param target_format 引擎目标格式。
+/// @return 可用于解码的正声道数。
+int resolve_source_channel_count(const AVCodecContext*       codec_ctx,
+                                 const AVCodecParameters*    codec_params,
+                                 const ice::AudioDataFormat& target_format)
+{
+    if ( codec_ctx && codec_ctx->ch_layout.nb_channels > 0 ) {
+        return codec_ctx->ch_layout.nb_channels;
+    }
+    if ( codec_params && codec_params->ch_layout.nb_channels > 0 ) {
+        return codec_params->ch_layout.nb_channels;
+    }
+    return std::max<int>(1, static_cast<int>(target_format.channels));
+}
+
+/// @brief 解析源音频采样率，用于少数容器元信息缺失时兜底。
+/// @param codec_ctx 已打开的解码器上下文。
+/// @param codec_params 音频流参数。
+/// @param target_format 引擎目标格式。
+/// @return 可用于重采样的正采样率。
+int resolve_source_sample_rate(const AVCodecContext*       codec_ctx,
+                               const AVCodecParameters*    codec_params,
+                               const ice::AudioDataFormat& target_format)
+{
+    if ( codec_ctx && codec_ctx->sample_rate > 0 ) {
+        return codec_ctx->sample_rate;
+    }
+    if ( codec_params && codec_params->sample_rate > 0 ) {
+        return codec_params->sample_rate;
+    }
+    return std::max<int>(1, static_cast<int>(target_format.samplerate));
+}
+
+/// @brief 复制有效源声道布局，缺失或未指定时生成默认布局。
+/// @param output 输出布局。
+/// @param codec_ctx 已打开的解码器上下文。
+/// @param codec_params 音频流参数。
+/// @param target_format 引擎目标格式。
+/// @return FFmpeg 错误码；成功为非负。
+int make_source_channel_layout(AVChannelLayout*            output,
+                               const AVCodecContext*       codec_ctx,
+                               const AVCodecParameters*    codec_params,
+                               const ice::AudioDataFormat& target_format)
+{
+    if ( !output ) {
+        return AVERROR(EINVAL);
+    }
+
+    if ( codec_ctx && is_usable_channel_layout(codec_ctx->ch_layout) ) {
+        return av_channel_layout_copy(output, &codec_ctx->ch_layout);
+    }
+    if ( codec_params && is_usable_channel_layout(codec_params->ch_layout) ) {
+        return av_channel_layout_copy(output, &codec_params->ch_layout);
+    }
+
+    const int channel_count =
+        resolve_source_channel_count(codec_ctx, codec_params, target_format);
+    av_channel_layout_default(output, channel_count);
+    return output->nb_channels > 0 ? 0 : AVERROR(EINVAL);
+}
+
+#define AVCALL_CHECK(func) check_av_call((func));
+#define AVCALL_CHECKRETB(func)               \
+    if ( !check_av_call_ret_bool((func)) ) { \
+        return false;                        \
+    }
+
+}  // namespace
+
 // 完整定义
 class FFmpegDecoder
 {
@@ -48,19 +146,20 @@ public:
     explicit FFmpegDecoder(std::string_view            file_path,
                            const ice::AudioDataFormat& target_format)
     {
+        const std::string path_str(file_path);
         // 打开文件
         AVCALL_CHECK(
-            avformat_open_input(&avfmt_ctx, file_path.data(), nullptr, nullptr))
+            avformat_open_input(&avfmt_ctx, path_str.c_str(), nullptr, nullptr))
 
         // 查找流信息(艾斯比mp3)
         AVCALL_CHECK(avformat_find_stream_info(avfmt_ctx, nullptr))
 
         // 查找音频流
-        for ( int i = 0; i < avfmt_ctx->nb_streams; i++ ) {
+        for ( unsigned int i = 0; i < avfmt_ctx->nb_streams; i++ ) {
             // codecpar 存储了解码器信息
             if ( avfmt_ctx->streams[i]->codecpar->codec_type ==
                  AVMEDIA_TYPE_AUDIO ) {
-                stream_index = i;
+                stream_index = static_cast<int>(i);
                 break;
             }
         }
@@ -114,8 +213,14 @@ public:
 
         // 打开解码器
         AVCALL_CHECK(avcodec_open2(avcodec_ctx, avcodec, nullptr))
+
+        m_sourceSampleRate =
+            resolve_source_sample_rate(avcodec_ctx, codec_params, ice_format);
+        AVChannelLayout sourceLayout{};
+        AVCALL_CHECK(make_source_channel_layout(
+            &sourceLayout, avcodec_ctx, codec_params, ice_format))
         m_duplicateMonoToTargetChannels =
-            avcodec_ctx->ch_layout.nb_channels == 1 && ice_format.channels > 1;
+            sourceLayout.nb_channels == 1 && ice_format.channels > 1;
         // 分配内存并循环解码
         // 用于存放从文件中读取的压缩数据包
         avpacket = av_packet_alloc();
@@ -129,10 +234,10 @@ public:
         // the parameters
         // on the allocated context.
         // 初始化重采样器 SwrContext
-        AVChannelLayout tgtch_layout;
+        AVChannelLayout tgtch_layout{};
         av_channel_layout_default(&tgtch_layout, target_format.channels);
 
-        AVCALL_CHECK(swr_alloc_set_opts2(
+        const int swrAllocRet = swr_alloc_set_opts2(
             // @param ps
             // Pointer to an existing Swr context if available,
             // or to NULL if not.
@@ -142,12 +247,15 @@ public:
             &tgtch_layout,       // 目标声道布局
             AV_SAMPLE_FMT_FLTP,  // 目标样本格式固定为planner-float(32位浮点数，平面)
             target_format.samplerate,  // 目标采样率
-            &avcodec_ctx->ch_layout,   // 源声道布局
+            &sourceLayout,             // 源声道布局
             avcodec_ctx->sample_fmt,   // 源样本格式
-            avcodec_ctx->sample_rate,  // 源采样率
+            m_sourceSampleRate,        // 源采样率
             0,                         // 日志偏移
             nullptr                    // 日志上下文
-            ))
+        );
+        av_channel_layout_uninit(&tgtch_layout);
+        av_channel_layout_uninit(&sourceLayout);
+        AVCALL_CHECK(swrAllocRet)
 
         if ( !swr_ctx ) {
             throw ice::load_error("swr_alloc_set_opts failed.");
@@ -180,7 +288,7 @@ public:
         // 将帧偏移量转换回FFmpeg的时间基单位
         int64_t timestamp =
             av_rescale_q(frame_offset,
-                         { 1, avcodec_ctx->sample_rate },
+                         { 1, static_cast<int>(ice_format.samplerate) },
                          avfmt_ctx->streams[stream_index]->time_base);
 
         // 执行寻道操作
@@ -367,8 +475,11 @@ private:
     size_t conversion_buffer_remains = 0;
     // 新增：记录上一次转换后，我们从缓冲区的哪个位置开始拷贝的
     size_t conversion_buffer_offset = 0;
-    size_t total_frames;
-    int    stream_index;
+    /// @brief 源音频采样率，供重采样和异常元信息兜底使用。
+    int m_sourceSampleRate{ 0 };
+
+    size_t total_frames{ 0 };
+    int    stream_index{ -1 };
 };
 
 FFmpegDecoderInstance::FFmpegDecoderInstance(

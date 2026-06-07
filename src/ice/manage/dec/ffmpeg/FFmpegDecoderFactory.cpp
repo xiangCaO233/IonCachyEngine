@@ -1,26 +1,56 @@
 #include <fmt/format.h>
 
+#include <ice/config/config.hpp>
 #include <ice/execptions/load_error.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
 
 #include "ice/manage/AudioTrack.hpp"
 #include "ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp"
 
-extern "C"
-{
+#include <algorithm>
+
+extern "C" {
 #include <libavformat/avformat.h>
 }
 
-#define AVCALL_CHECK(func)                              \
-    if ( int ret = func < 0 )                           \
-        {                                               \
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];      \
-            av_strerror(ret, errbuf, sizeof(errbuf));   \
-            throw ice::load_error(std::string(errbuf)); \
-        }
+#define AVCALL_CHECK(func)                          \
+    if ( int ret = func < 0 ) {                     \
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];      \
+        av_strerror(ret, errbuf, sizeof(errbuf));   \
+        throw ice::load_error(std::string(errbuf)); \
+    }
 
 namespace ice
 {
+namespace
+{
+
+/// @brief 解析探测阶段可展示的声道数。
+/// @param codecParams FFmpeg 音频流参数。
+/// @return 正声道数。
+int probe_channel_count(const AVCodecParameters* codecParams)
+{
+    if ( codecParams && codecParams->ch_layout.nb_channels > 0 ) {
+        return codecParams->ch_layout.nb_channels;
+    }
+    return std::max<int>(1,
+                         static_cast<int>(ICEConfig::internal_format.channels));
+}
+
+/// @brief 解析探测阶段可展示的采样率。
+/// @param codecParams FFmpeg 音频流参数。
+/// @return 正采样率。
+int probe_sample_rate(const AVCodecParameters* codecParams)
+{
+    if ( codecParams && codecParams->sample_rate > 0 ) {
+        return codecParams->sample_rate;
+    }
+    return std::max<int>(
+        1, static_cast<int>(ICEConfig::internal_format.samplerate));
+}
+
+}  // namespace
+
 class FFmpegFormat
 {
 public:
@@ -48,73 +78,64 @@ bool FFmpegDecoderFactory::probe(std::string_view file_path,
     const std::string path_str(file_path);
     AVFormatContext*  fmt_ctx{ nullptr };
 
-    if ( avformat_open_input(&fmt_ctx, path_str.c_str(), nullptr, nullptr) < 0 )
-        {
-            return false;
-        }
+    if ( avformat_open_input(&fmt_ctx, path_str.c_str(), nullptr, nullptr) <
+         0 ) {
+        return false;
+    }
 
     auto cleanup = [&]() { avformat_close_input(&fmt_ctx); };
 
-    if ( avformat_find_stream_info(fmt_ctx, nullptr) < 0 )
-        {
-            cleanup();
-            return false;
-        }
+    if ( avformat_find_stream_info(fmt_ctx, nullptr) < 0 ) {
+        cleanup();
+        return false;
+    }
 
     // find audio stream
     int audio_stream_index{ -1 };
-    for ( int i = 0; i < fmt_ctx->nb_streams; i++ )
-        {
-            // codecpar stores decoder info
-            if ( fmt_ctx->streams[i]->codecpar->codec_type ==
-                 AVMEDIA_TYPE_AUDIO )
-                {
-                    audio_stream_index = i;
-                    break;
-                }
+    for ( int i = 0; i < fmt_ctx->nb_streams; i++ ) {
+        // codecpar stores decoder info
+        if ( fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ) {
+            audio_stream_index = i;
+            break;
         }
-    if ( audio_stream_index == -1 )
-        {
-            fmt::print("there\'s no audio stream in {}\n", file_path);
-            media_info.format.channels = 0;
-            cleanup();
-            return false;
-        }
+    }
+    if ( audio_stream_index == -1 ) {
+        fmt::print("there\'s no audio stream in {}\n", file_path);
+        media_info.format.channels = 0;
+        cleanup();
+        return false;
+    }
 
     // 获取音频流的参数
     auto& audio_stream = fmt_ctx->streams[audio_stream_index];
     auto& codec_params = audio_stream->codecpar;
 
-    media_info.format.channels   = codec_params->ch_layout.nb_channels;
-    media_info.format.samplerate = codec_params->sample_rate;
+    media_info.format.channels =
+        static_cast<uint16_t>(probe_channel_count(codec_params));
+    media_info.format.samplerate =
+        static_cast<uint32_t>(probe_sample_rate(codec_params));
 
     // 获取总采样数
-    if ( audio_stream->duration > 0 )
-        {
-            // 转换:总帧数 = 时长 * 采样率 / 时间基
+    if ( audio_stream->duration > 0 ) {
+        // 转换:总帧数 = 时长 * 采样率 / 时间基
+        media_info.frame_count =
+            av_rescale_q(audio_stream->duration,
+                         audio_stream->time_base,
+                         { 1, (int)media_info.format.samplerate });
+    } else {
+        // 某些容器格式可能在顶层 context 中有 duration
+        if ( fmt_ctx->duration > 0 ) {
+            // AV_TIME_BASE_Q
             media_info.frame_count =
-                av_rescale_q(audio_stream->duration,
-                             audio_stream->time_base,
+                av_rescale_q(fmt_ctx->duration,
+                             { 1, AV_TIME_BASE },
                              { 1, (int)media_info.format.samplerate });
+        } else {
+            fmt::print("file {} duration unknown\n", file_path);
+            // 表示未知
+            media_info.frame_count = 0;
         }
-    else
-        {
-            // 某些容器格式可能在顶层 context 中有 duration
-            if ( fmt_ctx->duration > 0 )
-                {
-                    // AV_TIME_BASE_Q
-                    media_info.frame_count =
-                        av_rescale_q(fmt_ctx->duration,
-                                     { 1, AV_TIME_BASE },
-                                     { 1, (int)media_info.format.samplerate });
-                }
-            else
-                {
-                    fmt::print("file {} duration unknown\n", file_path);
-                    // 表示未知
-                    media_info.frame_count = 0;
-                }
-        }
+    }
 
     media_info.bitrate = fmt_ctx->bit_rate;
     // 4. 从字典中获取元数据
@@ -123,47 +144,39 @@ bool FFmpegDecoderFactory::probe(std::string_view file_path,
     // 获取艺术家
     tag = av_dict_get(
         fmt_ctx->metadata, "artist", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag )
-        {
-            media_info.artist = std::string(tag->value);
-        }
+    if ( tag ) {
+        media_info.artist = std::string(tag->value);
+    }
 
     // 获取专辑
-    tag = av_dict_get(
-        fmt_ctx->metadata, "album", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag )
-        {
-            media_info.album = std::string(tag->value);
-        }
+    tag =
+        av_dict_get(fmt_ctx->metadata, "album", nullptr, AV_DICT_IGNORE_SUFFIX);
+    if ( tag ) {
+        media_info.album = std::string(tag->value);
+    }
 
     // 获取标题
-    tag = av_dict_get(
-        fmt_ctx->metadata, "title", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag )
-        {
-            media_info.title = std::string(tag->value);
-        }
+    tag =
+        av_dict_get(fmt_ctx->metadata, "title", nullptr, AV_DICT_IGNORE_SUFFIX);
+    if ( tag ) {
+        media_info.title = std::string(tag->value);
+    }
 
     // 查找并提取专辑封面
-    for ( unsigned int i = 0; i < fmt_ctx->nb_streams; ++i )
-        {
-            const AVStream* stream = fmt_ctx->streams[i];
-            if ( stream->disposition & AV_DISPOSITION_ATTACHED_PIC )
-                {
-                    const AVPacket& packet = stream->attached_pic;
-                    if ( packet.size > 0 && packet.data )
-                        {
-                            // 内存分配和拷贝在这里发生
-                            media_info.cover.size = packet.size;
-                            media_info.cover.data =
-                                new uint8_t[media_info.cover.size];
-                            memcpy(media_info.cover.data,
-                                   packet.data,
-                                   media_info.cover.size);
-                            break;
-                        }
-                }
+    for ( unsigned int i = 0; i < fmt_ctx->nb_streams; ++i ) {
+        const AVStream* stream = fmt_ctx->streams[i];
+        if ( stream->disposition & AV_DISPOSITION_ATTACHED_PIC ) {
+            const AVPacket& packet = stream->attached_pic;
+            if ( packet.size > 0 && packet.data ) {
+                // 内存分配和拷贝在这里发生
+                media_info.cover.size = packet.size;
+                media_info.cover.data = new uint8_t[media_info.cover.size];
+                memcpy(
+                    media_info.cover.data, packet.data, media_info.cover.size);
+                break;
+            }
         }
+    }
     cleanup();
     return true;
 }
