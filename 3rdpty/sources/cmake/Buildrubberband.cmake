@@ -84,6 +84,35 @@ set(EXTRA_LIB_LIST "${LOCAL_FFTW3_LIB_DIR}" "${LOCAL_SAMPLERATE_LIB_DIR}")
 string(REPLACE ";" "," EXTRA_INC_STR "${EXTRA_INC_LIST}")
 string(REPLACE ";" "," EXTRA_LIB_STR "${EXTRA_LIB_LIST}")
 
+set(RUBBERBAND_PKG_CONFIG_DIR "${CMAKE_BINARY_DIR}/3rdpty/rubberband_pkgconfig")
+file(MAKE_DIRECTORY "${RUBBERBAND_PKG_CONFIG_DIR}")
+file(WRITE "${RUBBERBAND_PKG_CONFIG_DIR}/fftw3.pc"
+	"prefix=${FFTW_INST_DIR}\n"
+	"exec_prefix=${FFTW_INST_DIR}\n"
+	"libdir=${LOCAL_FFTW3_LIB_DIR}\n"
+	"includedir=${LOCAL_FFTW3_INCLUDE}\n"
+	"\n"
+	"Name: FFTW\n"
+	"Description: fast Fourier transform library\n"
+	"Version: 3.3.10\n"
+	"Libs: -L${LOCAL_FFTW3_LIB_DIR} -lfftw3\n"
+	"Libs.private: -lm\n"
+	"Cflags: -I${LOCAL_FFTW3_INCLUDE}\n"
+)
+file(WRITE "${RUBBERBAND_PKG_CONFIG_DIR}/samplerate.pc"
+	"prefix=${SAMPLERATE_BIN_DIR}\n"
+	"exec_prefix=${SAMPLERATE_BIN_DIR}\n"
+	"libdir=${LOCAL_SAMPLERATE_LIB_DIR}\n"
+	"includedir=${SAMPLERATE_SRC_DIR}/src\n"
+	"configincludedir=${SAMPLERATE_BIN_DIR}\n"
+	"\n"
+	"Name: libsamplerate\n"
+	"Description: Sample Rate Converter for audio\n"
+	"Version: 0.1.9\n"
+	"Libs: -L${LOCAL_SAMPLERATE_LIB_DIR} -lsamplerate\n"
+	"Cflags: -I${SAMPLERATE_SRC_DIR}/src -I${SAMPLERATE_BIN_DIR}\n"
+)
+
 if(MSVC)
 	# 根据主项目的构建类型决定 Meson 的参数
 	if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -154,8 +183,8 @@ if(MSVC)
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
 		UPDATE_COMMAND ""
-		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='' CMAKE_PREFIX_PATH='' meson setup ${MESON_SETUP_ARGS_STR} --native-file=NUL '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
-		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='' CMAKE_PREFIX_PATH='' meson compile -C '${RUBBERBAND_BUILD_DIR}'"
+		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}' CMAKE_PREFIX_PATH='' meson setup ${MESON_SETUP_ARGS_STR} --native-file=NUL '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
+		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}' CMAKE_PREFIX_PATH='' meson compile -C '${RUBBERBAND_BUILD_DIR}'"
 		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
@@ -193,7 +222,7 @@ else()
 	endforeach()
 
 	# Meson does not automatically inherit CMake's compiler/toolchain selection.
-	set(MESON_TOOLCHAIN_ENV "CC='${CMAKE_C_COMPILER}' CXX='${CMAKE_CXX_COMPILER}' AR='${CMAKE_AR}' RANLIB='${CMAKE_RANLIB}' NM='${CMAKE_NM}'")
+	set(MESON_TOOLCHAIN_ENV "CC='${CMAKE_C_COMPILER}' CXX='${CMAKE_CXX_COMPILER}' AR='${CMAKE_AR}' RANLIB='${CMAKE_RANLIB}' NM='${CMAKE_NM}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}'")
 
 	ExternalProject_Add(
 		rubberband_project

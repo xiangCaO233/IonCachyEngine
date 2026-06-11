@@ -76,6 +76,10 @@ add_library(samplerate STATIC
     "${SAMPLERATE_SRC_DIR}/src/src_linear.c"
 )
 
+set_target_properties(samplerate PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${SAMPLERATE_BIN_DIR}"
+)
+
 target_include_directories(samplerate 
     PUBLIC 
         "${SAMPLERATE_SRC_DIR}/src"
