@@ -112,6 +112,40 @@ int resolve_source_sample_rate(const AVCodecContext*       codec_ctx,
     return std::max<int>(1, static_cast<int>(target_format.samplerate));
 }
 
+/// @brief 将 FFmpeg duration 按指定 time_base 转换为目标采样率下的帧数。
+/// @param duration FFmpeg duration 值。
+/// @param timeBase duration 对应的时间基。
+/// @param sampleRate 目标采样率。
+/// @return 可用帧数；duration 无效时返回 0。
+std::int64_t durationToFrameCount(std::int64_t duration, AVRational timeBase,
+                                  int sampleRate)
+{
+    if ( duration <= 0 || sampleRate <= 0 ) {
+        return 0;
+    }
+    return av_rescale_q(duration, timeBase, { 1, sampleRate });
+}
+
+/// @brief 在流级和容器级 duration 中选择更可靠的音频总帧数。
+/// @param fmtCtx 已打开并完成 stream info 探测的 FFmpeg 上下文。
+/// @param audioStream 目标音频流。
+/// @param sampleRate 目标采样率。
+/// @return 探测到的最大可用总帧数，未知时返回 0。
+std::int64_t probeBestFrameCount(const AVFormatContext* fmtCtx,
+                                 const AVStream* audioStream, int sampleRate)
+{
+    const std::int64_t streamFrames =
+        audioStream
+            ? durationToFrameCount(
+                  audioStream->duration, audioStream->time_base, sampleRate)
+            : 0;
+    const std::int64_t formatFrames =
+        fmtCtx ? durationToFrameCount(
+                     fmtCtx->duration, { 1, AV_TIME_BASE }, sampleRate)
+               : 0;
+    return std::max(streamFrames, formatFrames);
+}
+
 /// @brief 复制有效源声道布局，缺失或未指定时生成默认布局。
 /// @param output 输出布局。
 /// @param codec_ctx 已打开的解码器上下文。
@@ -184,24 +218,16 @@ public:
 
         ice_format = target_format;
 
-        // 获取总采样数
-        if ( audio_stream->duration > 0 ) {
-            // 总帧数 = 时长 * 采样率 / 时间基
-            total_frames = av_rescale_q(audio_stream->duration,
-                                        audio_stream->time_base,
-                                        { 1, (int)ice_format.samplerate });
+        // 获取总采样数。部分容器的 stream duration 会短到只有首个 packet
+        // 附近，需与容器级 duration 比较后取更可信的较大值。
+        const std::int64_t bestFrameCount = probeBestFrameCount(
+            avfmt_ctx, audio_stream, static_cast<int>(ice_format.samplerate));
+        if ( bestFrameCount > 0 ) {
+            total_frames = static_cast<size_t>(bestFrameCount);
         } else {
-            // 某些容器格式可能在顶层 context 中有 duration
-            if ( avfmt_ctx->duration > 0 ) {
-                // AV_TIME_BASE_Q
-                total_frames = av_rescale_q(avfmt_ctx->duration,
-                                            { 1, AV_TIME_BASE },
-                                            { 1, (int)ice_format.samplerate });
-            } else {
-                fmt::print("file {} duration unknown", file_path);
-                // 未知放0
-                total_frames = 0;
-            }
+            fmt::print("file {} duration unknown", file_path);
+            // 未知放0
+            total_frames = 0;
         }
 
         // 查找编解码器
