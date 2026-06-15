@@ -15,7 +15,7 @@ message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
 # Determine LTO flags for Clang/GCC
 set(RB_LTO_FLAGS "")
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
+if(NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
 	list(APPEND RB_LTO_FLAGS "-flto=thin" "-fsplit-lto-unit")
 endif()
 
@@ -84,6 +84,8 @@ set(EXTRA_LIB_LIST "${LOCAL_FFTW3_LIB_DIR}" "${LOCAL_SAMPLERATE_LIB_DIR}")
 string(REPLACE ";" "," EXTRA_INC_STR "${EXTRA_INC_LIST}")
 string(REPLACE ";" "," EXTRA_LIB_STR "${EXTRA_LIB_LIST}")
 
+# Provide pkg-config files for locally built dependencies so Meson does not
+# accidentally discover Homebrew/system copies with incompatible linkage.
 set(RUBBERBAND_PKG_CONFIG_DIR "${CMAKE_BINARY_DIR}/3rdpty/rubberband_pkgconfig")
 file(MAKE_DIRECTORY "${RUBBERBAND_PKG_CONFIG_DIR}")
 file(WRITE "${RUBBERBAND_PKG_CONFIG_DIR}/fftw3.pc"
