@@ -12,9 +12,9 @@ else()
     set(FFTW_STATIC_LIBRARY "${FFTW_INSTALL_DIR}/lib/libfftw3.a")
 endif()
 
-# Use ExternalProject to build fftw to avoid modifying its source or dealing with its complex CMakeLists.txt directly
-# Pass CMAKE_POLICY_VERSION_MINIMUM=3.5 to bypass the fatal error for old cmake_minimum_required
-# Force CMAKE_INSTALL_LIBDIR to "lib" to avoid "lib64" on some Linux distros
+# 使用 ExternalProject 构建 FFTW，避免修改源码或直接处理其复杂的 CMakeLists。
+# 传入 CMAKE_POLICY_VERSION_MINIMUM=3.5，绕过旧 cmake_minimum_required 带来的致命错误。
+# 强制 CMAKE_INSTALL_LIBDIR 为 "lib"，避免部分 Linux 发行版使用 "lib64"。
 ExternalProject_Add(fftw_project
     SOURCE_DIR "${FFTW_SOURCE_DIR}"
     BINARY_DIR "${FFTW_BINARY_DIR}"
@@ -35,7 +35,7 @@ ExternalProject_Add(fftw_project
     BUILD_BYPRODUCTS "${FFTW_STATIC_LIBRARY}"
 )
 
-# Pre-create include directory to avoid CMake error during configure
+# 预创建 include 目录，避免 CMake 配置阶段报错。
 file(MAKE_DIRECTORY "${FFTW_INSTALL_DIR}/include")
 
 add_library(3rd_fftw3 INTERFACE)

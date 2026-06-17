@@ -13,13 +13,13 @@ endif()
 
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
-# Determine LTO flags for Clang/GCC
+# 判断 Clang/GCC 的 LTO 参数
 set(RB_LTO_FLAGS "")
 if(NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
 	list(APPEND RB_LTO_FLAGS "-flto=thin" "-fsplit-lto-unit")
 endif()
 
-# Determine PGO flags
+# 判断 PGO 参数
 set(RB_PGO_FLAGS "")
 if(MMM_PGO_INSTRUMENT)
 	if(WIN32)
@@ -33,7 +33,7 @@ elseif(MMM_PGO_USE)
 	set(RB_PGO_FLAGS "-fprofile-instr-use=${ABS_PGO_DATA}")
 endif()
 
-# Combine extra compile and link flags
+# 合并额外编译和链接参数
 set(RB_EXTRA_FLAGS_LIST "")
 if(RB_LTO_FLAGS)
 	list(APPEND RB_EXTRA_FLAGS_LIST ${RB_LTO_FLAGS})
@@ -66,12 +66,12 @@ set(RUBBERBAND_BUILD_DIR "${CMAKE_BINARY_DIR}/rb_bld")
 set(RUBBERBAND_INSTALL_DIR "${CMAKE_BINARY_DIR}/rb_inst")
 
 # 本地依赖路径 (FFTW3 和 libsamplerate)
-# FFTW3 来自 ExternalProject_Add (fftw_project)
+# 快速傅里叶变换库来自 ExternalProject_Add (fftw_project)
 set(FFTW_INST_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_inst")
 set(LOCAL_FFTW3_INCLUDE "${FFTW_INST_DIR}/include")
 set(LOCAL_FFTW3_LIB_DIR "${FFTW_INST_DIR}/lib")
 
-# libsamplerate 来自 Buildlibsamplerate.cmake (samplerate 目标)
+# 采样率库来自 Buildlibsamplerate.cmake (samplerate 目标)
 set(SAMPLERATE_SRC_DIR "${CMAKE_CURRENT_LIST_DIR}/../libsamplerate")
 set(SAMPLERATE_BIN_DIR "${CMAKE_BINARY_DIR}/3rdpty/libsamplerate")
 set(LOCAL_SAMPLERATE_INCLUDE "${SAMPLERATE_SRC_DIR}/src;${SAMPLERATE_BIN_DIR}")
@@ -80,12 +80,12 @@ set(LOCAL_SAMPLERATE_LIB_DIR "${CMAKE_BINARY_DIR}/3rdpty/libsamplerate")
 set(EXTRA_INC_LIST "${LOCAL_FFTW3_INCLUDE}" "${SAMPLERATE_SRC_DIR}/src" "${SAMPLERATE_BIN_DIR}")
 set(EXTRA_LIB_LIST "${LOCAL_FFTW3_LIB_DIR}" "${LOCAL_SAMPLERATE_LIB_DIR}")
 
-# Convert lists to comma-separated strings for Meson array options
+# 将列表转换为逗号分隔字符串，供 Meson 数组参数使用
 string(REPLACE ";" "," EXTRA_INC_STR "${EXTRA_INC_LIST}")
 string(REPLACE ";" "," EXTRA_LIB_STR "${EXTRA_LIB_LIST}")
 
-# Provide pkg-config files for locally built dependencies so Meson does not
-# accidentally discover Homebrew/system copies with incompatible linkage.
+# 为本地构建的依赖提供 pkg-config 文件，避免 Meson 意外发现
+# 避免使用 Homebrew 或系统中的不兼容链接版本。
 set(RUBBERBAND_PKG_CONFIG_DIR "${CMAKE_BINARY_DIR}/3rdpty/rubberband_pkgconfig")
 file(MAKE_DIRECTORY "${RUBBERBAND_PKG_CONFIG_DIR}")
 file(WRITE "${RUBBERBAND_PKG_CONFIG_DIR}/fftw3.pc"
@@ -180,7 +180,7 @@ if(MSVC)
 	# 确定库文件产物路径
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
 
-	# Use CMake's env wrapper so MSVC builds do not depend on a Unix shell.
+	# 使用 CMake 环境包装器，避免 MSVC 构建依赖类 Unix 命令行外壳。
 	ExternalProject_Add(
 		rubberband_project
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
@@ -245,7 +245,7 @@ else()
 		set(MESON_SETUP_ARGS_STR "${MESON_SETUP_ARGS_STR} \"${arg}\"")
 	endforeach()
 
-	# Meson does not automatically inherit CMake's compiler/toolchain selection.
+	# 构建时 Meson 不会自动继承 CMake 的编译器和工具链选择。
 	set(MESON_TOOLCHAIN_ENV "CC='${CMAKE_C_COMPILER}' CXX='${CMAKE_CXX_COMPILER}' AR='${CMAKE_AR}' RANLIB='${CMAKE_RANLIB}' NM='${CMAKE_NM}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}'")
 
 	ExternalProject_Add(
