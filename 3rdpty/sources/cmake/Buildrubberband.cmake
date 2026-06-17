@@ -126,9 +126,16 @@ if(MSVC)
 	endif()
 
 	# 找到 pkg-config
-	find_program(PKG_CONFIG_EXE NAMES pkg-config pkgconf PATHS "C:/msys64/mingw64/bin" "C:/msys64/usr/bin")
-	if(NOT PKG_CONFIG_EXE)
-		set(PKG_CONFIG_EXE "pkg-config")
+	find_program(RUBBERBAND_PKG_CONFIG_EXE
+		NAMES pkg-config pkgconf
+		PATHS "C:/msys64/ucrt64/bin" "C:/msys64/clang64/bin" "C:/msys64/mingw64/bin"
+		NO_DEFAULT_PATH
+	)
+	if(NOT RUBBERBAND_PKG_CONFIG_EXE)
+		find_program(RUBBERBAND_PKG_CONFIG_EXE NAMES pkg-config pkgconf)
+	endif()
+	if(NOT RUBBERBAND_PKG_CONFIG_EXE)
+		set(RUBBERBAND_PKG_CONFIG_EXE "pkg-config")
 	endif()
 
 	# 构造环境变量
@@ -136,7 +143,7 @@ if(MSVC)
 		${CMAKE_COMMAND}
 		-E
 		env
-		"PKG_CONFIG=${PKG_CONFIG_EXE}"
+		"PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
 		"PKG_CONFIG_PATH=" # 清空它，确保不使用系统包
 		"CMAKE_PREFIX_PATH="
 	)
@@ -173,21 +180,36 @@ if(MSVC)
 	# 确定库文件产物路径
 	set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
 
-	# 将列表转换为字符串，以便在 sh -c 中使用
-	set(MESON_SETUP_ARGS_STR "")
-	foreach(arg IN LISTS MESON_SETUP_ARGS)
-		set(MESON_SETUP_ARGS_STR "${MESON_SETUP_ARGS_STR} \"${arg}\"")
-	endforeach()
-
+	# Use CMake's env wrapper so MSVC builds do not depend on a Unix shell.
 	ExternalProject_Add(
 		rubberband_project
 		SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
 		BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
 		DEPENDS fftw_project samplerate
 		UPDATE_COMMAND ""
-		CONFIGURE_COMMAND sh -c "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}' CMAKE_PREFIX_PATH='' meson setup ${MESON_SETUP_ARGS_STR} --native-file=NUL '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
-		BUILD_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || PKG_CONFIG='${PKG_CONFIG_EXE}' PKG_CONFIG_PATH='${RUBBERBAND_PKG_CONFIG_DIR}' PKG_CONFIG_LIBDIR='${RUBBERBAND_PKG_CONFIG_DIR}' CMAKE_PREFIX_PATH='' meson compile -C '${RUBBERBAND_BUILD_DIR}'"
-		INSTALL_COMMAND sh -c "test -f '${RUBBERBAND_STATIC_LIB}' || meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild"
+		CONFIGURE_COMMAND
+			${CMAKE_COMMAND} -E env
+				"PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+				"PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"CMAKE_PREFIX_PATH="
+				meson setup ${MESON_SETUP_ARGS} --native-file=NUL
+				"${RUBBERBAND_BUILD_DIR}"
+				"${RUBBERBAND_SOURCE_DIR}"
+		BUILD_COMMAND
+			${CMAKE_COMMAND} -E env
+				"PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+				"PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"CMAKE_PREFIX_PATH="
+				meson compile -C "${RUBBERBAND_BUILD_DIR}"
+		INSTALL_COMMAND
+			${CMAKE_COMMAND} -E env
+				"PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+				"PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}"
+				"CMAKE_PREFIX_PATH="
+				meson install -C "${RUBBERBAND_BUILD_DIR}" --no-rebuild
 		BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}"
 	)
 else()
