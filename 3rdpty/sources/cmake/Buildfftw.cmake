@@ -12,6 +12,12 @@ else()
     set(FFTW_STATIC_LIBRARY "${FFTW_INSTALL_DIR}/lib/libfftw3.a")
 endif()
 
+set(FFTW_C_FLAGS "${CMAKE_C_FLAGS}")
+if(MSVC)
+    string(APPEND FFTW_C_FLAGS " /wd4244")
+endif()
+string(STRIP "${FFTW_C_FLAGS}" FFTW_C_FLAGS)
+
 # 使用 ExternalProject 构建 FFTW，避免修改源码或直接处理其复杂的 CMakeLists。
 # 传入 CMAKE_POLICY_VERSION_MINIMUM=3.5，绕过旧 cmake_minimum_required 带来的致命错误。
 # 强制 CMAKE_INSTALL_LIBDIR 为 "lib"，避免部分 Linux 发行版使用 "lib64"。
@@ -29,6 +35,7 @@ ExternalProject_Add(fftw_project
         -DENABLE_THREADS=ON
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        "-DCMAKE_C_FLAGS=${FFTW_C_FLAGS}"
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DCMAKE_INSTALL_MESSAGE=NEVER
     INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install
