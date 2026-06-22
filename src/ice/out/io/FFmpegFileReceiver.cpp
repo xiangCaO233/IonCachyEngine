@@ -34,6 +34,9 @@ struct OutputFormatSelection {
 
     /// @brief 显式指定的编码器；AV_CODEC_ID_NONE 表示使用 muxer 默认值。
     AVCodecID codecOverride{ AV_CODEC_ID_NONE };
+
+    /// @brief Optional preferred FFmpeg encoder name.
+    const char* preferredCodecName{ nullptr };
 };
 
 /// @brief 将文件系统路径转换为 FFmpeg 使用的 UTF-8 字符串。
@@ -73,7 +76,27 @@ OutputFormatSelection select_output_format(
     if ( extension == ".opus" ) {
         return OutputFormatSelection{ "ogg", AV_CODEC_ID_OPUS };
     }
+    if ( extension == ".mp3" ) {
+        return OutputFormatSelection{ nullptr, AV_CODEC_ID_MP3, "libmp3lame" };
+    }
     return OutputFormatSelection{};
+}
+
+/// @brief Select the FFmpeg encoder for an output format.
+/// @param outputSelection Output format selection.
+/// @param codecId Codec ID selected by the muxer or output override.
+/// @return Matching encoder, or nullptr if unavailable.
+const AVCodec* find_output_encoder(const OutputFormatSelection& outputSelection,
+                                   AVCodecID                    codecId)
+{
+    if ( outputSelection.preferredCodecName ) {
+        const AVCodec* preferred =
+            avcodec_find_encoder_by_name(outputSelection.preferredCodecName);
+        if ( preferred ) {
+            return preferred;
+        }
+    }
+    return avcodec_find_encoder(codecId);
 }
 
 /// @brief 将 FFmpeg 错误码转换为文本。
@@ -469,7 +492,7 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
-    const AVCodec* codec = avcodec_find_encoder(codecId);
+    const AVCodec* codec = find_output_encoder(outputSelection, codecId);
     if ( !codec ) {
         set_error("FFmpeg encoder is not available for output format");
         return false;
