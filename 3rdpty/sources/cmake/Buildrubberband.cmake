@@ -5,10 +5,18 @@ include(ExternalProject)
 # 自动映射 CMake 到 Meson 的构建类型
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 	set(RB_BUILD_TYPE "debug")
-	set(RB_FLAGS "-g")
+	if(MSVC)
+		set(RB_FLAGS "")
+	else()
+		set(RB_FLAGS "-g")
+	endif()
 else()
 	set(RB_BUILD_TYPE "release")
-	set(RB_FLAGS "-O3")
+	if(MSVC)
+		set(RB_FLAGS "")
+	else()
+		set(RB_FLAGS "-O3")
+	endif()
 endif()
 
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
@@ -165,9 +173,14 @@ if(MSVC)
 		-Dresampler=libsamplerate
 		"-Dextra_include_dirs=${EXTRA_INC_STR}"
 		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
-		"-Dc_args=${C_ARGS_VAL}"
-		"-Dcpp_args=${CPP_ARGS_VAL}"
 	)
+
+	if(NOT "${C_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dc_args=${C_ARGS_VAL}")
+	endif()
+	if(NOT "${CPP_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dcpp_args=${CPP_ARGS_VAL}")
+	endif()
 
 	if(NOT "${C_LINK_ARGS_VAL}" STREQUAL "")
 		list(APPEND MESON_SETUP_ARGS "-Dc_link_args=${C_LINK_ARGS_VAL}" "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
@@ -229,9 +242,14 @@ else()
 		-Dresampler=libsamplerate
 		"-Dextra_include_dirs=${EXTRA_INC_STR}"
 		"-Dextra_lib_dirs=${EXTRA_LIB_STR}"
-		"-Dc_args=${C_ARGS_VAL}"
-		"-Dcpp_args=${CPP_ARGS_VAL}"
 	)
+
+	if(NOT "${C_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dc_args=${C_ARGS_VAL}")
+	endif()
+	if(NOT "${CPP_ARGS_VAL}" STREQUAL "")
+		list(APPEND MESON_SETUP_ARGS "-Dcpp_args=${CPP_ARGS_VAL}")
+	endif()
 
 	if(NOT "${C_LINK_ARGS_VAL}" STREQUAL "")
 		list(APPEND MESON_SETUP_ARGS "-Dc_link_args=${C_LINK_ARGS_VAL}" "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
