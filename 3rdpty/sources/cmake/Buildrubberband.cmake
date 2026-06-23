@@ -33,15 +33,15 @@ endif()
 
 # 判断 PGO 参数
 set(RB_PGO_FLAGS "")
-if(MMM_PGO_INSTRUMENT)
+if(ICE_PGO_INSTRUMENT)
   if(WIN32)
     set(DEFAULT_PGO_PATH "NUL")
   else()
     set(DEFAULT_PGO_PATH "/dev/null")
   endif()
   set(RB_PGO_FLAGS "-fprofile-instr-generate=${DEFAULT_PGO_PATH}")
-elseif(MMM_PGO_USE)
-  get_filename_component(ABS_PGO_DATA "${MMM_PGO_DATA}" ABSOLUTE)
+elseif(ICE_PGO_USE)
+  get_filename_component(ABS_PGO_DATA "${ICE_PGO_DATA}" ABSOLUTE)
   set(RB_PGO_FLAGS "-fprofile-instr-use=${ABS_PGO_DATA}")
 endif()
 
@@ -76,9 +76,9 @@ get_filename_component(
 set(RUBBERBAND_BUILD_DIR "${CMAKE_BINARY_DIR}/rb_bld")
 set(RUBBERBAND_INSTALL_DIR "${CMAKE_BINARY_DIR}/rb_inst")
 set(RUBBERBAND_SOURCE_STAMP
-    "${RUBBERBAND_INSTALL_DIR}/.mmm_rubberband_sources.stamp")
+    "${RUBBERBAND_INSTALL_DIR}/.ice_rubberband_sources.stamp")
 set(RUBBERBAND_SOURCE_READY_TEST
-    "test -f '${RUBBERBAND_SOURCE_STAMP}' && ! find '${RUBBERBAND_SOURCE_DIR}' -type f -newer '${RUBBERBAND_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | grep -q ."
+    "test -f '${RUBBERBAND_SOURCE_STAMP}' && ! /usr/bin/find '${RUBBERBAND_SOURCE_DIR}' -type f -newer '${RUBBERBAND_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
 )
 
 # 本地依赖路径 (FFTW3 和 libsamplerate) 快速傅里叶变换库来自 ExternalProject_Add (fftw_project)
@@ -281,7 +281,7 @@ else()
       "${RUBBERBAND_SOURCE_READY_TEST} || ${MESON_TOOLCHAIN_ENV} meson compile -C '${RUBBERBAND_BUILD_DIR}'"
     INSTALL_COMMAND
       sh -c
-      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild && ${CMAKE_COMMAND} -E touch '${RUBBERBAND_SOURCE_STAMP}')"
+      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild && '${CMAKE_COMMAND}' -E touch '${RUBBERBAND_SOURCE_STAMP}')"
     BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}" "${RUBBERBAND_SOURCE_STAMP}")
 endif()
 

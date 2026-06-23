@@ -5,9 +5,9 @@ include(ExternalProject)
 set(FFTW_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../fftw")
 set(FFTW_BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_bld")
 set(FFTW_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_inst")
-set(FFTW_SOURCE_STAMP "${FFTW_INSTALL_DIR}/.mmm_fftw_sources.stamp")
+set(FFTW_SOURCE_STAMP "${FFTW_INSTALL_DIR}/.ice_fftw_sources.stamp")
 set(FFTW_SOURCE_READY_TEST
-    "test -f '${FFTW_SOURCE_STAMP}' && ! find '${FFTW_SOURCE_DIR}' -type f -newer '${FFTW_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | grep -q ."
+    "test -f '${FFTW_SOURCE_STAMP}' && ! /usr/bin/find '${FFTW_SOURCE_DIR}' -type f -newer '${FFTW_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
 )
 
 if(MSVC)
@@ -19,6 +19,29 @@ endif()
 set(FFTW_C_FLAGS "${CMAKE_C_FLAGS}")
 if(MSVC)
   string(APPEND FFTW_C_FLAGS " /wd4244")
+  if(CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(FFTW_MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}")
+  elseif(CMAKE_BUILD_TYPE MATCHES Debug)
+    set(FFTW_MSVC_RUNTIME_LIBRARY "MultiThreadedDebug")
+  else()
+    set(FFTW_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+  endif()
+  if(FFTW_MSVC_RUNTIME_LIBRARY MATCHES "DLL")
+    set(FFTW_MSVC_RUNTIME_FLAG_RELEASE "/MD")
+    set(FFTW_MSVC_RUNTIME_FLAG_DEBUG "/MDd")
+  else()
+    set(FFTW_MSVC_RUNTIME_FLAG_RELEASE "/MT")
+    set(FFTW_MSVC_RUNTIME_FLAG_DEBUG "/MTd")
+  endif()
+
+  # FFTW 的旧 CMakeLists 不识别 CMAKE_MSVC_RUNTIME_LIBRARY，必须覆盖各配置 flags 才能确保预编译布局中的
+  # CRT 与链接偏好一致。
+  set(FFTW_MSVC_RUNTIME_ARGS
+      "-DCMAKE_C_FLAGS_DEBUG=${FFTW_MSVC_RUNTIME_FLAG_DEBUG} /Zi /Ob0 /Od /RTC1"
+      "-DCMAKE_C_FLAGS_RELEASE=${FFTW_MSVC_RUNTIME_FLAG_RELEASE} /O2 /Ob2 /DNDEBUG"
+      "-DCMAKE_C_FLAGS_RELWITHDEBINFO=${FFTW_MSVC_RUNTIME_FLAG_RELEASE} /Zi /O2 /Ob1 /DNDEBUG"
+      "-DCMAKE_C_FLAGS_MINSIZEREL=${FFTW_MSVC_RUNTIME_FLAG_RELEASE} /O1 /Ob1 /DNDEBUG"
+  )
 endif()
 string(STRIP "${FFTW_C_FLAGS}" FFTW_C_FLAGS)
 
@@ -41,12 +64,14 @@ ExternalProject_Add(
              -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
              -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
              "-DCMAKE_C_FLAGS=${FFTW_C_FLAGS}"
+             ${FFTW_MSVC_RUNTIME_ARGS}
              -DCMAKE_POSITION_INDEPENDENT_CODE=ON
              -DCMAKE_INSTALL_MESSAGE=NEVER
-  BUILD_COMMAND sh -c "${FFTW_SOURCE_READY_TEST} || ${CMAKE_COMMAND} --build ."
+  BUILD_COMMAND sh -c
+                "${FFTW_SOURCE_READY_TEST} || '${CMAKE_COMMAND}' --build ."
   INSTALL_COMMAND
     sh -c
-    "${FFTW_SOURCE_READY_TEST} || (${CMAKE_COMMAND} --build . --target install && ${CMAKE_COMMAND} -E touch '${FFTW_SOURCE_STAMP}')"
+    "${FFTW_SOURCE_READY_TEST} || ('${CMAKE_COMMAND}' --build . --target install && '${CMAKE_COMMAND}' -E touch '${FFTW_SOURCE_STAMP}')"
   BUILD_BYPRODUCTS "${FFTW_STATIC_LIBRARY}" "${FFTW_SOURCE_STAMP}")
 
 # 预创建 include 目录，避免 CMake 配置阶段报错。

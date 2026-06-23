@@ -16,8 +16,8 @@ target_include_directories(
 # 将所有第三方依赖链接到引擎库 PRIVATE: 这些依赖是 IonCachyEngine 的实现细节，不应传播给最终用户
 target_link_libraries(
   IonCachyEngine-static
-  PUBLIC 3rd_sdl3
-  PRIVATE fmt::fmt spdlog::spdlog OpenAL::OpenAL 3rd_ffmpeg 3rd_rubberband)
+  PUBLIC 3rd_sdl3 3rd_rubberband
+  PRIVATE fmt::fmt spdlog::spdlog OpenAL::OpenAL 3rd_ffmpeg)
 
 # 创建命名空间别名 这使得其他项目可以用更清晰的方式链接
 add_library(ICE::IonCachyEngine ALIAS IonCachyEngine-static)
@@ -27,7 +27,8 @@ if(ICE_BUILD_TESTS)
   add_executable(testIonCachyEngin main.cpp)
 
   # 将引擎库链接到测试程序
-  target_link_libraries(testIonCachyEngin PRIVATE IonCachyEngine-static)
+  target_link_libraries(testIonCachyEngin PRIVATE IonCachyEngine-static
+                                                  fmt::fmt)
 
   message(STATUS "Building 'testIonCachyEngin' enabled.")
 else()

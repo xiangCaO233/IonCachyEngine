@@ -1,8 +1,12 @@
 # 3rdpty/sources/cmake/Buildffmpeg.txt
 if(MSVC)
+  if(NOT DEFINED VCPKG_ROOT OR VCPKG_ROOT STREQUAL "")
+    message(FATAL_ERROR "MSVC 源码构建 ffmpeg 需要设置 VCPKG_ROOT。")
+  endif()
+  file(TO_CMAKE_PATH "${VCPKG_ROOT}" ICE_VCPKG_ROOT)
   # 手动把正确的 ffmpeg share 路径加入
   list(APPEND CMAKE_MODULE_PATH
-       "${VCPKG_ROOT}/installed/x64-windows-static/share/ffmpeg")
+       "${ICE_VCPKG_ROOT}/installed/x64-windows-static/share/ffmpeg")
   find_package(FFMPEG REQUIRED)
   add_library(3rd_ffmpeg INTERFACE)
   add_dependencies(3rd_ffmpeg ffmpeg_project)
@@ -226,9 +230,9 @@ else()
 
   string(SHA256 ICE_FFMPEG_CONFIG_HASH "${FFMPEG_CONF_LIST}")
   set(FFMPEG_CONFIG_STAMP
-      "${FFMPEG_INSTALL_DIR}/.mmm_ffmpeg_${ICE_FFMPEG_CONFIG_HASH}.stamp")
+      "${FFMPEG_INSTALL_DIR}/.ice_ffmpeg_${ICE_FFMPEG_CONFIG_HASH}.stamp")
   set(FFMPEG_SOURCE_READY_TEST
-      "test -f '${FFMPEG_CONFIG_STAMP}' && ! find '${FFMPEG_SOURCE_DIR}' -type f -newer '${FFMPEG_CONFIG_STAMP}' ! -path '*/.git/*' -print -quit | grep -q ."
+      "test -f '${FFMPEG_CONFIG_STAMP}' && ! /usr/bin/find '${FFMPEG_SOURCE_DIR}' -type f -newer '${FFMPEG_CONFIG_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
   )
 
   message(STATUS "Debug: FFmpeg Configure Command is")
@@ -256,7 +260,7 @@ else()
       # 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
     INSTALL_COMMAND
       sh -c
-      "${FFMPEG_SOURCE_READY_TEST} || (make install && ${CMAKE_COMMAND} -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && ${CMAKE_COMMAND} -E touch '${FFMPEG_CONFIG_STAMP}')"
+      "${FFMPEG_SOURCE_READY_TEST} || (make install && '${CMAKE_COMMAND}' -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && '${CMAKE_COMMAND}' -E touch '${FFMPEG_CONFIG_STAMP}')"
     BUILD_BYPRODUCTS ${FFMPEG_BYPRODUCTS} ${FFMPEG_CONFIG_STAMP})
 
   # 确保头文件目录存在，防止 CMake 配置阶段报错

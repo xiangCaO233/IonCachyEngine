@@ -13,9 +13,9 @@ set(ICE_LAME_BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/lame_bld")
 set(ICE_LAME_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/lame_inst")
 set(ICE_LAME_INCLUDE_DIR "${ICE_LAME_INSTALL_DIR}/include")
 set(ICE_LAME_LIBRARY_DIR "${ICE_LAME_INSTALL_DIR}/lib")
-set(ICE_LAME_SOURCE_STAMP "${ICE_LAME_INSTALL_DIR}/.mmm_lame_sources.stamp")
+set(ICE_LAME_SOURCE_STAMP "${ICE_LAME_INSTALL_DIR}/.ice_lame_sources.stamp")
 set(ICE_LAME_SOURCE_READY_TEST
-    "test -f '${ICE_LAME_SOURCE_STAMP}' && ! find '${ICE_LAME_SOURCE_DIR}' -type f -newer '${ICE_LAME_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | grep -q ."
+    "test -f '${ICE_LAME_SOURCE_STAMP}' && ! /usr/bin/find '${ICE_LAME_SOURCE_DIR}' -type f -newer '${ICE_LAME_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
 )
 
 if(MSVC)
@@ -73,7 +73,7 @@ ExternalProject_Add(
     sh -c "${ICE_LAME_SOURCE_READY_TEST} || make -j${ICE_LAME_PROCESSOR_COUNT}"
   INSTALL_COMMAND
     sh -c
-    "${ICE_LAME_SOURCE_READY_TEST} || (make install && ${CMAKE_COMMAND} -E touch '${ICE_LAME_SOURCE_STAMP}')"
+    "${ICE_LAME_SOURCE_READY_TEST} || (make install && '${CMAKE_COMMAND}' -E touch '${ICE_LAME_SOURCE_STAMP}')"
   BUILD_BYPRODUCTS "${ICE_LAME_STATIC_LIBRARY}" "${ICE_LAME_SOURCE_STAMP}")
 
 file(MAKE_DIRECTORY "${ICE_LAME_INCLUDE_DIR}")

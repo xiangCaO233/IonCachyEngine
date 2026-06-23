@@ -1,19 +1,18 @@
 # 3rdpty/CMakeLists.txt
 
+# SOURCES_BUILD 是显式依赖来源开关：ON 使用源码构建，OFF 只使用预编译库。
 if(SOURCES_BUILD)
-    # 从源码编译
-    add_subdirectory(sources)
+  add_subdirectory(sources)
 else()
-    # 使用预编译
-    if(WIN32) # 定义平台变量
-        set(ICE_PLATFORM "windows-x86_64")
-    elseif(APPLE)
-        # 仅考虑arm的macos
-        set(ICE_PLATFORM "macos-arm64")
-    else()
-        set(ICE_PLATFORM "linux-x86_64")
-    endif()
-
-    # 预编译库路径
-    set(PREBUILT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilts/${ICE_PLATFORM}")
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+  find_package(fmt REQUIRED)
+  find_package(spdlog REQUIRED)
+  find_package(OpenAL REQUIRED)
+  find_package(SDL3Static REQUIRED)
+  find_package(libsamplerate REQUIRED)
+  find_package(fftw REQUIRED)
+  find_package(lame REQUIRED)
+  find_package(zlib REQUIRED)
+  find_package(rubberband REQUIRED)
+  find_package(ffmpeg REQUIRED)
 endif()
