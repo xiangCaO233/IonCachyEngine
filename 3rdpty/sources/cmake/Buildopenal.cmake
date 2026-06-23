@@ -35,16 +35,29 @@ set(ALSOFT_BACKEND_SDL3
     CACHE BOOL "Disable SDL3 backend to avoid extra deps" FORCE)
 
 if(CMAKE_CROSSCOMPILING AND UNIX)
-    # 交叉编译时强制禁用 Linux 相关后端，防止污染
-    set(ALSOFT_BACKEND_PIPEWIRE OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_ALSA OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_PULSEAUDIO OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_JACK OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_OSS OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_PORTAUDIO OFF CACHE BOOL "" FORCE)
-    set(ALSOFT_BACKEND_SNDIO OFF CACHE BOOL "" FORCE)
+  # 交叉编译时强制禁用 Linux 相关后端，防止污染
+  set(ALSOFT_BACKEND_PIPEWIRE
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_ALSA
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_PULSEAUDIO
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_JACK
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_OSS
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_PORTAUDIO
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_SNDIO
+      OFF
+      CACHE BOOL "" FORCE)
 endif()
-    
 
 # 将 OpenAL Soft 作为子项目包含进来
 
@@ -54,17 +67,17 @@ add_subdirectory(${OPENAL_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/openal_build
 
 # OpenAL Soft 在不同平台有不同的系统依赖，我们需要手动添加
 if(APPLE)
-    # 在 macOS 上，需要链接 CoreAudio 等框架
-    target_link_libraries(
+  # 在 macOS 上，需要链接 CoreAudio 等框架
+  target_link_libraries(
     OpenAL INTERFACE "-framework CoreFoundation" "-framework CoreAudio"
                      "-framework AudioToolbox")
 elseif(WIN32)
-    # 在 Windows 上，可能需要链接 winmm, ole32 等
-    target_link_libraries(OpenAL INTERFACE winmm ole32)
+  # 在 Windows 上，可能需要链接 winmm, ole32 等
+  target_link_libraries(OpenAL INTERFACE winmm ole32)
 else()
-    # 在 Linux 上，通常需要链接 pthread 和 dl
-    target_link_libraries(OpenAL INTERFACE dl)
-    # 如果 ALSA 或 PulseAudio 被找到并链接，OpenAL 的 target 会自动处理 我们这里只添加最基础的依赖
+  # 在 Linux 上，通常需要链接 pthread 和 dl
+  target_link_libraries(OpenAL INTERFACE dl)
+  # 如果 ALSA 或 PulseAudio 被找到并链接，OpenAL 的 target 会自动处理 我们这里只添加最基础的依赖
 endif()
 
 set_target_properties(OpenAL PROPERTIES POSITION_INDEPENDENT_CODE ON)
