@@ -259,12 +259,7 @@ else()
 	set(FFMPEG_CONFIG_STAMP
 		"${FFMPEG_INSTALL_DIR}/.mmm_ffmpeg_${ICE_FFMPEG_CONFIG_HASH}.stamp"
 	)
-	set(FFMPEG_READY_TEST "test -f '${FFMPEG_CONFIG_STAMP}'")
-	foreach(byproduct IN LISTS FFMPEG_BYPRODUCTS)
-		set(FFMPEG_READY_TEST
-			"${FFMPEG_READY_TEST} && test -f '${byproduct}'"
-		)
-	endforeach()
+	set(FFMPEG_SOURCE_READY_TEST "test -f '${FFMPEG_CONFIG_STAMP}' && ! find '${FFMPEG_SOURCE_DIR}' -type f -newer '${FFMPEG_CONFIG_STAMP}' ! -path '*/.git/*' -print -quit | grep -q .")
 
 	message(STATUS "Debug: FFmpeg Configure Command is")
 	message(STATUS "${FFMPEG_CONFIGURE_CMD}")
@@ -281,19 +276,20 @@ else()
 		SOURCE_DIR
 		${FFMPEG_SOURCE_DIR}
 		UPDATE_COMMAND ""
+		BUILD_ALWAYS TRUE
 		DEPENDS
 		zlib_project
 		lame_project
 		CONFIGURE_COMMAND
-		sh -c "${FFMPEG_READY_TEST} || (rm -rf '${FFMPEG_INSTALL_DIR}' && ${FFMPEG_CONFIGURE_CMD_STR})"
+		sh -c "${FFMPEG_SOURCE_READY_TEST} || (rm -rf '${FFMPEG_INSTALL_DIR}' && ${FFMPEG_CONFIGURE_CMD_STR})"
 		# 统一使用 make，Windows MSVC 环境下 FFmpeg 也通常需要适配好的 make (如 Git Bash 里的)
 		BUILD_COMMAND
-		sh -c "${FFMPEG_READY_TEST} || make -j${PROCESSOR_COUNT}"
+		sh -c "${FFMPEG_SOURCE_READY_TEST} || make -j${PROCESSOR_COUNT}"
 		# 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
 		INSTALL_COMMAND
 		sh
 		-c
-		"${FFMPEG_READY_TEST} || (make install && ${CMAKE_COMMAND} -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && ${CMAKE_COMMAND} -E touch '${FFMPEG_CONFIG_STAMP}')"
+		"${FFMPEG_SOURCE_READY_TEST} || (make install && ${CMAKE_COMMAND} -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && ${CMAKE_COMMAND} -E touch '${FFMPEG_CONFIG_STAMP}')"
 		BUILD_BYPRODUCTS
 		${FFMPEG_BYPRODUCTS}
 		${FFMPEG_CONFIG_STAMP}

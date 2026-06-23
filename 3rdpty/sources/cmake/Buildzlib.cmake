@@ -8,6 +8,8 @@ set(ICE_ZLIB_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/zlib_inst")
 set(ICE_ZLIB_INCLUDE_DIR "${ICE_ZLIB_INSTALL_DIR}/include")
 set(ICE_ZLIB_LIBRARY_DIR "${ICE_ZLIB_INSTALL_DIR}/lib")
 set(ICE_ZLIB_PKGCONFIG_DIR "${ICE_ZLIB_LIBRARY_DIR}/pkgconfig")
+set(ICE_ZLIB_SOURCE_STAMP "${ICE_ZLIB_INSTALL_DIR}/.mmm_zlib_sources.stamp")
+set(ICE_ZLIB_SOURCE_READY_TEST "test -f '${ICE_ZLIB_SOURCE_STAMP}' && ! find '${ICE_ZLIB_SOURCE_DIR}' -type f -newer '${ICE_ZLIB_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | grep -q .")
 
 string(TOLOWER "${CMAKE_BUILD_TYPE}" ICE_ZLIB_BUILD_TYPE_LOWER)
 set(ICE_ZLIB_DEBUG_POSTFIX "")
@@ -26,8 +28,8 @@ endif()
 set(ICE_ZLIB_BUILD_BYPRODUCTS
     "${ICE_ZLIB_STATIC_LIBRARY}"
     "${ICE_ZLIB_PKGCONFIG_DIR}/zlib.pc"
+    "${ICE_ZLIB_SOURCE_STAMP}"
 )
-set(ICE_ZLIB_READY_TEST "test -f '${ICE_ZLIB_STATIC_LIBRARY}'")
 set(ICE_ZLIB_INSTALL_COMMAND "${CMAKE_COMMAND} --build . --target install")
 if(WIN32)
     set(ICE_ZLIB_COMPAT_LIBRARIES)
@@ -44,7 +46,6 @@ if(WIN32)
     endif()
 
     foreach(compatLibrary IN LISTS ICE_ZLIB_COMPAT_LIBRARIES)
-        set(ICE_ZLIB_READY_TEST "${ICE_ZLIB_READY_TEST} && test -f '${compatLibrary}'")
         set(ICE_ZLIB_INSTALL_COMMAND
             "${ICE_ZLIB_INSTALL_COMMAND} && ${CMAKE_COMMAND} -E copy_if_different '${ICE_ZLIB_STATIC_LIBRARY}' '${compatLibrary}'"
         )
@@ -57,6 +58,7 @@ ExternalProject_Add(zlib_project
     BINARY_DIR "${ICE_ZLIB_BINARY_DIR}"
     INSTALL_DIR "${ICE_ZLIB_INSTALL_DIR}"
     UPDATE_COMMAND ""
+    BUILD_ALWAYS TRUE
     CMAKE_ARGS
         -DCMAKE_INSTALL_PREFIX=${ICE_ZLIB_INSTALL_DIR}
         -DCMAKE_INSTALL_LIBDIR=lib
@@ -68,7 +70,8 @@ ExternalProject_Add(zlib_project
         -DZLIB_BUILD_STATIC=ON
         -DZLIB_BUILD_TESTING=OFF
         -DZLIB_INSTALL=ON
-    INSTALL_COMMAND sh -c "${ICE_ZLIB_READY_TEST} || (${ICE_ZLIB_INSTALL_COMMAND})"
+    BUILD_COMMAND sh -c "${ICE_ZLIB_SOURCE_READY_TEST} || ${CMAKE_COMMAND} --build ."
+    INSTALL_COMMAND sh -c "${ICE_ZLIB_SOURCE_READY_TEST} || (${ICE_ZLIB_INSTALL_COMMAND} && ${CMAKE_COMMAND} -E touch '${ICE_ZLIB_SOURCE_STAMP}')"
     BUILD_BYPRODUCTS
         ${ICE_ZLIB_BUILD_BYPRODUCTS}
 )

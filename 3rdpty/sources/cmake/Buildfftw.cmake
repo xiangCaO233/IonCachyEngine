@@ -5,6 +5,8 @@ include(ExternalProject)
 set(FFTW_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../fftw")
 set(FFTW_BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_bld")
 set(FFTW_INSTALL_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_inst")
+set(FFTW_SOURCE_STAMP "${FFTW_INSTALL_DIR}/.mmm_fftw_sources.stamp")
+set(FFTW_SOURCE_READY_TEST "test -f '${FFTW_SOURCE_STAMP}' && ! find '${FFTW_SOURCE_DIR}' -type f -newer '${FFTW_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | grep -q .")
 
 if(MSVC)
     set(FFTW_STATIC_LIBRARY "${FFTW_INSTALL_DIR}/lib/fftw3.lib")
@@ -26,6 +28,7 @@ ExternalProject_Add(fftw_project
     BINARY_DIR "${FFTW_BINARY_DIR}"
     INSTALL_DIR "${FFTW_INSTALL_DIR}"
     UPDATE_COMMAND ""
+    BUILD_ALWAYS TRUE
     CMAKE_ARGS
         -DCMAKE_INSTALL_PREFIX=${FFTW_INSTALL_DIR}
         -DCMAKE_INSTALL_LIBDIR=lib
@@ -38,8 +41,9 @@ ExternalProject_Add(fftw_project
         "-DCMAKE_C_FLAGS=${FFTW_C_FLAGS}"
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DCMAKE_INSTALL_MESSAGE=NEVER
-    INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install
-    BUILD_BYPRODUCTS "${FFTW_STATIC_LIBRARY}"
+    BUILD_COMMAND sh -c "${FFTW_SOURCE_READY_TEST} || ${CMAKE_COMMAND} --build ."
+    INSTALL_COMMAND sh -c "${FFTW_SOURCE_READY_TEST} || (${CMAKE_COMMAND} --build . --target install && ${CMAKE_COMMAND} -E touch '${FFTW_SOURCE_STAMP}')"
+    BUILD_BYPRODUCTS "${FFTW_STATIC_LIBRARY}" "${FFTW_SOURCE_STAMP}"
 )
 
 # 预创建 include 目录，避免 CMake 配置阶段报错。
