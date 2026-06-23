@@ -31,27 +31,10 @@ if(NOT APPLE
   list(APPEND RB_LTO_FLAGS "-flto=thin" "-fsplit-lto-unit")
 endif()
 
-# 判断 PGO 参数
-set(RB_PGO_FLAGS "")
-if(ICE_PGO_INSTRUMENT)
-  if(WIN32)
-    set(DEFAULT_PGO_PATH "NUL")
-  else()
-    set(DEFAULT_PGO_PATH "/dev/null")
-  endif()
-  set(RB_PGO_FLAGS "-fprofile-instr-generate=${DEFAULT_PGO_PATH}")
-elseif(ICE_PGO_USE)
-  get_filename_component(ABS_PGO_DATA "${ICE_PGO_DATA}" ABSOLUTE)
-  set(RB_PGO_FLAGS "-fprofile-instr-use=${ABS_PGO_DATA}")
-endif()
-
 # 合并额外编译和链接参数
 set(RB_EXTRA_FLAGS_LIST "")
 if(RB_LTO_FLAGS)
   list(APPEND RB_EXTRA_FLAGS_LIST ${RB_LTO_FLAGS})
-endif()
-if(NOT "${RB_PGO_FLAGS}" STREQUAL "")
-  list(APPEND RB_EXTRA_FLAGS_LIST "${RB_PGO_FLAGS}")
 endif()
 
 string(REPLACE ";" " " RB_EXTRA_FLAGS "${RB_EXTRA_FLAGS_LIST}")
@@ -66,7 +49,7 @@ if(NOT "${RB_EXTRA_FLAGS}" STREQUAL "")
   set(CPP_ARGS_VAL "${CPP_ARGS_VAL} ${RB_EXTRA_FLAGS}")
   set(C_LINK_ARGS_VAL "${RB_EXTRA_FLAGS}")
   set(CPP_LINK_ARGS_VAL "${RB_EXTRA_FLAGS}")
-  message(STATUS "Rubberband Extra Build Flags (LTO/PGO): ${RB_EXTRA_FLAGS}")
+  message(STATUS "Rubberband Extra Build Flags (LTO): ${RB_EXTRA_FLAGS}")
 endif()
 
 # 定义项目路径配置
