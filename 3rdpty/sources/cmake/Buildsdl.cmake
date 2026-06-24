@@ -45,6 +45,36 @@ set(SDL_POWER
     ON
     CACHE BOOL "Enable Power management subsystem" FORCE)
 
+# --- Linux 音频后端：预编译 SDL 必须带真实播放设备支持 ---
+if(LINUX)
+  # PipeWire 是现代 Linux 桌面默认音频服务，PulseAudio 和 ALSA 作为广泛部署的兼容路径。
+  # 动态加载可避免静态 SDL 目标把宿主机音频库路径传播给主项目链接命令。
+  set(SDL_PIPEWIRE
+      ON
+      CACHE BOOL "Enable SDL3 PipeWire audio backend" FORCE)
+  set(SDL_PIPEWIRE_SHARED
+      ON
+      CACHE BOOL "Dynamically load PipeWire for SDL3 audio" FORCE)
+  set(SDL_PULSEAUDIO
+      ON
+      CACHE BOOL "Enable SDL3 PulseAudio audio backend" FORCE)
+  set(SDL_PULSEAUDIO_SHARED
+      ON
+      CACHE BOOL "Dynamically load PulseAudio for SDL3 audio" FORCE)
+  set(SDL_ALSA
+      ON
+      CACHE BOOL "Enable SDL3 ALSA audio backend" FORCE)
+  set(SDL_ALSA_SHARED
+      ON
+      CACHE BOOL "Dynamically load ALSA for SDL3 audio" FORCE)
+  set(SDL_JACK
+      ON
+      CACHE BOOL "Enable SDL3 JACK audio backend" FORCE)
+  set(SDL_JACK_SHARED
+      ON
+      CACHE BOOL "Dynamically load JACK for SDL3 audio" FORCE)
+endif()
+
 # --- 黑名单：强制关闭所有非音频核心的子系统 ---
 set(SDL_VIDEO
     OFF
