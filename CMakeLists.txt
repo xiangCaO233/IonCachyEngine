@@ -5,7 +5,11 @@ cmake_minimum_required(VERSION 3.22)
 project(IonCachyEngine LANGUAGES CXX C)
 
 # 全局设置
-if(APPLE OR MSVC)
+if(APPLE
+   OR MSVC
+   OR (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+  # MinGW GCC 16 的 gnu++26 与静态 libstdc++ 链接会重复定义 stdexcept 符号。 引擎当前 API 不依赖
+  # C++26，固定到 C++23 以保证独立和主项目预编译库可链接。
   set(CMAKE_CXX_STANDARD 23)
 else()
   set(CMAKE_CXX_STANDARD 26)

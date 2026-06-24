@@ -2,13 +2,20 @@
 
 include(ExternalProject)
 
-# 自动映射 CMake 到 Meson 的构建类型
+# 将 CMake 构建类型映射到 Meson。 预编译库的 Debug 与 RelWithDebInfo 必须保留调试信息。
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(RB_BUILD_TYPE "debug")
   if(MSVC)
     set(RB_FLAGS "")
   else()
     set(RB_FLAGS "-g")
+  endif()
+elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+  set(RB_BUILD_TYPE "debugoptimized")
+  if(MSVC)
+    set(RB_FLAGS "")
+  else()
+    set(RB_FLAGS "-O2 -g")
   endif()
 else()
   set(RB_BUILD_TYPE "release")

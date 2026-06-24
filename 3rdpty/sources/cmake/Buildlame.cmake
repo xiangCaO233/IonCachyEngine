@@ -24,7 +24,12 @@ else()
   set(ICE_LAME_STATIC_LIBRARY "${ICE_LAME_LIBRARY_DIR}/libmp3lame.a")
 endif()
 
-set(ICE_LAME_C_FLAGS "${CMAKE_C_FLAGS}")
+string(TOUPPER "${CMAKE_BUILD_TYPE}" ICE_LAME_BUILD_TYPE_UPPER)
+set(ICE_LAME_CONFIG_C_FLAGS "${CMAKE_C_FLAGS_${ICE_LAME_BUILD_TYPE_UPPER}}")
+
+# autotools 不继承 CMake 配置型 CFLAGS，这里显式拼入 Debug/RelWithDebInfo 的 -g。
+# 预编译静态库必须保留符号，便于下游定位第三方依赖问题。
+set(ICE_LAME_C_FLAGS "${CMAKE_C_FLAGS} ${ICE_LAME_CONFIG_C_FLAGS}")
 if(NOT MSVC)
   string(APPEND ICE_LAME_C_FLAGS " -fPIC")
 endif()
