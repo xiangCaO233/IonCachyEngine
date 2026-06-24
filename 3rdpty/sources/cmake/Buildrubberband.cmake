@@ -243,6 +243,34 @@ else()
          "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
   endif()
 
+  if(CMAKE_CROSSCOMPILING)
+    # Meson 只有拿到 cross file 后才会跳过运行目标平台的 sanity exe；MinGW 交叉构建必须显式声明 Windows
+    # host machine 和配套 binutils。
+    set(RUBBERBAND_MESON_CROSS_FILE
+        "${CMAKE_BINARY_DIR}/3rdpty/rubberband-mingw-cross.ini")
+    file(
+      WRITE "${RUBBERBAND_MESON_CROSS_FILE}"
+      "[binaries]\n"
+      "c = '${CMAKE_C_COMPILER}'\n"
+      "cpp = '${CMAKE_CXX_COMPILER}'\n"
+      "ar = '${CMAKE_AR}'\n"
+      "ranlib = '${CMAKE_RANLIB}'\n"
+      "nm = '${CMAKE_NM}'\n"
+      "strip = '${CMAKE_STRIP}'\n"
+      "windres = '${CMAKE_RC_COMPILER}'\n"
+      "pkg-config = 'pkg-config'\n"
+      "\n"
+      "[host_machine]\n"
+      "system = 'windows'\n"
+      "cpu_family = 'x86_64'\n"
+      "cpu = 'x86_64'\n"
+      "endian = 'little'\n"
+      "\n"
+      "[properties]\n"
+      "needs_exe_wrapper = true\n")
+    list(APPEND MESON_SETUP_ARGS "--cross-file=${RUBBERBAND_MESON_CROSS_FILE}")
+  endif()
+
   set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
 
   # 将列表转换为字符串，以便在 sh -c 中使用

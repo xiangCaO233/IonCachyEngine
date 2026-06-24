@@ -180,6 +180,10 @@ else()
       "--extra-ldflags=${ICE_FFMPEG_LDFLAGS}" # LDFLAGS 也需要 PIC
       "--extra-libs=-lmp3lame -lz")
   list(APPEND FFMPEG_CONF_LIST --enable-libmp3lame)
+  if(CMAKE_CROSSCOMPILING)
+    # FFmpeg 的 configure 需要显式确认交叉构建，否则会把无法运行目标 exe 误判为编译器不可用。
+    list(APPEND FFMPEG_CONF_LIST --enable-cross-compile)
+  endif()
 
   # 调试标志 (直接 append 到 list)
   if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL
@@ -189,8 +193,9 @@ else()
     list(APPEND FFMPEG_CONF_LIST "--disable-debug" "--enable-stripping")
   endif()
 
-  # 构造最终命令 (不要带引号展开变量)
-  if(WIN32)
+  # 构造最终命令 (不要带引号展开变量)。这里必须判断宿主 shell；Linux 交叉构建的目标平台同样是 WIN32，但不能调用
+  # Windows/MSYS 的 sh.exe。
+  if(CMAKE_HOST_WIN32)
     set(FFMPEG_CONFIGURE_CMD
         ${CMAKE_COMMAND}
         -E

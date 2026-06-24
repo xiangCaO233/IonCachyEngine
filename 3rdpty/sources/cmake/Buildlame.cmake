@@ -66,6 +66,11 @@ list(
   --disable-decoder
   --disable-libmpg123)
 
+if(CMAKE_CROSSCOMPILING AND MINGW_TOOLCHAIN_PREFIX)
+  # autotools 无法只靠 CC 判断交叉目标；显式传入 --host，避免 configure 尝试运行 Windows 测试程序。
+  list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=${MINGW_TOOLCHAIN_PREFIX}")
+endif()
+
 ExternalProject_Add(
   lame_project
   SOURCE_DIR "${ICE_LAME_SOURCE_DIR}"

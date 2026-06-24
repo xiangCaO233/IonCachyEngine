@@ -55,6 +55,8 @@ ExternalProject_Add(
   INSTALL_DIR "${FFTW_INSTALL_DIR}"
   UPDATE_COMMAND ""
   BUILD_ALWAYS TRUE
+  # FFTW 的旧 CMake 工程不会自动继承外层交叉工具链；这里显式传入目标系统和 try-compile 类型，避免宿主 Linux 链接参数污染
+  # MinGW 构建。
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${FFTW_INSTALL_DIR}
              -DCMAKE_INSTALL_LIBDIR=lib
              -DCMAKE_POLICY_VERSION_MINIMUM=3.5
@@ -62,7 +64,13 @@ ExternalProject_Add(
              -DBUILD_TESTS=OFF
              -DENABLE_THREADS=ON
              -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+             -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+             -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
              -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+             -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+             -DCMAKE_AR=${CMAKE_AR}
+             -DCMAKE_RANLIB=${CMAKE_RANLIB}
+             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
              "-DCMAKE_C_FLAGS=${FFTW_C_FLAGS}"
              ${FFTW_MSVC_RUNTIME_ARGS}
              -DCMAKE_POSITION_INDEPENDENT_CODE=ON
