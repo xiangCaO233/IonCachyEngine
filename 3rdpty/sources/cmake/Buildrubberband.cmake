@@ -28,6 +28,19 @@ endif()
 
 message(STATUS "Rubberband Build Type: ${RB_BUILD_TYPE}")
 
+find_program(
+  RUBBERBAND_MESON_EXE
+  NAMES meson
+  PATHS "C:/Program Files/Meson" "C:/msys64/ucrt64/bin"
+        "C:/msys64/clang64/bin" "C:/msys64/mingw64/bin"
+  NO_DEFAULT_PATH)
+if(NOT RUBBERBAND_MESON_EXE)
+  find_program(RUBBERBAND_MESON_EXE NAMES meson)
+endif()
+if(NOT RUBBERBAND_MESON_EXE)
+  message(FATAL_ERROR "构建 Rubber Band 需要 meson，可执行文件未找到。")
+endif()
+
 # 判断 Clang/GCC 的 LTO 参数
 set(RB_LTO_FLAGS "")
 if(NOT APPLE
@@ -71,6 +84,13 @@ set(RUBBERBAND_SOURCE_STAMP
 set(RUBBERBAND_SOURCE_READY_TEST
     "test -f '${RUBBERBAND_SOURCE_STAMP}' && ! /usr/bin/find '${RUBBERBAND_SOURCE_DIR}' -type f -newer '${RUBBERBAND_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
 )
+
+# Rubber Band 跟随 ICE_LINKAGE 生成静态库或 DLL。
+set(RUBBERBAND_LIBRARY_KIND static)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(RUBBERBAND_LIBRARY_KIND shared)
+endif()
+set(RUBBERBAND_RUNTIME_LIBRARY "")
 
 # 本地依赖路径 (FFTW3 和 libsamplerate) 快速傅里叶变换库来自 ExternalProject_Add (fftw_project)
 set(FFTW_INST_DIR "${CMAKE_BINARY_DIR}/3rdpty/fftw_inst")
@@ -122,13 +142,28 @@ file(
   "Cflags: -I${SAMPLERATE_SRC_DIR}/src -I${SAMPLERATE_BIN_DIR}\n")
 
 if(MSVC)
+  set(RUBBERBAND_USE_DLL_CRT OFF)
+  if(CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL"
+     OR ICE_LINKAGE STREQUAL "shared"
+     OR PROJECT_LINKAGE STREQUAL "shared")
+    set(RUBBERBAND_USE_DLL_CRT ON)
+  endif()
+
   # 根据主项目的构建类型决定 Meson 的参数
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(RUBBERBAND_BUILD_TYPE "debug")
-    set(RUBBERBAND_CRT "mtd") # 对应 MSVC 的 /MTd
+    if(RUBBERBAND_USE_DLL_CRT)
+      set(RUBBERBAND_CRT "mdd")
+    else()
+      set(RUBBERBAND_CRT "mtd")
+    endif()
   else()
     set(RUBBERBAND_BUILD_TYPE "release")
-    set(RUBBERBAND_CRT "mt") # 对应 MSVC 的 /MT
+    if(RUBBERBAND_USE_DLL_CRT)
+      set(RUBBERBAND_CRT "md")
+    else()
+      set(RUBBERBAND_CRT "mt")
+    endif()
   endif()
 
   # 找到 pkg-config
@@ -156,7 +191,7 @@ if(MSVC)
       --libdir=lib
       --buildtype=${RB_BUILD_TYPE}
       -Db_vscrt=${RUBBERBAND_CRT}
-      -Ddefault_library=static
+      -Ddefault_library=${RUBBERBAND_LIBRARY_KIND}
       -Dtests=disabled
       -Dcmdline=disabled
       -Dvamp=disabled
@@ -186,8 +221,14 @@ if(MSVC)
   endif()
 
   # 确定库文件产物路径
-  set(RUBBERBAND_STATIC_LIB
-      "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
+  if(ICE_LINKAGE STREQUAL "shared")
+    set(RUBBERBAND_LIBRARY "${RUBBERBAND_INSTALL_DIR}/lib/rubberband.lib")
+    set(RUBBERBAND_RUNTIME_LIBRARY
+        "${RUBBERBAND_INSTALL_DIR}/bin/rubberband.dll")
+  else()
+    set(RUBBERBAND_LIBRARY
+        "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
+  endif()
 
   # 使用 CMake 环境包装器，避免 MSVC 构建依赖类 Unix 命令行外壳。
   ExternalProject_Add(
@@ -201,26 +242,26 @@ if(MSVC)
       ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
-      meson setup ${MESON_SETUP_ARGS} --native-file=NUL
+      "${RUBBERBAND_MESON_EXE}" setup ${MESON_SETUP_ARGS} --native-file=NUL
       "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
     BUILD_COMMAND
       ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
-      meson compile -C "${RUBBERBAND_BUILD_DIR}"
+      "${RUBBERBAND_MESON_EXE}" compile -C "${RUBBERBAND_BUILD_DIR}"
     INSTALL_COMMAND
       ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
-      meson install -C "${RUBBERBAND_BUILD_DIR}" --no-rebuild
-    BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}")
+      "${RUBBERBAND_MESON_EXE}" install -C "${RUBBERBAND_BUILD_DIR}" --no-rebuild
+    BUILD_BYPRODUCTS "${RUBBERBAND_LIBRARY}" ${RUBBERBAND_RUNTIME_LIBRARY})
 else()
   # 构造 Meson 配置参数
   set(MESON_SETUP_ARGS
       --prefix=${RUBBERBAND_INSTALL_DIR}
       --libdir=lib
       --buildtype=${RB_BUILD_TYPE}
-      -Ddefault_library=static
+      -Ddefault_library=${RUBBERBAND_LIBRARY_KIND}
       -Dtests=disabled
       -Dcmdline=disabled
       -Dvamp=disabled
@@ -272,7 +313,13 @@ else()
     list(APPEND MESON_SETUP_ARGS "--cross-file=${RUBBERBAND_MESON_CROSS_FILE}")
   endif()
 
-  set(RUBBERBAND_STATIC_LIB "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
+  if(ICE_LINKAGE STREQUAL "shared")
+    set(RUBBERBAND_LIBRARY
+        "${RUBBERBAND_INSTALL_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}rubberband${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+  else()
+    set(RUBBERBAND_LIBRARY "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a")
+  endif()
 
   # 将列表转换为字符串，以便在 sh -c 中使用
   set(MESON_SETUP_ARGS_STR "")
@@ -294,14 +341,14 @@ else()
     BUILD_ALWAYS TRUE
     CONFIGURE_COMMAND
       sh -c
-      "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || ${MESON_TOOLCHAIN_ENV} meson setup ${MESON_SETUP_ARGS_STR} '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
+      "test -f '${RUBBERBAND_BUILD_DIR}/build.ninja' || ${MESON_TOOLCHAIN_ENV} '${RUBBERBAND_MESON_EXE}' setup ${MESON_SETUP_ARGS_STR} '${RUBBERBAND_BUILD_DIR}' '${RUBBERBAND_SOURCE_DIR}'"
     BUILD_COMMAND
       sh -c
-      "${RUBBERBAND_SOURCE_READY_TEST} || ${MESON_TOOLCHAIN_ENV} meson compile -C '${RUBBERBAND_BUILD_DIR}'"
+      "${RUBBERBAND_SOURCE_READY_TEST} || ${MESON_TOOLCHAIN_ENV} '${RUBBERBAND_MESON_EXE}' compile -C '${RUBBERBAND_BUILD_DIR}'"
     INSTALL_COMMAND
       sh -c
-      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} meson install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild && '${CMAKE_COMMAND}' -E touch '${RUBBERBAND_SOURCE_STAMP}')"
-    BUILD_BYPRODUCTS "${RUBBERBAND_STATIC_LIB}" "${RUBBERBAND_SOURCE_STAMP}")
+      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} '${RUBBERBAND_MESON_EXE}' install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild && '${CMAKE_COMMAND}' -E touch '${RUBBERBAND_SOURCE_STAMP}')"
+    BUILD_BYPRODUCTS "${RUBBERBAND_LIBRARY}" "${RUBBERBAND_SOURCE_STAMP}")
 endif()
 
 # 封装为 CMake 接口库
@@ -312,7 +359,7 @@ add_dependencies(3rd_rubberband rubberband_project)
 
 target_include_directories(3rd_rubberband
                            INTERFACE "${RUBBERBAND_INSTALL_DIR}/include")
-target_link_libraries(3rd_rubberband INTERFACE "${RUBBERBAND_STATIC_LIB}")
+target_link_libraries(3rd_rubberband INTERFACE "${RUBBERBAND_LIBRARY}")
 
 # 链接依赖的静态库
 target_link_libraries(3rd_rubberband INTERFACE 3rd_fftw3 3rd_libsamplerate)

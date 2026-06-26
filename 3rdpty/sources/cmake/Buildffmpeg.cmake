@@ -4,9 +4,14 @@ if(MSVC)
     message(FATAL_ERROR "MSVC 源码构建 ffmpeg 需要设置 VCPKG_ROOT。")
   endif()
   file(TO_CMAKE_PATH "${VCPKG_ROOT}" ICE_VCPKG_ROOT)
+  # 动态依赖偏好使用 vcpkg x64-windows，确保 FFmpeg 与主项目同为 /MD(d) 运行库。
+  set(ICE_VCPKG_FFMPEG_TRIPLET "x64-windows-static")
+  if(ICE_LINKAGE STREQUAL "shared" OR PROJECT_LINKAGE STREQUAL "shared")
+    set(ICE_VCPKG_FFMPEG_TRIPLET "x64-windows")
+  endif()
   # 手动把正确的 ffmpeg share 路径加入
   list(APPEND CMAKE_MODULE_PATH
-       "${ICE_VCPKG_ROOT}/installed/x64-windows-static/share/ffmpeg")
+       "${ICE_VCPKG_ROOT}/installed/${ICE_VCPKG_FFMPEG_TRIPLET}/share/ffmpeg")
   find_package(FFMPEG REQUIRED)
   add_library(3rd_ffmpeg INTERFACE)
   add_dependencies(3rd_ffmpeg ffmpeg_project)

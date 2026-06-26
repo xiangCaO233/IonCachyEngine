@@ -4,11 +4,18 @@
 set(SDL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sources/sdl")
 
 # 覆盖 SDL3 的内部选项
+set(ICE_SDL_BUILD_SHARED OFF)
+set(ICE_SDL_BUILD_STATIC ON)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(ICE_SDL_BUILD_SHARED ON)
+  set(ICE_SDL_BUILD_STATIC OFF)
+endif()
+
 set(SDL_SHARED
-    OFF
+    ${ICE_SDL_BUILD_SHARED}
     CACHE BOOL "Build SDL3 as a shared library" FORCE)
 set(SDL_STATIC
-    ON
+    ${ICE_SDL_BUILD_STATIC}
     CACHE BOOL "Build SDL3 as a static library" FORCE)
 
 # --- 构建目标 ---
@@ -140,8 +147,20 @@ set(SDL_LIBUDEV
 add_subdirectory(${SDL_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/sdl_build
                  EXCLUDE_FROM_ALL SYSTEM)
 
-set_target_properties(SDL3-static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(3rd_sdl3 INTERFACE)
-target_link_libraries(3rd_sdl3 INTERFACE SDL3-static)
+if(ICE_LINKAGE STREQUAL "shared")
+  if(TARGET SDL3-shared)
+    target_link_libraries(3rd_sdl3 INTERFACE SDL3-shared)
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(3rd_sdl3 INTERFACE SDL3::SDL3)
+  elseif(TARGET SDL3)
+    target_link_libraries(3rd_sdl3 INTERFACE SDL3)
+  else()
+    message(FATAL_ERROR "SDL3 shared target not found.")
+  endif()
+else()
+  set_target_properties(SDL3-static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_link_libraries(3rd_sdl3 INTERFACE SDL3-static)
+endif()
 target_include_directories(
   3rd_sdl3 INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../sources/sdl/include")

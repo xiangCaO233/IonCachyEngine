@@ -1,33 +1,40 @@
 # src/CMakeLists.txt
 
-# 自动搜集源文件 手动列出更清晰，但 GLOB 也可以
-file(GLOB_RECURSE ICE_SOURCES "ice/*.cpp")
+# IonCachyEngine 当前源码由 ice/ 目录集中维护，这里保留原有递归收集方式。
+file(GLOB_RECURSE ICE_SOURCES CONFIGURE_DEPENDS "ice/*.cpp")
 
-# 定义核心引擎库 (静态库)
-add_library(IonCachyEngine-static STATIC ${ICE_SOURCES})
+# 依赖链接偏好为 shared 时，IonCachyEngine 本体也生成 DLL，避免主程序吸收音频引擎目标代码。
+set(ICE_LIBRARY_TARGET IonCachyEngine-static)
+set(ICE_LIBRARY_TYPE STATIC)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(ICE_LIBRARY_TARGET IonCachyEngine)
+  set(ICE_LIBRARY_TYPE SHARED)
+endif()
 
-# 设置 Target 属性
+add_library(${ICE_LIBRARY_TARGET} ${ICE_LIBRARY_TYPE} ${ICE_SOURCES})
+if(ICE_LINKAGE STREQUAL "shared" AND WIN32)
+  set_target_properties(${ICE_LIBRARY_TARGET}
+                        PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  target_compile_definitions(${ICE_LIBRARY_TARGET}
+                             PRIVATE ICE_BUILDING_LIBRARY
+                             PUBLIC ICE_SHARED_LIBRARY)
+endif()
+
 target_include_directories(
-  IonCachyEngine-static # PUBLIC: 任何链接 IonCachyEngine 的项目都会自动获得这个 include 路径
-  PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> # 项目内构建时
-         $<INSTALL_INTERFACE:include> # 安装后
-)
+  ${ICE_LIBRARY_TARGET}
+  PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>)
 
-# 将所有第三方依赖链接到引擎库 PRIVATE: 这些依赖是 IonCachyEngine 的实现细节，不应传播给最终用户
 target_link_libraries(
-  IonCachyEngine-static
+  ${ICE_LIBRARY_TARGET}
   PUBLIC 3rd_sdl3 3rd_rubberband
   PRIVATE fmt::fmt spdlog::spdlog OpenAL::OpenAL 3rd_ffmpeg)
 
-# 创建命名空间别名 这使得其他项目可以用更清晰的方式链接
-add_library(ICE::IonCachyEngine ALIAS IonCachyEngine-static)
+add_library(ICE::IonCachyEngine ALIAS ${ICE_LIBRARY_TARGET})
 
-# 可选地构建测试程序
 if(ICE_BUILD_TESTS)
   add_executable(testIonCachyEngin main.cpp)
-
-  # 将引擎库链接到测试程序
-  target_link_libraries(testIonCachyEngin PRIVATE IonCachyEngine-static
+  target_link_libraries(testIonCachyEngin PRIVATE ${ICE_LIBRARY_TARGET}
                                                   fmt::fmt)
 
   message(STATUS "Building 'testIonCachyEngin' enabled.")

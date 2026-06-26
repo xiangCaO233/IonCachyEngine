@@ -4,9 +4,14 @@
 set(OPENAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sources/openal")
 
 # 覆盖 OpenAL Soft 的内部选项
+# OpenAL Soft 跟随 ICE_LINKAGE 产出静态库或 DLL。
+set(ICE_OPENAL_LIBTYPE "STATIC")
+if(ICE_LINKAGE STREQUAL "shared")
+  set(ICE_OPENAL_LIBTYPE "SHARED")
+endif()
 set(LIBTYPE
-    "STATIC"
-    CACHE STRING "Force static library build" FORCE)
+    "${ICE_OPENAL_LIBTYPE}"
+    CACHE STRING "Force OpenAL Soft library type" FORCE)
 set(ALSOFT_UTILS
     OFF
     CACHE BOOL "Disable OpenAL utils" FORCE)
@@ -81,3 +86,8 @@ else()
 endif()
 
 set_target_properties(OpenAL PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(ICE_LINKAGE STREQUAL "static")
+  # 静态 OpenAL Soft 可以解析内部日志回调符号；动态 DLL 不公开该非稳定符号。
+  target_compile_definitions(OpenAL INTERFACE AL_LIBTYPE_STATIC
+                                              ICE_OPENALSOFT_STATIC_LINKAGE)
+endif()

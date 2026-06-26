@@ -13,8 +13,13 @@ set(SPDLOG_BUILD_TESTS
 set(SPDLOG_BUILD_BENCH
     OFF
     CACHE BOOL "Disable spdlog benchmarks" FORCE)
+# spdlog 跟随 ICE_LINKAGE，shared 预编译包中提供 DLL。
+set(ICE_SPDLOG_BUILD_SHARED OFF)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(ICE_SPDLOG_BUILD_SHARED ON)
+endif()
 set(SPDLOG_BUILD_SHARED
-    OFF
+    ${ICE_SPDLOG_BUILD_SHARED}
     CACHE BOOL "Disable spdlog shared library" FORCE)
 set(SPDLOG_INSTALL
     OFF

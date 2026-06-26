@@ -10,10 +10,29 @@ set(FFTW_SOURCE_READY_TEST
     "test -f '${FFTW_SOURCE_STAMP}' && ! /usr/bin/find '${FFTW_SOURCE_DIR}' -type f -newer '${FFTW_SOURCE_STAMP}' ! -path '*/.git/*' -print -quit | /usr/bin/grep -q ."
 )
 
+# FFTW 是 Rubber Band 的底层依赖，shared 预编译包中必须提供 DLL 和导入库。
+set(FFTW_BUILD_SHARED OFF)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(FFTW_BUILD_SHARED ON)
+endif()
+set(FFTW_RUNTIME_LIBRARY "")
 if(MSVC)
-  set(FFTW_STATIC_LIBRARY "${FFTW_INSTALL_DIR}/lib/fftw3.lib")
+  set(FFTW_LIBRARY "${FFTW_INSTALL_DIR}/lib/fftw3.lib")
+  if(FFTW_BUILD_SHARED)
+    set(FFTW_RUNTIME_LIBRARY "${FFTW_INSTALL_DIR}/bin/fftw3.dll")
+  endif()
+elseif(FFTW_BUILD_SHARED)
+  set(FFTW_LIBRARY
+      "${FFTW_INSTALL_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}fftw3${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  )
 else()
-  set(FFTW_STATIC_LIBRARY "${FFTW_INSTALL_DIR}/lib/libfftw3.a")
+  set(FFTW_LIBRARY "${FFTW_INSTALL_DIR}/lib/libfftw3.a")
+endif()
+
+set(FFTW_ENABLE_THREADS ON)
+if(MSVC)
+  # MSVC 原生环境没有 pthread.h，禁用 FFTW threads 子库以避免误启用 pthread 后端。
+  set(FFTW_ENABLE_THREADS OFF)
 endif()
 
 set(FFTW_C_FLAGS "${CMAKE_C_FLAGS}")
@@ -60,9 +79,9 @@ ExternalProject_Add(
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${FFTW_INSTALL_DIR}
              -DCMAKE_INSTALL_LIBDIR=lib
              -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-             -DBUILD_SHARED_LIBS=OFF
+             -DBUILD_SHARED_LIBS=${FFTW_BUILD_SHARED}
              -DBUILD_TESTS=OFF
-             -DENABLE_THREADS=ON
+             -DENABLE_THREADS=${FFTW_ENABLE_THREADS}
              -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
              -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
              -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
@@ -80,7 +99,8 @@ ExternalProject_Add(
   INSTALL_COMMAND
     sh -c
     "${FFTW_SOURCE_READY_TEST} || ('${CMAKE_COMMAND}' --build . --target install && '${CMAKE_COMMAND}' -E touch '${FFTW_SOURCE_STAMP}')"
-  BUILD_BYPRODUCTS "${FFTW_STATIC_LIBRARY}" "${FFTW_SOURCE_STAMP}")
+  BUILD_BYPRODUCTS "${FFTW_LIBRARY}" ${FFTW_RUNTIME_LIBRARY}
+                   "${FFTW_SOURCE_STAMP}")
 
 # 预创建 include 目录，避免 CMake 配置阶段报错。
 file(MAKE_DIRECTORY "${FFTW_INSTALL_DIR}/include")
@@ -90,4 +110,4 @@ add_dependencies(3rd_fftw3 fftw_project)
 
 target_include_directories(3rd_fftw3 INTERFACE "${FFTW_INSTALL_DIR}/include")
 
-target_link_libraries(3rd_fftw3 INTERFACE "${FFTW_STATIC_LIBRARY}")
+target_link_libraries(3rd_fftw3 INTERFACE "${FFTW_LIBRARY}")

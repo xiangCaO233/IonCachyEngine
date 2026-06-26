@@ -26,6 +26,7 @@
 #    include <windows.h>
 #endif
 
+#if defined(ICE_OPENALSOFT_STATIC_LINKAGE)
 extern "C" {
 using LPALSOFTLOGCALLBACK = void(ALC_APIENTRY*)(void* userptr, char level,
                                                 const char* message,
@@ -33,6 +34,7 @@ using LPALSOFTLOGCALLBACK = void(ALC_APIENTRY*)(void* userptr, char level,
 void ALC_APIENTRY alsoft_set_log_callback(LPALSOFTLOGCALLBACK callback,
                                           void*               userptr) noexcept;
 }
+#endif
 
 #ifndef AL_FORMAT_MONO_FLOAT32
 #    define AL_FORMAT_MONO_FLOAT32 0x10010
@@ -138,11 +140,12 @@ void appendOpenALSoftLogText(const char* text, size_t length) noexcept
     g_openALSoftLogBuffer[g_openALSoftLogLength] = '\0';
 }
 
-/// @brief Capture an OpenAL Soft log callback message.
-/// @param userptr Unused callback user pointer.
-/// @param level OpenAL Soft log level code.
-/// @param message Log message text.
-/// @param length Log message length.
+#if defined(ICE_OPENALSOFT_STATIC_LINKAGE)
+/// @brief 捕获 OpenAL Soft 日志回调消息。
+/// @param userptr 未使用的回调用户指针。
+/// @param level OpenAL Soft 日志级别代码。
+/// @param message 日志消息文本。
+/// @param length 日志消息长度。
 void openALSoftLogCallback(void* userptr, char level, const char* message,
                            int length) noexcept
 {
@@ -161,8 +164,9 @@ void openALSoftLogCallback(void* userptr, char level, const char* message,
     appendOpenALSoftLogText("] ", 2);
     appendOpenALSoftLogText(message, static_cast<size_t>(length));
 }
+#endif
 
-/// @brief Install the OpenAL Soft log callback once.
+/// @brief 安装 OpenAL Soft 日志回调；动态 OpenAL 不引用非稳定导出符号。
 void installOpenALSoftLogCallback()
 {
     std::lock_guard lock(g_openALSoftLogMutex);
@@ -170,7 +174,9 @@ void installOpenALSoftLogCallback()
         return;
     }
 
+#if defined(ICE_OPENALSOFT_STATIC_LINKAGE)
     alsoft_set_log_callback(openALSoftLogCallback, nullptr);
+#endif
     g_openALSoftLogInstalled = true;
 }
 

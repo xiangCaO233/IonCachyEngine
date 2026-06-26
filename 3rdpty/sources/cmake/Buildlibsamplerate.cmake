@@ -90,15 +90,26 @@ string(APPEND CONFIG_H_CONTENT "#define CPU_CLIPS_NEGATIVE 0\n")
 
 file(WRITE "${SAMPLERATE_BIN_DIR}/config.h" "${CONFIG_H_CONTENT}")
 
-# Define the library target manually
+# libsamplerate 源码目录缺少可直接复用的现代 CMake 目标，这里手动跟随 ICE_LINKAGE 产出静态库或 DLL。
+set(SAMPLERATE_LIBRARY_TYPE STATIC)
+if(ICE_LINKAGE STREQUAL "shared")
+  set(SAMPLERATE_LIBRARY_TYPE SHARED)
+endif()
+
 add_library(
-  samplerate STATIC
+  samplerate ${SAMPLERATE_LIBRARY_TYPE}
   "${SAMPLERATE_SRC_DIR}/src/samplerate.c"
   "${SAMPLERATE_SRC_DIR}/src/src_sinc.c" "${SAMPLERATE_SRC_DIR}/src/src_zoh.c"
   "${SAMPLERATE_SRC_DIR}/src/src_linear.c")
 
-set_target_properties(samplerate PROPERTIES ARCHIVE_OUTPUT_DIRECTORY
-                                            "${SAMPLERATE_BIN_DIR}")
+set_target_properties(
+  samplerate
+  PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${SAMPLERATE_BIN_DIR}"
+             LIBRARY_OUTPUT_DIRECTORY "${SAMPLERATE_BIN_DIR}"
+             RUNTIME_OUTPUT_DIRECTORY "${SAMPLERATE_BIN_DIR}")
+if(ICE_LINKAGE STREQUAL "shared" AND WIN32)
+  set_target_properties(samplerate PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 target_include_directories(samplerate PUBLIC "${SAMPLERATE_SRC_DIR}/src"
                                              "${SAMPLERATE_BIN_DIR}")
