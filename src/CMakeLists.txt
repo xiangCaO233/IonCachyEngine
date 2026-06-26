@@ -36,6 +36,10 @@ if(ICE_BUILD_TESTS)
   add_executable(testIonCachyEngin main.cpp)
   target_link_libraries(testIonCachyEngin PRIVATE ${ICE_LIBRARY_TARGET}
                                                   fmt::fmt)
+  # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。
+  if(COMMAND ice_prebuilt_copy_runtime_files)
+    ice_prebuilt_copy_runtime_files(testIonCachyEngin)
+  endif()
 
   message(STATUS "Building 'testIonCachyEngin' enabled.")
 else()
