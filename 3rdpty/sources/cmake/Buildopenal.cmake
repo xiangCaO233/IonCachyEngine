@@ -3,8 +3,7 @@
 # 定义源码路径
 set(OPENAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sources/openal")
 
-# 覆盖 OpenAL Soft 的内部选项
-# OpenAL Soft 跟随 ICE_LINKAGE 产出静态库或 DLL。
+# 覆盖 OpenAL Soft 的内部选项 OpenAL Soft 跟随 ICE_LINKAGE 产出静态库或 DLL。
 set(ICE_OPENAL_LIBTYPE "STATIC")
 if(ICE_LINKAGE STREQUAL "shared")
   set(ICE_OPENAL_LIBTYPE "SHARED")
@@ -39,8 +38,8 @@ set(ALSOFT_BACKEND_SDL3
     OFF
     CACHE BOOL "Disable SDL3 backend to avoid extra deps" FORCE)
 
-if(CMAKE_CROSSCOMPILING AND UNIX)
-  # 交叉编译时强制禁用 Linux 相关后端，防止污染
+if(CMAKE_CROSSCOMPILING OR WIN32)
+  # Windows 目标或交叉编译时强制禁用宿主平台后端，防止 pkg-config 探测结果污染目标库。
   set(ALSOFT_BACKEND_PIPEWIRE
       OFF
       CACHE BOOL "" FORCE)
@@ -60,6 +59,15 @@ if(CMAKE_CROSSCOMPILING AND UNIX)
       OFF
       CACHE BOOL "" FORCE)
   set(ALSOFT_BACKEND_SNDIO
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_COREAUDIO
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_OBOE
+      OFF
+      CACHE BOOL "" FORCE)
+  set(ALSOFT_BACKEND_OPENSL
       OFF
       CACHE BOOL "" FORCE)
 endif()
