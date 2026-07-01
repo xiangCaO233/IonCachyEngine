@@ -8,8 +8,8 @@ include_guard(GLOBAL)
 # 动态偏好布局为：
 # <root>/binaries/<platform>/<包>/libs/<arch>/<toolchain>/<compiler-tag>/shared/<config>
 # <root>/binaries/<platform>/<包>/bin/<arch>/<toolchain>/<compiler-tag>/shared/<config>
-# 生成自动推导编译器标签的回退候选。当前主版本优先，后续依次尝试更旧主版本，
-# 用于兼容 clang22 使用 clang19、gcc15 使用 gcc14 这类预编译库复用场景。
+# 生成自动推导编译器标签的回退候选。当前主版本优先，后续依次尝试更旧主版本， 用于兼容 clang22 使用 clang19、gcc15 使用 gcc14
+# 这类预编译库复用场景。
 function(ice_prebuilt_compiler_tag_fallback_candidates out_var tag_prefix
          compiler_major)
   set(_candidates "")
@@ -98,6 +98,8 @@ function(ice_prebuilt_init default_root)
     if(MSVC)
       set(_compiler_tag "2026")
     elseif(MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      # Windows MinGW Clang 使用 CLANG64 布局；其 C runtime 是 UCRT，但 C++ runtime 是
+      # libc++。
       set(_compiler_tag "clang64")
     elseif(MINGW)
       set(_compiler_tag "ucrt64")
@@ -157,7 +159,8 @@ function(ice_prebuilt_init default_root)
   endif()
   set(ICE_PREBUILT_COMPILER_TAG_CANDIDATES
       "${_compiler_tag_candidates}"
-      CACHE INTERNAL "Prebuilt compiler/runtime directory fallback names." FORCE)
+      CACHE INTERNAL "Prebuilt compiler/runtime directory fallback names."
+            FORCE)
 
   set(_platform_root "${ICE_PREBUILT_ROOT}/binaries/${ICE_PREBUILT_PLATFORM}")
   if(NOT IS_DIRECTORY "${_platform_root}")
@@ -168,8 +171,7 @@ function(ice_prebuilt_init default_root)
   endif()
 endfunction()
 
-# 获取当前编译器标签的回退候选列表。候选顺序从当前主版本递减，确保
-# clang22 可自动使用 clang19 等较旧预编译库。
+# 获取当前编译器标签的回退候选列表。候选顺序从当前主版本递减，确保 clang22 可自动使用 clang19 等较旧预编译库。
 function(ice_prebuilt_compiler_tag_candidates out_var)
   if(DEFINED ICE_PREBUILT_COMPILER_TAG_CANDIDATES
      AND NOT ICE_PREBUILT_COMPILER_TAG_CANDIDATES STREQUAL "")
@@ -365,8 +367,9 @@ endfunction()
 
 # 记录 shared 预编译包的运行时 DLL，供可执行文件构建后统一复制。
 function(ice_prebuilt_record_runtime_file runtime_file)
-  if(NOT ICE_LINKAGE STREQUAL "shared" OR NOT WIN32 OR runtime_file
-                                                STREQUAL "")
+  if(NOT ICE_LINKAGE STREQUAL "shared"
+     OR NOT WIN32
+     OR runtime_file STREQUAL "")
     return()
   endif()
 
@@ -424,7 +427,8 @@ function(ice_prebuilt_find_library out_var package config)
   if(NOT _prebuilt_library)
     message(
       FATAL_ERROR
-        "缺少 ${package} 的 ${config} 引擎预编译库。搜索目录：${_library_dir}；候选名：${_prebuilt_library_names}")
+        "缺少 ${package} 的 ${config} 引擎预编译库。搜索目录：${_library_dir}；候选名：${_prebuilt_library_names}"
+    )
   endif()
   set(${out_var}
       "${_prebuilt_library}"
@@ -447,8 +451,7 @@ function(ice_prebuilt_find_library out_var package config)
       foreach(_runtime_name IN LISTS _runtime_names)
         get_filename_component(_runtime_stem "${_runtime_name}" NAME_WE)
         file(GLOB _runtime_versioned_matches CONFIGURE_DEPENDS
-             "${_runtime_dir}/${_runtime_stem}-*${CMAKE_SHARED_LIBRARY_SUFFIX}"
-        )
+             "${_runtime_dir}/${_runtime_stem}-*${CMAKE_SHARED_LIBRARY_SUFFIX}")
         list(APPEND _runtime_glob_matches ${_runtime_versioned_matches})
       endforeach()
       if(_runtime_glob_matches)
