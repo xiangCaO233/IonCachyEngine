@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec "${ICE_LLD_LINK:-lld-link-22}" "$@"

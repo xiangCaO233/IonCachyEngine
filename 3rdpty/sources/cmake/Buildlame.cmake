@@ -20,8 +20,16 @@ set(ICE_LAME_SOURCE_READY_TEST
 
 if(MSVC)
   set(ICE_LAME_STATIC_LIBRARY "${ICE_LAME_LIBRARY_DIR}/mp3lame.lib")
+  if(CMAKE_CROSSCOMPILING)
+    set(ICE_LAME_BUILD_LIBRARY "${ICE_LAME_LIBRARY_DIR}/libmp3lame.a")
+    set(ICE_LAME_VECTOR_OBJECT
+        "${ICE_LAME_BINARY_DIR}/libmp3lame/vector/xmm_quantize_sub.obj")
+  else()
+    set(ICE_LAME_BUILD_LIBRARY "${ICE_LAME_STATIC_LIBRARY}")
+  endif()
 else()
   set(ICE_LAME_STATIC_LIBRARY "${ICE_LAME_LIBRARY_DIR}/libmp3lame.a")
+  set(ICE_LAME_BUILD_LIBRARY "${ICE_LAME_STATIC_LIBRARY}")
 endif()
 
 string(TOUPPER "${CMAKE_BUILD_TYPE}" ICE_LAME_BUILD_TYPE_UPPER)
@@ -46,8 +54,24 @@ string(STRIP "${ICE_LAME_C_FLAGS}" ICE_LAME_C_FLAGS)
 string(STRIP "${ICE_LAME_LINK_FLAGS}" ICE_LAME_LINK_FLAGS)
 
 set(ICE_LAME_CONFIGURE_SCRIPT "${ICE_LAME_SOURCE_DIR}/configure")
+set(ICE_LAME_CC "${CMAKE_C_COMPILER}")
+set(ICE_LAME_AR "${CMAKE_AR}")
+if(MSVC AND CMAKE_CROSSCOMPILING)
+  # LAME 的 Autotools 接口使用 GCC 风格探测参数；包装器只做参数协议适配， 实际目标对象和静态库仍分别由 clang-cl 与
+  # llvm-lib 生成。
+  set(ICE_LAME_CC
+      "${PROJECT_SOURCE_DIR}/cmake/cross/clang-cl-gcc-compatible.sh")
+  set(ICE_LAME_AR "${PROJECT_SOURCE_DIR}/cmake/cross/llvm-lib-ar-compatible.sh")
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(ICE_LAME_C_FLAGS "/MTd /Z7 /Od -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00")
+  else()
+    set(ICE_LAME_C_FLAGS "/MT /Z7 /O2 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00")
+  endif()
+  set(ICE_LAME_LINK_FLAGS "")
+endif()
+
 set(ICE_LAME_CONFIGURE_COMMAND
-    ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "AR=${CMAKE_AR}"
+    ${CMAKE_COMMAND} -E env "CC=${ICE_LAME_CC}" "AR=${ICE_LAME_AR}"
     "RANLIB=${CMAKE_RANLIB}" "NM=${CMAKE_NM}" "STRIP=${CMAKE_STRIP}"
     "CFLAGS=${ICE_LAME_C_FLAGS}" "LDFLAGS=${ICE_LAME_LINK_FLAGS}")
 
@@ -78,9 +102,26 @@ list(
   --disable-decoder
   --disable-libmpg123)
 
-if(CMAKE_CROSSCOMPILING AND MINGW_TOOLCHAIN_PREFIX)
+if(MSVC AND CMAKE_CROSSCOMPILING)
+  # 使用 MSVC triplet 避免 Autotools 注入 MinGW 兼容代码；目标对象仍由 clang-cl 生成。
+  list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=x86_64-pc-windows")
+elseif(CMAKE_CROSSCOMPILING AND MINGW_TOOLCHAIN_PREFIX)
   # autotools 无法只靠 CC 判断交叉目标；显式传入 --host，避免 configure 尝试运行 Windows 测试程序。
   list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=${MINGW_TOOLCHAIN_PREFIX}")
+endif()
+
+set(ICE_LAME_INSTALL_ACTION "make install")
+set(ICE_LAME_BUILD_BYPRODUCTS "${ICE_LAME_BUILD_LIBRARY}")
+if(MSVC AND CMAKE_CROSSCOMPILING)
+  # LAME 3.100 不会把 x86 SIMD 对象安装进主归档；展开后用 llvm-lib 重建，确保 mp3lame.lib
+  # 同时包含主实现和向量实现，且不产生嵌套归档。
+  string(
+    APPEND
+    ICE_LAME_INSTALL_ACTION
+    " && '${PROJECT_SOURCE_DIR}/cmake/cross/merge-msvc-archives.sh' '${ICE_LAME_STATIC_LIBRARY}' '${ICE_LAME_BUILD_LIBRARY}' '${ICE_LAME_VECTOR_OBJECT}'"
+  )
+  list(APPEND ICE_LAME_BUILD_BYPRODUCTS "${ICE_LAME_VECTOR_OBJECT}"
+       "${ICE_LAME_STATIC_LIBRARY}")
 endif()
 
 ExternalProject_Add(
@@ -95,8 +136,8 @@ ExternalProject_Add(
     sh -c "${ICE_LAME_SOURCE_READY_TEST} || make -j${ICE_LAME_PROCESSOR_COUNT}"
   INSTALL_COMMAND
     sh -c
-    "${ICE_LAME_SOURCE_READY_TEST} || (make install && '${CMAKE_COMMAND}' -E touch '${ICE_LAME_SOURCE_STAMP}')"
-  BUILD_BYPRODUCTS "${ICE_LAME_STATIC_LIBRARY}" "${ICE_LAME_SOURCE_STAMP}")
+    "${ICE_LAME_SOURCE_READY_TEST} || (${ICE_LAME_INSTALL_ACTION} && '${CMAKE_COMMAND}' -E touch '${ICE_LAME_SOURCE_STAMP}')"
+  BUILD_BYPRODUCTS ${ICE_LAME_BUILD_BYPRODUCTS} "${ICE_LAME_SOURCE_STAMP}")
 
 file(MAKE_DIRECTORY "${ICE_LAME_INCLUDE_DIR}")
 file(MAKE_DIRECTORY "${ICE_LAME_LIBRARY_DIR}")
