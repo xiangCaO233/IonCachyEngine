@@ -31,6 +31,22 @@ public:
 
     // 核心功能
     void resize(const AudioDataFormat& format, size_t num_frames);
+
+    /// @brief 在不改变已分配存储的前提下设置逻辑帧数。
+    /// @param numFrames 新逻辑帧数。
+    /// @return 未超过预分配容量时返回 true。
+    /// @warning 音频回调热路径：本函数不分配内存。
+    bool set_active_frames(size_t numFrames)
+    {
+        if ( numFrames > m_frameCapacity ) return false;
+        m_activeFrames = numFrames;
+        return true;
+    }
+
+    /// @brief 获取当前存储能够容纳的最大帧数。
+    /// @return 每声道最大帧数。
+    [[nodiscard]] size_t frame_capacity() const { return m_frameCapacity; }
+
     void clear()
     {
         for ( auto& channel_data : _data ) {
@@ -39,9 +55,11 @@ public:
     }
     void clear_from(size_t start_frame)
     {
+        if ( start_frame >= m_activeFrames ) return;
         for ( auto& channel_data : _data ) {
-            std::fill(
-                channel_data.begin() + start_frame, channel_data.end(), 0.0f);
+            std::fill(channel_data.begin() + start_frame,
+                      channel_data.begin() + m_activeFrames,
+                      0.0f);
         }
     }
     // 数据访问 (提供与优化版本相同的接口)
@@ -57,7 +75,7 @@ public:
                          channel_pointers_.data());
     }
     // 信息查询
-    size_t num_frames() const { return _data.empty() ? 0 : _data[0].size(); }
+    size_t num_frames() const { return m_activeFrames; }
     size_t num_channels() const { return afmt.channels; }
     // 核心操作：使用纯标量循环
     void operator+=(const AudioBuffer& other)
@@ -86,6 +104,13 @@ private:
     std::vector<ChannelData> _data;
     // 2. 依然需要指针数组以匹配接口
     std::vector<float*> channel_pointers_;
+
+    /// @brief 当前对外可见的逻辑帧数。
+    size_t m_activeFrames{ 0U };
+
+    /// @brief 每声道已经分配的最大帧数。
+    size_t m_frameCapacity{ 0U };
+
     // 内部辅助函数
     void sync_pointers();
 };
@@ -183,20 +208,44 @@ public:
         if ( afmt.channels == 0 || num_frames == 0 ) {
             _contiguous_buffer.clear();
             channel_pointers_.clear();
-            _aligned_num_frames = 0;
+            _aligned_num_frames         = 0;
+            _storage_aligned_num_frames = 0;
+            _frame_capacity             = 0;
             return;
         }
 
         // 同样，计算对齐后的帧数
         _aligned_num_frames =
             (num_frames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
+        _storage_aligned_num_frames = _aligned_num_frames;
+        _frame_capacity             = num_frames;
 
         // 一次性分配所有内存
-        const size_t total_floats = afmt.channels * _aligned_num_frames;
+        const size_t total_floats = afmt.channels * _storage_aligned_num_frames;
         _contiguous_buffer.resize(total_floats);
 
         // 更新内部指针
         sync_pointers();
+    }
+
+    /// @brief 在不改变已分配存储的前提下设置逻辑帧数。
+    /// @param numFrames 新逻辑帧数。
+    /// @return 未超过预分配容量时返回 true。
+    /// @warning 音频回调热路径：本函数不分配内存，也不刷新声道指针。
+    inline bool set_active_frames(size_t numFrames)
+    {
+        if ( numFrames > _frame_capacity ) return false;
+        _original_num_frames = numFrames;
+        _aligned_num_frames =
+            (numFrames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
+        return true;
+    }
+
+    /// @brief 获取当前存储能够容纳的最大帧数。
+    /// @return 每声道最大帧数。
+    [[nodiscard]] inline size_t frame_capacity() const
+    {
+        return _frame_capacity;
     }
 
     inline void clear()
@@ -346,6 +395,12 @@ private:
     size_t _original_num_frames = 0;
     size_t _aligned_num_frames  = 0;
 
+    /// @brief 每声道实际存储跨度，逻辑帧数变化时保持不变。
+    size_t _storage_aligned_num_frames = 0;
+
+    /// @brief 每声道能够激活的最大帧数。
+    size_t _frame_capacity = 0;
+
     // 内部辅助函数，用于根据 _contiguous_buffer 更新指针
     inline void sync_pointers()
     {
@@ -358,7 +413,7 @@ private:
         float* base_ptr = _contiguous_buffer.data();
         for ( uint16_t i = 0; i < afmt.channels; ++i ) {
             // 指针指向连续内存块的正确偏移位置
-            channel_pointers_[i] = base_ptr + i * _aligned_num_frames;
+            channel_pointers_[i] = base_ptr + i * _storage_aligned_num_frames;
         }
     }
 };

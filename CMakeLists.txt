@@ -23,6 +23,10 @@ include("configure-project")
 # 选项定义
 option(ICE_BUILD_TESTS "Build the 'testIonCachyEngin' example program." ON)
 option(SOURCES_BUILD "Build Deps from sources." OFF)
+if(ICE_BUILD_TESTS)
+  # 独立构建引擎时启用 CTest；作为主项目子目录时沿用主项目测试入口。
+  enable_testing()
+endif()
 
 # 依赖链接偏好独立于宿主项目；作为子项目使用时默认继承宿主项目偏好。
 if(DEFINED PROJECT_LINKAGE AND NOT PROJECT_LINKAGE STREQUAL "")

@@ -15,15 +15,15 @@ add_library(${ICE_LIBRARY_TARGET} ${ICE_LIBRARY_TYPE} ${ICE_SOURCES})
 if(ICE_LINKAGE STREQUAL "shared" AND WIN32)
   set_target_properties(${ICE_LIBRARY_TARGET}
                         PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-  target_compile_definitions(${ICE_LIBRARY_TARGET}
-                             PRIVATE ICE_BUILDING_LIBRARY
-                             PUBLIC ICE_SHARED_LIBRARY)
+  target_compile_definitions(
+    ${ICE_LIBRARY_TARGET}
+    PRIVATE ICE_BUILDING_LIBRARY
+    PUBLIC ICE_SHARED_LIBRARY)
 endif()
 
 target_include_directories(
-  ${ICE_LIBRARY_TARGET}
-  PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-         $<INSTALL_INTERFACE:include>)
+  ${ICE_LIBRARY_TARGET} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+                               $<INSTALL_INTERFACE:include>)
 
 target_link_libraries(
   ${ICE_LIBRARY_TARGET}
@@ -36,12 +36,29 @@ if(ICE_BUILD_TESTS)
   add_executable(testIonCachyEngin main.cpp)
   target_link_libraries(testIonCachyEngin PRIVATE ${ICE_LIBRARY_TARGET}
                                                   fmt::fmt)
+  add_executable(
+    TimeStretcherRealtimeTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/TimeStretcherRealtimeTest.cpp")
+  target_link_libraries(TimeStretcherRealtimeTest PRIVATE ${ICE_LIBRARY_TARGET})
+  if(UNIX
+     AND NOT APPLE
+     AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # GNU ld 的 wrap 机制覆盖静态 RubberBand 内部调用的 C 堆函数。 实时安全测试因此可同时检测 operator new 与
+    # C 堆分配。
+    target_compile_definitions(TimeStretcherRealtimeTest
+                               PRIVATE ICE_TEST_WRAP_MALLOC=1)
+    target_link_options(
+      TimeStretcherRealtimeTest PRIVATE "-Wl,--wrap=malloc" "-Wl,--wrap=calloc"
+      "-Wl,--wrap=realloc" "-Wl,--wrap=free")
+  endif()
+  add_test(NAME IonTimeStretcherRealtimeTest COMMAND TimeStretcherRealtimeTest)
   # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。
   if(COMMAND ice_prebuilt_copy_runtime_files)
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
+    ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
   endif()
 
-  message(STATUS "Building 'testIonCachyEngin' enabled.")
+  message(STATUS "Building IonCachyEngine tests enabled.")
 else()
-  message(STATUS "Building 'testIonCachyEngin' disabled.")
+  message(STATUS "Building IonCachyEngine tests disabled.")
 endif()

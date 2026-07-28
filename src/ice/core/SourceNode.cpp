@@ -1,158 +1,337 @@
-#include <ice/core/SourceNode.hpp>
-#include <ice/execptions/load_error.hpp>
-#include <ice/manage/AudioTrack.hpp>
+#include "ice/core/SourceNode.hpp"
+
+#include "ice/config/config.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <utility>
 
 namespace ice
 {
+struct SourceNode::ReferenceProviderState {
+    /// @brief 不拥有的轻量 provider 上下文。
+    const void* context{ nullptr };
 
-// 构造SourceNode
-SourceNode::SourceNode(std::shared_ptr<AudioTrack> track) : track(track) {}
+    /// @brief 轻量 provider 读取函数。
+    ReferencePositionReader reader{ nullptr };
 
-// 析构SourceNode
+    /// @brief 兼容旧接口的不可变 std::function。
+    std::function<std::size_t()> compatibilityProvider;
+
+    /// @brief 查询状态是否包含有效 provider。
+    /// @return 任一 provider 有效时返回 true。
+    bool valid() const noexcept
+    {
+        return reader != nullptr || static_cast<bool>(compatibilityProvider);
+    }
+
+    /// @brief 读取当前参考帧。
+    /// @return provider 未设置时返回零。
+    /// @warning 音频回调热路径；兼容 provider 由调用方保证无异常和无分配。
+    std::size_t read() const
+    {
+        if ( reader ) return reader(context);
+        if ( compatibilityProvider ) return compatibilityProvider();
+        return 0U;
+    }
+};
+
+SourceNode::SourceNode(std::shared_ptr<AudioTrack> track)
+    : m_track(std::move(track))
+{
+    if ( m_track ) {
+        m_totalFrames = m_track->num_frames();
+    }
+
+    auto initialProvider = std::make_unique<ReferenceProviderState>();
+    m_activeProvider.store(initialProvider.get(), std::memory_order_seq_cst);
+    m_activeProviderOwner = std::move(initialProvider);
+}
+
 SourceNode::~SourceNode() = default;
 
-// 只管读取数据填充缓冲区
 void SourceNode::process(AudioBuffer& buffer)
 {
-    if ( !is_playing.load() ) return;
+    buffer.clear();
+    if ( !m_track || !m_isPlaying.load(std::memory_order_acquire) ) return;
 
-    size_t gained_this_frame = 0;
-    size_t scheduled_start   = scheduled_start_frame.load();
-    if ( scheduled_start > 0 && ref_pos_provider ) {
-        size_t current_ref = ref_pos_provider();
-        if ( current_ref < scheduled_start ) {
-            size_t frames_to_wait = scheduled_start - current_ref;
-            if ( frames_to_wait >= buffer.num_frames() ) {
-                // 还没到时间，且这一整块都需要等待
-                buffer.resize(ice::ICEConfig::internal_format,
-                              buffer.num_frames());
-                buffer.clear();
+    if ( buffer.afmt != ICEConfig::internal_format ) {
+        m_rejectedProcessCount.fetch_add(1U, std::memory_order_relaxed);
+        updateLevels(buffer, false);
+        return;
+    }
+
+    const std::size_t requestedFrames = buffer.num_frames();
+    if ( requestedFrames == 0U ) {
+        updateLevels(buffer, false);
+        return;
+    }
+
+    std::size_t gainedThisBlock{ 0U };
+    std::size_t silenceFrames{ 0U };
+    bool        startedInsideBlock{ false };
+
+    const std::size_t relativeDelay =
+        m_scheduledStartDelayFrames.load(std::memory_order_relaxed);
+    if ( relativeDelay > 0U ) {
+        if ( relativeDelay >= requestedFrames ) {
+            m_scheduledStartDelayFrames.store(relativeDelay - requestedFrames,
+                                              std::memory_order_relaxed);
+            updateLevels(buffer, false);
+            return;
+        }
+        silenceFrames = relativeDelay;
+        m_scheduledStartDelayFrames.store(0U, std::memory_order_relaxed);
+        startedInsideBlock = true;
+    } else if ( const std::size_t scheduledStart =
+                    m_scheduledStartFrame.load(std::memory_order_relaxed);
+                scheduledStart > 0U ) {
+        const ReferenceProviderState* provider = acquireReferenceProvider();
+        const bool        providerValid        = provider && provider->valid();
+        const std::size_t currentReference =
+            providerValid ? provider->read() : 0U;
+        releaseReferenceProvider();
+
+        if ( !providerValid ) {
+            updateLevels(buffer, false);
+            return;
+        }
+
+        if ( currentReference < scheduledStart ) {
+            const std::size_t framesToWait = scheduledStart - currentReference;
+            if ( framesToWait >= requestedFrames ) {
+                updateLevels(buffer, false);
                 return;
-            } else {
-                // 这一块的前面部分是静音，后面部分开始播放
-                size_t silence_frames = frames_to_wait;
-                size_t play_frames    = buffer.num_frames() - silence_frames;
-
-                buffer.resize(ice::ICEConfig::internal_format,
-                              buffer.num_frames());
-                buffer.clear();  // 先全清空
-
-                // 为后半部分读取数据
-                AudioBuffer temp;
-                temp.resize(ice::ICEConfig::internal_format, play_frames);
-                auto gained = track->read(temp, playback_pos, play_frames);
-                if ( gained < play_frames ) {
-                    temp.clear_from(gained);
-                }
-
-                // 将数据拷贝到 buffer 的后半段
-                for ( uint16_t ch = 0; ch < buffer.afmt.channels; ++ch ) {
-                    std::copy(temp.raw_ptrs()[ch],
-                              temp.raw_ptrs()[ch] + play_frames,
-                              buffer.raw_ptrs()[ch] + silence_frames);
-                }
-
-                playback_pos += gained;
-                gained_this_frame = gained;
-                scheduled_start_frame.store(0);  // 标记已触发
             }
+
+            silenceFrames = framesToWait;
+            m_scheduledStartFrame.store(0U, std::memory_order_relaxed);
+            startedInsideBlock = true;
         } else {
-            // 已经过了预定时间
-            scheduled_start_frame.store(0);
+            m_scheduledStartFrame.store(0U, std::memory_order_relaxed);
         }
     }
 
-    if ( scheduled_start_frame.load() == 0 && gained_this_frame == 0 ) {
-        buffer.resize(ice::ICEConfig::internal_format, buffer.num_frames());
-        auto gained_frames =
-            track->read(buffer, playback_pos, buffer.num_frames());
-        if ( gained_frames < buffer.num_frames() ) {
-            [[unlikely]] buffer.clear_from(gained_frames);
+    if ( startedInsideBlock ) {
+        const std::size_t framesToRead = requestedFrames - silenceFrames;
+        const std::size_t playbackPosition =
+            m_playbackPosition.load(std::memory_order_relaxed);
+        gainedThisBlock = m_track->read(buffer, playbackPosition, framesToRead);
+        if ( gainedThisBlock > framesToRead ) {
+            gainedThisBlock = framesToRead;
         }
-        playback_pos += gained_frames;
-        gained_this_frame = gained_frames;
+        shiftDecodedFrames(buffer, silenceFrames, gainedThisBlock);
+        m_playbackPosition.store(playbackPosition + gainedThisBlock,
+                                 std::memory_order_relaxed);
+    } else if ( m_scheduledStartFrame.load(std::memory_order_relaxed) == 0U ) {
+        const std::size_t playbackPosition =
+            m_playbackPosition.load(std::memory_order_relaxed);
+        gainedThisBlock =
+            m_track->read(buffer, playbackPosition, requestedFrames);
+        if ( gainedThisBlock > requestedFrames ) {
+            gainedThisBlock = requestedFrames;
+        }
+        if ( gainedThisBlock < requestedFrames ) {
+            buffer.clear_from(gainedThisBlock);
+        }
+        m_playbackPosition.store(playbackPosition + gainedThisBlock,
+                                 std::memory_order_relaxed);
     }
 
-    // 更新播放位置与回调逻辑... (复用原有逻辑)
-    [[unlikely]] if ( playback_pos >= track->num_frames() ) {
-        // 启用循环则在此恢复播放指针到0
-        if ( is_looping.load() ) {
-            playback_pos = 0;
+    const std::size_t playbackPosition =
+        m_playbackPosition.load(std::memory_order_relaxed);
+    const bool reachedEnd = playbackPosition >= m_totalFrames;
+    if ( reachedEnd ) {
+        const bool looping = m_isLooping.load(std::memory_order_relaxed);
+        if ( looping ) {
+            m_playbackPosition.store(0U, std::memory_order_relaxed);
         } else {
-            playback_pos.store(track->num_frames());
+            m_playbackPosition.store(m_totalFrames, std::memory_order_relaxed);
             pause();
         }
 
-        // 通知回调播放完成一遍
-        for ( const auto& callback : callbacks ) {
-            callback->play_done(is_looping.load());
+        for ( const auto& callback : m_callbacks ) {
+            callback->play_done(looping);
         }
 
-        [[unlikely]] if ( gained_this_frame == 0 )
+        if ( !looping ) {
+            notifyFinalInput();
+        }
+
+        if ( gainedThisBlock == 0U ) {
+            updateLevels(buffer, false);
             return;
+        }
     }
 
-    // 通知回调
-    for ( const auto& callback : callbacks ) {
-        callback->frameplaypos_updated(playback_pos.load());
-        // 转换播放位置为纳秒
-        using double_seconds = std::chrono::duration<double>;
+    const std::size_t publishedPosition =
+        m_playbackPosition.load(std::memory_order_relaxed);
+    for ( const auto& callback : m_callbacks ) {
+        callback->frameplaypos_updated(publishedPosition);
+        using DoubleSeconds = std::chrono::duration<double>;
         callback->timeplaypos_updated(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(double_seconds(
-                static_cast<double>(playback_pos.load()) /
-                double(ice::ICEConfig::internal_format.samplerate))));
+            std::chrono::duration_cast<std::chrono::nanoseconds>(DoubleSeconds(
+                static_cast<double>(publishedPosition) /
+                static_cast<double>(ICEConfig::internal_format.samplerate))));
     }
 
-    if ( volume != 1.f ) {
-        apply_volume(buffer);
+    const float gain = m_volume.load(std::memory_order_relaxed);
+    if ( std::abs(gain - 1.0F) > std::numeric_limits<float>::epsilon() ) {
+        applyVolume(buffer, gain);
     }
-
-    // 计算峰值响度 (Peak Level)
-    float   maxL = 0.0f;
-    float   maxR = 0.0f;
-    float** data = buffer.raw_ptrs();
-    if ( data && is_playing.load() ) {
-        if ( buffer.num_channels() > 0 ) {
-            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
-                float v = std::abs(data[0][i]);
-                if ( v > maxL ) maxL = v;
-            }
-        }
-        if ( buffer.num_channels() > 1 ) {
-            for ( size_t i = 0; i < buffer.num_frames(); ++i ) {
-                float v = std::abs(data[1][i]);
-                if ( v > maxR ) maxR = v;
-            }
-        } else if ( buffer.num_channels() > 0 ) {
-            maxR = maxL;
-        }
-    }
-
-    // 更新电平 (简单衰减算法)
-    float oldL = m_leftLevel.load();
-    float oldR = m_rightLevel.load();
-    m_leftLevel.store(maxL > oldL ? maxL : oldL * 0.95f);
-    m_rightLevel.store(maxR > oldR ? maxR : oldR * 0.95f);
+    updateLevels(buffer, gainedThisBlock > 0U);
 }
-// 应用音量到缓冲区
-void SourceNode::apply_volume(AudioBuffer& buffer) const
+
+void SourceNode::set_reference_pos_provider(
+    std::function<std::size_t()> provider)
 {
-    const uint16_t num_channels = buffer.afmt.channels;
-    const size_t   num_frames   = buffer.num_frames();
-    // 如果无事可做,立刻退出
-    if ( num_frames == 0 ||
-         std::abs(volume - 1.f) <= std::numeric_limits<float>::epsilon() ) {
+    auto state                   = std::make_unique<ReferenceProviderState>();
+    state->compatibilityProvider = std::move(provider);
+    publishReferenceProvider(std::move(state));
+}
+
+void SourceNode::set_reference_pos_provider(const void*             context,
+                                            ReferencePositionReader reader)
+{
+    auto state     = std::make_unique<ReferenceProviderState>();
+    state->context = reader ? context : nullptr;
+    state->reader  = reader;
+    publishReferenceProvider(std::move(state));
+}
+
+void SourceNode::clear_reference_pos_provider()
+{
+    publishReferenceProvider(std::make_unique<ReferenceProviderState>());
+}
+
+void SourceNode::reclaimRetiredReferenceProviders()
+{
+    std::lock_guard<std::mutex> lock(m_providerControlMutex);
+    reclaimRetiredReferenceProvidersLocked();
+}
+
+std::size_t SourceNode::retiredReferenceProviderCount() const
+{
+    std::lock_guard<std::mutex> lock(m_providerControlMutex);
+    return m_retiredProviders.size();
+}
+
+void SourceNode::publishReferenceProvider(
+    std::unique_ptr<ReferenceProviderState> state)
+{
+    if ( !state ) {
+        state = std::make_unique<ReferenceProviderState>();
+    }
+
+    std::lock_guard<std::mutex>   lock(m_providerControlMutex);
+    const ReferenceProviderState* nextAddress = state.get();
+    if ( m_activeProviderOwner ) {
+        m_retiredProviders.push_back(std::move(m_activeProviderOwner));
+    }
+    m_activeProviderOwner = std::move(state);
+    m_activeProvider.store(nextAddress, std::memory_order_seq_cst);
+    reclaimRetiredReferenceProvidersLocked();
+}
+
+void SourceNode::reclaimRetiredReferenceProvidersLocked()
+{
+    const ReferenceProviderState* protectedProvider =
+        m_providerHazard.load(std::memory_order_seq_cst);
+    std::erase_if(m_retiredProviders,
+                  [protectedProvider](
+                      const std::unique_ptr<ReferenceProviderState>& provider) {
+                      return provider.get() != protectedProvider;
+                  });
+}
+
+const SourceNode::ReferenceProviderState*
+SourceNode::acquireReferenceProvider() noexcept
+{
+    const ReferenceProviderState* provider{ nullptr };
+    do {
+        provider = m_activeProvider.load(std::memory_order_seq_cst);
+        m_providerHazard.store(provider, std::memory_order_seq_cst);
+    } while ( provider != m_activeProvider.load(std::memory_order_seq_cst) );
+    return provider;
+}
+
+void SourceNode::releaseReferenceProvider() noexcept
+{
+    m_providerHazard.store(nullptr, std::memory_order_seq_cst);
+}
+
+void SourceNode::notifyFinalInput() noexcept
+{
+    if ( m_finalInputNotified.exchange(true, std::memory_order_acq_rel) ) {
         return;
     }
-    // 热循环-SIMD优化的主要候选者
-    for ( uint16_t ch = 0; ch < num_channels; ++ch ) {
-        // 获取指向该声道数据起始位置的指针
-        float* channel_data = buffer.raw_ptrs()[ch];
-        // 在紧凑连续循环中处理采样点。
-        for ( size_t i = 0; i < num_frames; ++i ) {
-            channel_data[i] *= volume;
+    if ( m_finalInputListener ) {
+        m_finalInputListener(m_finalInputListenerContext);
+    }
+}
+
+void SourceNode::shiftDecodedFrames(AudioBuffer& buffer,
+                                    std::size_t  silenceFrames,
+                                    std::size_t  decodedFrames) noexcept
+{
+    float** samples = buffer.raw_ptrs();
+    if ( !samples || silenceFrames >= buffer.num_frames() ) return;
+
+    const std::size_t safeDecodedFrames =
+        std::min(decodedFrames, buffer.num_frames() - silenceFrames);
+    for ( std::uint16_t channel = 0U; channel < buffer.num_channels();
+          ++channel ) {
+        if ( safeDecodedFrames > 0U ) {
+            std::memmove(samples[channel] + silenceFrames,
+                         samples[channel],
+                         safeDecodedFrames * sizeof(float));
+        }
+        std::memset(samples[channel], 0, silenceFrames * sizeof(float));
+    }
+}
+
+void SourceNode::applyVolume(AudioBuffer& buffer, float gain) noexcept
+{
+    float** samples = buffer.raw_ptrs();
+    if ( !samples ) return;
+    for ( std::uint16_t channel = 0U; channel < buffer.num_channels();
+          ++channel ) {
+        for ( std::size_t frame = 0U; frame < buffer.num_frames(); ++frame ) {
+            samples[channel][frame] *= gain;
         }
     }
 }
 
+void SourceNode::updateLevels(const AudioBuffer& buffer, bool audible) noexcept
+{
+    float               maxLeft{ 0.0F };
+    float               maxRight{ 0.0F };
+    const float* const* samples = buffer.raw_ptrs();
+    if ( audible && samples ) {
+        if ( buffer.num_channels() > 0U ) {
+            for ( std::size_t frame = 0U; frame < buffer.num_frames();
+                  ++frame ) {
+                maxLeft = std::max(maxLeft, std::abs(samples[0][frame]));
+            }
+        }
+        if ( buffer.num_channels() > 1U ) {
+            for ( std::size_t frame = 0U; frame < buffer.num_frames();
+                  ++frame ) {
+                maxRight = std::max(maxRight, std::abs(samples[1][frame]));
+            }
+        } else if ( buffer.num_channels() > 0U ) {
+            maxRight = maxLeft;
+        }
+    }
+
+    const float previousLeft  = m_leftLevel.load(std::memory_order_relaxed);
+    const float previousRight = m_rightLevel.load(std::memory_order_relaxed);
+    m_leftLevel.store(maxLeft > previousLeft ? maxLeft : previousLeft * 0.95F,
+                      std::memory_order_relaxed);
+    m_rightLevel.store(
+        maxRight > previousRight ? maxRight : previousRight * 0.95F,
+        std::memory_order_relaxed);
+}
 }  // namespace ice
