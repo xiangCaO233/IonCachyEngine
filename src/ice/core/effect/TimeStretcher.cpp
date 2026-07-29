@@ -94,13 +94,19 @@ struct TimeStretcher::ProcessingState {
                   static_cast<double>(maxOutputFrames) * MAX_PLAYBACK_RATIO)) +
               1U)
         , inputBuffer(format, maxInputFrames)
-        , stretcher(format, quality, maxInputFrames, maxOutputFrames,
-                    initialStretchRatio, initialPitchRatio)
         , playbackRatio(playbackRatio)
         , pitchSemitones(pitchSemitones)
         , bypass(should_bypass(playbackRatio, pitchSemitones))
         , generation(generation)
     {
+        if ( !bypass ) {
+            stretcher = std::make_unique<RStretcher>(format,
+                                                     quality,
+                                                     maxInputFrames,
+                                                     maxOutputFrames,
+                                                     initialStretchRatio,
+                                                     initialPitchRatio);
+        }
         inputBuffer.clear();
     }
 
@@ -113,9 +119,6 @@ struct TimeStretcher::ProcessingState {
     /// @brief 复用的上游输入缓冲。
     AudioBuffer inputBuffer;
 
-    /// @brief 预热的 RubberBand 包装。
-    RStretcher stretcher;
-
     /// @brief 此状态固定的播放速度倍率。
     double playbackRatio{ 1.0 };
 
@@ -124,6 +127,9 @@ struct TimeStretcher::ProcessingState {
 
     /// @brief 此状态是否采用直通路径。
     bool bypass{ true };
+
+    /// @brief 非直通状态独占的预热 RubberBand 包装。
+    std::unique_ptr<RStretcher> stretcher;
 
     /// @brief 跨 block 保留的输入帧小数余量。
     double inputFrameRemainder{ 0.0 };
@@ -214,7 +220,7 @@ void TimeStretcher::process(AudioBuffer& buffer)
         return;
     }
 
-    if ( buffer.afmt != m_currentState->stretcher.format() ||
+    if ( buffer.afmt != m_currentState->inputBuffer.afmt ||
          buffer.num_frames() > m_currentState->maxOutputFrames ) {
         m_capacityOverflowCount.fetch_add(1U, std::memory_order_relaxed);
         buffer.clear();
@@ -225,7 +231,7 @@ void TimeStretcher::process(AudioBuffer& buffer)
         if ( !m_currentState->finalDrained ) {
             buffer.clear();
             const std::size_t written = drainWithOutputLimit(
-                m_currentState->stretcher,
+                *m_currentState->stretcher,
                 buffer,
                 0U,
                 m_currentState->terminalOutputFramesRemaining);
@@ -248,7 +254,7 @@ void TimeStretcher::process(AudioBuffer& buffer)
     std::size_t initialOutputOffset = 0U;
     if ( m_currentState->discontinuityDrainPending ) {
         initialOutputOffset =
-            drainWithOutputLimit(m_currentState->stretcher,
+            drainWithOutputLimit(*m_currentState->stretcher,
                                  buffer,
                                  0U,
                                  m_currentState->terminalOutputFramesRemaining);
@@ -488,7 +494,11 @@ std::uint64_t TimeStretcher::capacity_overflow_count() const
 
 void TimeStretcher::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
-    m_currentState->stretcher.process(output, input, false);
+    if ( !m_currentState || !m_currentState->stretcher ) {
+        output.clear();
+        return;
+    }
+    m_currentState->stretcher->process(output, input, false);
 }
 
 bool TimeStretcher::publish_prepared_state(const AudioDataFormat& format,
@@ -614,8 +624,8 @@ bool TimeStretcher::apply_provider_discontinuity(bool resetStretcher)
 void TimeStretcher::reset_processing_history(bool resetStretcher)
 {
     if ( m_currentState ) {
-        if ( resetStretcher && !m_currentState->bypass ) {
-            m_currentState->stretcher.reset();
+        if ( resetStretcher && m_currentState->stretcher ) {
+            m_currentState->stretcher->reset();
         }
         m_currentState->finalSubmitted                       = false;
         m_currentState->finalDrained                         = false;
@@ -805,7 +815,7 @@ std::size_t TimeStretcher::process_stretched_segments(
             terminalSegment ? m_currentState->terminalOutputFramesRemaining
                             : output.num_frames() - outputOffset;
         const std::size_t written =
-            processWithOutputLimit(m_currentState->stretcher,
+            processWithOutputLimit(*m_currentState->stretcher,
                                    output,
                                    outputOffset,
                                    inputBuffer,
@@ -821,7 +831,7 @@ std::size_t TimeStretcher::process_stretched_segments(
             while ( outputOffset < output.num_frames() &&
                     m_currentState->terminalOutputFramesRemaining > 0U ) {
                 const std::size_t drained = drainWithOutputLimit(
-                    m_currentState->stretcher,
+                    *m_currentState->stretcher,
                     output,
                     outputOffset,
                     m_currentState->terminalOutputFramesRemaining);
@@ -839,7 +849,7 @@ std::size_t TimeStretcher::process_stretched_segments(
             while ( outputOffset < output.num_frames() &&
                     m_currentState->terminalOutputFramesRemaining > 0U ) {
                 const std::size_t drained = drainWithOutputLimit(
-                    m_currentState->stretcher,
+                    *m_currentState->stretcher,
                     output,
                     outputOffset,
                     m_currentState->terminalOutputFramesRemaining);
