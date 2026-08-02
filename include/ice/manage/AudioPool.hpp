@@ -1,6 +1,8 @@
 #ifndef ICE_AUDIOPOOL_HPP
 #define ICE_AUDIOPOOL_HPP
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -59,6 +61,20 @@ public:
         if ( auto it = pool.find(file); it != pool.end() ) {
             pool.erase(it);
         }
+    }
+
+    /// @brief 释放仅由音频池自身保活的缓存音轨。
+    /// @return 本次从缓存中移除的音轨数量。
+    /// @warning 低频资源回收路径：会独占缓存锁并可能析构完整 PCM，禁止在
+    /// 音频回调或每帧更新中调用。
+    [[nodiscard]] std::size_t release_unused()
+    {
+        std::unique_lock<std::shared_mutex> lock(pool_mutex);
+        const std::size_t                   previous_size = pool.size();
+        std::erase_if(pool, [](const auto& entry) {
+            return !entry.second.track || entry.second.track.use_count() == 1;
+        });
+        return previous_size - pool.size();
     }
 
     // 载入文件到音频池
