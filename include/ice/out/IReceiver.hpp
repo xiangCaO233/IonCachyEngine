@@ -40,9 +40,11 @@ public:
     /// @brief 设置音频图最终输出节点。
     /// @param source 要从中拉取数据的音频节点。
     /// @warning
-    /// 播放线程可能读取该指针；调用方应在低频路径设置，避免播放热路径频繁改动。
+    /// 默认实现直接替换非原子的共享指针，必须在停止拉取时设置。
+    /// 低频调用本身不能保证与播放线程并发读写安全。
     virtual void set_source(std::shared_ptr<IAudioNode> source)
     {
+        // 转移共享所有权可能释放旧音频图，因此不能放在音频处理回调中。
         data_source = std::move(source);
     }
 

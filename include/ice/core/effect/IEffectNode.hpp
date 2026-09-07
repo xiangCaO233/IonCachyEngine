@@ -9,6 +9,7 @@
 
 namespace ice
 {
+/// @brief 管理上游缓冲准备与逐块拉取的效果节点基类。
 class IEffectNode : public IAudioNode
 {
 public:

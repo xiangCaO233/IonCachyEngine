@@ -16,8 +16,7 @@ namespace ice
 class AudioBuffer;
 
 // 缓存策略
-enum class CachingStrategy
-{
+enum class CachingStrategy {
     // 完全缓存
     CACHY,
     // 流式
@@ -25,10 +24,12 @@ enum class CachingStrategy
 };
 
 class ThreadPool;
+/// @brief 共享媒体元信息与解码策略；播放游标由消费音轨的节点维护。
 class AudioTrack
 {
 public:
-    // 工厂方法
+    /// @brief 探测媒体并按缓存策略创建音轨，探测失败返回空句柄。
+    /// @warning 文件探测及策略创建只允许在资源加载路径调用。
     [[nodiscard]] static std::shared_ptr<AudioTrack> create(
         std::string_view path, ThreadPool& thread_pool,
         std::shared_ptr<IDecoderFactory> decoder_factory,
@@ -38,26 +39,33 @@ public:
     AudioTrack(const AudioTrack&)            = delete;
     AudioTrack& operator=(const AudioTrack&) = delete;
 
-    // 获取媒体信息
+    /// @brief 返回探测阶段保存的元信息，而非实时读取进度。
     inline const MediaInfo& get_media_info() const { return media_info; }
 
     // 获取文件绝对路径
     inline const std::string& path() const { return file_path; }
 
-    // 获取实际帧数
+    /// @brief 查询解码策略实际提供的帧数。
+    /// @warning 完全缓存策略首次查询可能等待后台任务，须在播放前完成。
     inline size_t num_frames() const { return decoder->num_frames(); }
 
-    // 将解码请求转发给其持有的解码器策略
+    /// @brief 将帧区间读取转发给音轨持有的解码策略。
+    /// 不会调整缓冲格式或为调用方扩容。
+    /// 调用方须保证缓冲容量足够，并按返回值处理未写入尾部。
     inline auto read(AudioBuffer& buffer, size_t start_frame,
                      size_t frame_count) const
     {
+        // 此处不推进独立游标，因此多个节点可请求同一缓存的不同片段。
         return decoder->decode(
             buffer.raw_ptrs(), buffer.afmt.channels, start_frame, frame_count);
     }
-    // 通过接口直接获取原始数据
+    /// @brief 向容器追加只读 PCM 视图，音轨须活过这些视图。
+    /// 当前位置参数最终转换为解码器使用的整数帧索引。
+    /// @warning 输出容器可扩容；该接口不适合作为实时处理的首次准备入口。
     inline void origin(std::vector<std::span<const float>>& origin_data,
                        double start_frame, double frame_count)
     {
+        // 保留解码器的追加语义；复用容器时由调用方清理旧的借用切片。
         decoder->origin(origin_data, start_frame, frame_count);
     }
 

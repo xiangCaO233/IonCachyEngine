@@ -155,10 +155,11 @@ private:
     /// @brief 固定音频格式。
     AudioDataFormat m_format;
 
-    /// @brief 当前时间拉伸倍率，仅由音频线程读写。
+    /// @brief
+    /// 当前时间拉伸倍率；处理线程读取，兼容控制接口仅可在停止处理后修改。
     double m_stretchRatio{ 1.0 };
 
-    /// @brief 当前音高倍率，仅由音频线程读写。
+    /// @brief 当前音高倍率；不是原子状态，不能与处理调用并发更新。
     double m_pitchRatio{ 1.0 };
 
     /// @brief RubberBand 每次 process 接受的最大帧数。

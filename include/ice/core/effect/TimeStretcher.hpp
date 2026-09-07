@@ -76,8 +76,9 @@ public:
     /// 不得从音频回调调用。
     void set_pitch_semitones(double semitones);
 
-    /// @brief 获取最近一次回调实际使用的播放速度倍率。
-    /// @return 输入帧数与输出帧数之比。
+    /// @brief 获取最近发布的输入/输出帧比诊断值。
+    /// @return 请求上游帧数与本块待填充窗口帧数之比；纯段间排尾块可为零。
+    /// 新状态激活时先发布设定倍率，尚未发生拉取时不代表已测量的消费速度。
     [[nodiscard]] double get_actual_playback_ratio() const;
 
     /// @brief 获取期望的音高偏移。
@@ -114,7 +115,7 @@ public:
     /// @brief 绑定每个 block 开始时读取的外部 discontinuity 代际。
     /// @param context 生命周期覆盖全部音频回调的非拥有上下文。
     /// @param reader 无异常、无阻塞、无分配的代际读取函数。
-    /// @warning 控制线程接口；替换时旧 context 仍须保持有效直到音频停止。
+    /// @warning 控制写入必须串行；替换时旧 context 仍须保持有效直到音频停止。
     void set_discontinuity_generation_provider(
         const void* context, DiscontinuityGenerationReader reader);
 
@@ -130,7 +131,8 @@ public:
     /// @brief 绑定每次上游拉取前调用的输入连续区间查询器。
     /// @param context 生命周期覆盖全部音频回调的非拥有上下文。
     /// @param reader 返回不超过 maxInputFrames 的连续输入帧数及段尾动作。
-    /// @warning 控制线程接口；reader 必须无异常、无阻塞且不分配内存。
+    /// @warning 配置写入必须串行；reader 必须无异常、无阻塞且不分配内存。
+    /// 替换或清除配置不会等待旧 reader 结束，旧 context 仍须覆盖全部回调。
     void set_input_boundary_provider(void* context, InputBoundaryReader reader);
 
     /// @brief 清除输入连续区间查询器。
@@ -146,8 +148,9 @@ public:
     /// @return 最近已提交代际。
     [[nodiscard]] std::uint64_t consumed_final_generation() const;
 
-    /// @brief 查询 final 输出是否已经完全 drain。
-    /// @return 本段非直通流已经完全输出时返回 true。
+    /// @brief 查询本段 final 的应用层输出预算是否已经交付完。
+    /// @return 预算完成时返回 true，旁路提交 final 后可立即完成。
+    /// 不表示底层算法队列物理为空，也不包括超出目标时长而未交付的尾部。
     [[nodiscard]] bool is_final_input_drained() const;
 
     /// @brief 回收音频线程已经退役的 RubberBand 状态。
@@ -160,7 +163,7 @@ public:
     [[nodiscard]] std::uint64_t active_state_generation() const;
 
     /// @brief 获取因 block 超出预备容量而静音的次数。
-    /// @return 容量溢出次数。
+    /// @return 格式不匹配或容量不足引发的累计拒绝次数。
     [[nodiscard]] std::uint64_t capacity_overflow_count() const;
 
 protected:
@@ -171,6 +174,7 @@ protected:
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:
+    /// @brief 控制侧构造、音频侧执行、退役后再交给控制侧销毁的完整状态。
     struct ProcessingState;
 
     /// @brief 播放速度允许的下限。
@@ -262,16 +266,19 @@ private:
     /// @brief 期望音高半音偏移。
     std::atomic<double> m_desiredPitchSemitones{ 0.0 };
 
-    /// @brief 最近实际播放速度。
+    /// @brief 最近发布的速度诊断值。
+    /// @warning 音频侧 relaxed 写、控制侧读，只用于观测，不同步 PCM 内容。
     std::atomic<double> m_actualPlaybackRatio{ 1.0 };
 
     /// @brief 控制线程要求的质量。
     std::atomic<TimeStretchQuality> m_quality{ TimeStretchQuality::Finer };
 
     /// @brief 控制线程要求的暂停状态。
+    /// @warning 控制侧 release 写、音频侧每块 acquire 读，不等待当前块停止。
     std::atomic_bool m_paused{ false };
 
     /// @brief 控制线程记录的预备格式。
+    /// @warning 普通成员要求 prepare 和所有重建状态的 setter 串行执行。
     AudioDataFormat m_controlFormat;
 
     /// @brief 控制线程记录的最大输出 block。
@@ -281,9 +288,11 @@ private:
     ProcessingState* m_currentState{ nullptr };
 
     /// @brief 控制线程发布、音频线程在 block 边界接收的状态邮箱。
+    /// @warning 两侧 acq_rel 交换转移独占实例，避免热路径复制共享所有权。
     std::atomic<ProcessingState*> m_pendingState{ nullptr };
 
     /// @brief 音频线程发布、控制线程回收的退役状态链。
+    /// @warning 音频侧 release 压栈，控制侧 acq_rel 摘链，析构不得落入音频侧。
     std::atomic<ProcessingState*> m_retiredStates{ nullptr };
 
     /// @brief 控制线程分配给新状态的代际。
@@ -293,12 +302,16 @@ private:
     std::atomic<std::uint64_t> m_activeStateGeneration{ 0U };
 
     /// @brief 控制线程提交的 discontinuity 请求代际。
+    /// @warning 请求侧 release 递增、音频侧 acquire 消费，合并尚未处理的定位。
     std::atomic<std::uint64_t> m_requestedDiscontinuityGeneration{ 0U };
 
     /// @brief 音频线程已应用的 discontinuity 代际。
+    /// @warning 音频侧 release 确认、控制侧 acquire
+    /// 观测，不能改为跨线程普通字段。
     std::atomic<std::uint64_t> m_consumedDiscontinuityGeneration{ 0U };
 
     /// @brief 外部 provider 配置的 seqlock 序号。
+    /// @warning 单控制写入者更新，音频侧有限次读取，不为取得稳定值阻塞等待。
     std::atomic<std::uint64_t> m_providerConfigurationSequence{ 0U };
 
     /// @brief 外部 provider 的非拥有上下文。
@@ -310,6 +323,7 @@ private:
     };
 
     /// @brief 输入边界 provider 配置的 seqlock 序号。
+    /// @warning 控制侧串行写、音频侧读取，序号不提供 context 生命周期保护。
     std::atomic<std::uint64_t> m_inputBoundaryConfigurationSequence{ 0U };
 
     /// @brief 输入边界 provider 的非拥有上下文。
@@ -327,16 +341,19 @@ private:
     /// @brief 供控制线程诊断的最近外部代际。
     std::atomic<std::uint64_t> m_publishedProviderGeneration{ 0U };
 
-    /// @brief 控制线程提交的 final 请求代际。
+    /// @brief 控制线程或上游回调提交的 final 请求代际。
+    /// @warning 请求侧 release 递增、处理侧 acquire 消费，不直接更改后端对象。
     std::atomic<std::uint64_t> m_requestedFinalGeneration{ 0U };
 
     /// @brief 音频线程已提交给 RubberBand 的 final 代际。
     std::atomic<std::uint64_t> m_consumedFinalGeneration{ 0U };
 
-    /// @brief 当前 final 流是否已经完全 drain。
+    /// @brief 当前 final 流的应用层预算是否已经交付完。
+    /// @warning 请求侧清零、音频侧发布结果；控制侧 acquire 查询不触发 drain。
     std::atomic_bool m_finalInputDrained{ false };
 
-    /// @brief 超出预备容量的回调数量。
+    /// @brief 格式或容量校验失败的累计数量。
+    /// @warning 音频侧 relaxed 递增、控制侧读取，只作为诊断，不同步处理状态。
     std::atomic<std::uint64_t> m_capacityOverflowCount{ 0U };
 };
 
