@@ -97,8 +97,9 @@ set(ICE_FFMPEG_AUDIO_ENCODERS
 
 list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
 
-# 常见 BG 视频格式预留：优先编译原生解码器；编码器只启用无外部依赖项。
+# 常见 BG 视频格式与嵌入式 GIF 动画：优先编译原生解码器；编码器只启用无外部依赖项。
 set(ICE_FFMPEG_VIDEO_DECODERS
+    gif
     h264
     hevc
     mpeg4
@@ -115,6 +116,7 @@ set(ICE_FFMPEG_DEMUXERS
     avi
     flac
     flv
+    gif
     h264
     hevc
     ivf
@@ -146,6 +148,7 @@ set(ICE_FFMPEG_PARSERS
     aac_latm
     av1
     flac
+    gif
     h264
     hevc
     mjpeg
