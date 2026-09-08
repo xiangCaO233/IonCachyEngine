@@ -44,6 +44,9 @@ set(ICE_FFMPEG_PKG_CONFIG_PATH "${ICE_ZLIB_PKGCONFIG_DIR}")
 # * 分隔符依据宿主平台选择，与目标是否 Windows 是两件不同的事。
 set(ICE_FFMPEG_TOOL_PATH "$ENV{PATH}")
 set(ICE_FFMPEG_LIST_SEPARATOR "__ICE_FFMPEG_LIST_SEPARATOR__")
+include("${PROJECT_SOURCE_DIR}/cmake/ICEMsvcExternalEnvironment.cmake")
+# FFmpeg 会直接调用链接器，三个外部步骤都必须携带 Windows SDK 环境。
+ice_msvc_external_environment(ICE_FFMPEG_ENV "${ICE_FFMPEG_LIST_SEPARATOR}")
 set(ICE_FFMPEG_TOOL_PATH_SEPARATOR ":")
 if(CMAKE_HOST_WIN32)
   # Windows PATH 使用分号分隔，先用唯一占位符保护 CMake 列表边界；同时改用正斜杠，避免末尾反斜杠破坏 sh 引号。
@@ -318,6 +321,7 @@ if(CMAKE_HOST_WIN32)
       ${CMAKE_COMMAND}
       -E
       env
+      ${ICE_FFMPEG_ENV}
       "PATH=${ICE_FFMPEG_TOOL_PATH}"
       "PKG_CONFIG_PATH=${ICE_FFMPEG_PKG_CONFIG_PATH}"
       "PKG_CONFIG_LIBDIR=${ICE_FFMPEG_PKG_CONFIG_PATH}"
@@ -329,6 +333,7 @@ else()
       ${CMAKE_COMMAND}
       -E
       env
+      ${ICE_FFMPEG_ENV}
       "PATH=${ICE_FFMPEG_TOOL_PATH}"
       "PKG_CONFIG_PATH=${ICE_FFMPEG_PKG_CONFIG_PATH}"
       "PKG_CONFIG_LIBDIR=${ICE_FFMPEG_PKG_CONFIG_PATH}"
@@ -399,13 +404,14 @@ ExternalProject_Add(
   # * 外部步骤仍使用 make，即使顶层生成器为 Ninja 也需宿主提供兼容 make。
   # * PROCESSOR_COUNT 来自调用环境，本文件不探测或限制它，不能假定等于外层 -j。
   BUILD_COMMAND
-    ${CMAKE_COMMAND} -E env "PATH=${ICE_FFMPEG_TOOL_PATH}" sh -c
-    "${FFMPEG_SOURCE_READY_TEST} || make -j${PROCESSOR_COUNT}"
+    ${CMAKE_COMMAND} -E env ${ICE_FFMPEG_ENV} "PATH=${ICE_FFMPEG_TOOL_PATH}" sh
+    -c "${FFMPEG_SOURCE_READY_TEST} || make -j${PROCESSOR_COUNT}"
     # 执行安装，成功后立刻删除 share 目录，保持 install 目录纯净
   # * 安装、清理 share 派生目录和更新戳以成功链串联，任一步失败都不应产生新成功戳。
   # * share 位于私有安装树；清理它不涉及源码资源，但会移除该安装目录的非库附属文件。
   INSTALL_COMMAND
-    ${CMAKE_COMMAND} -E env "PATH=${ICE_FFMPEG_TOOL_PATH}" sh -c
+    ${CMAKE_COMMAND} -E env ${ICE_FFMPEG_ENV} "PATH=${ICE_FFMPEG_TOOL_PATH}" sh
+    -c
     "${FFMPEG_SOURCE_READY_TEST} || (make install && '${CMAKE_COMMAND}' -E rm -rf '${FFMPEG_INSTALL_DIR}/share' && '${CMAKE_COMMAND}' -E touch '${FFMPEG_CONFIG_STAMP}')"
   BUILD_BYPRODUCTS ${FFMPEG_BYPRODUCTS} ${FFMPEG_CONFIG_STAMP})
 

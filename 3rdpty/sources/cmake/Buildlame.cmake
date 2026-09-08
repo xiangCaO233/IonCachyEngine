@@ -2,6 +2,9 @@
 
 include(ExternalProject)
 include(ProcessorCount)
+include("${PROJECT_SOURCE_DIR}/cmake/ICEMsvcExternalEnvironment.cmake")
+# 配置、编译及安装复用同一 SDK 环境，增量构建不依赖原终端。
+ice_msvc_external_environment(ICE_LAME_ENV "__ICE_LAME_SEPARATOR__")
 
 ProcessorCount(ICE_LAME_PROCESSOR_COUNT)
 # 子 make 使用独立探测的 CPU 数，不继承外层 Ninja 的并行任务上限。
@@ -97,7 +100,8 @@ endif()
 
 # 以命令列表传递环境赋值，工具和 flags 只影响本次 configure，不改宿主环境。
 set(ICE_LAME_CONFIGURE_COMMAND
-    ${CMAKE_COMMAND} -E env "CC=${ICE_LAME_CC}" "AR=${ICE_LAME_AR}"
+    ${CMAKE_COMMAND} -E env ${ICE_LAME_ENV} "CC=${ICE_LAME_CC}"
+    "AR=${ICE_LAME_AR}"
     # 工具路径只作为环境输入传递；提供 STRIP 不等于执行安装后符号剥离。
     "RANLIB=${CMAKE_RANLIB}" "NM=${CMAKE_NM}" "STRIP=${CMAKE_STRIP}"
     "CFLAGS=${ICE_LAME_C_FLAGS}" "LDFLAGS=${ICE_LAME_LINK_FLAGS}")
@@ -149,13 +153,21 @@ set(ICE_LAME_INSTALL_ACTION "make install")
 # byproducts 告诉 Ninja 外部项目产物的归属，不执行文件存在性或归档内容验证。
 set(ICE_LAME_BUILD_BYPRODUCTS "${ICE_LAME_BUILD_LIBRARY}")
 if(MSVC AND CMAKE_CROSSCOMPILING)
+  # 解包工具是宿主程序，优先匹配编译器目录，不依赖宿主是否提供带版本号的命令别名。 CMAKE_AR 在 MSVC 下是
+  # llvm-lib，无法承担展开已有归档的操作。 单独查找 llvm-ar 只用于读归档；最终输出仍由当前 CMAKE_AR 重建。
+  get_filename_component(ICE_LAME_COMPILER_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
+  find_program(
+    ICE_LAME_LLVM_AR
+    NAMES llvm-ar-22 llvm-ar
+    HINTS "${ICE_LAME_COMPILER_DIR}"
+    NO_CMAKE_FIND_ROOT_PATH REQUIRED)
   # LAME 3.100 不会把 x86 SIMD 对象安装进主归档；展开后用 llvm-lib 重建，确保 mp3lame.lib
   # 同时包含主实现和向量实现，且不产生嵌套归档。
   string(
     APPEND
     ICE_LAME_INSTALL_ACTION
     # && 保证安装成功后才合并，合并失败也不会继续写入成功戳。
-    " && '${PROJECT_SOURCE_DIR}/cmake/cross/merge-msvc-archives.sh' '${ICE_LAME_STATIC_LIBRARY}' '${ICE_LAME_BUILD_LIBRARY}' '${ICE_LAME_VECTOR_OBJECT}'"
+    " && '${CMAKE_COMMAND}' -E env 'ICE_LLVM_AR=${ICE_LAME_LLVM_AR}' 'ICE_LLVM_LIB=${CMAKE_AR}' '${PROJECT_SOURCE_DIR}/cmake/cross/merge-msvc-archives.sh' '${ICE_LAME_STATIC_LIBRARY}' '${ICE_LAME_BUILD_LIBRARY}' '${ICE_LAME_VECTOR_OBJECT}'"
   )
   # 最终 .lib 和额外向量对象均登记，避免下游只看到原始 .a 的生成关系。
   list(APPEND ICE_LAME_BUILD_BYPRODUCTS "${ICE_LAME_VECTOR_OBJECT}"
@@ -164,6 +176,8 @@ endif()
 
 ExternalProject_Add(
   lame_project
+  # 独特占位符只替换环境里的分号，不会改写缓存检查中的 | 或 || 运算符。
+  LIST_SEPARATOR "__ICE_LAME_SEPARATOR__"
   # 只消费工作区已有源码，没有仓库 URL，更新步骤显式为空。
   SOURCE_DIR "${ICE_LAME_SOURCE_DIR}"
   BINARY_DIR "${ICE_LAME_BINARY_DIR}"
@@ -174,9 +188,10 @@ ExternalProject_Add(
   CONFIGURE_COMMAND ${ICE_LAME_CONFIGURE_COMMAND}
   # 构建阶段仍直接使用 sh，不复用上面仅用于 configure 的 shell 查找结果。
   BUILD_COMMAND
-    sh -c "${ICE_LAME_SOURCE_READY_TEST} || make -j${ICE_LAME_PROCESSOR_COUNT}"
+    ${CMAKE_COMMAND} -E env ${ICE_LAME_ENV} sh -c
+    "${ICE_LAME_SOURCE_READY_TEST} || make -j${ICE_LAME_PROCESSOR_COUNT}"
   INSTALL_COMMAND
-    sh -c
+    ${CMAKE_COMMAND} -E env ${ICE_LAME_ENV} sh -c
     "${ICE_LAME_SOURCE_READY_TEST} || (${ICE_LAME_INSTALL_ACTION} && '${CMAKE_COMMAND}' -E touch '${ICE_LAME_SOURCE_STAMP}')"
   # 安装成功戳也属于生成物，清理与增量依赖图需要知道其外部项目归属。
   BUILD_BYPRODUCTS ${ICE_LAME_BUILD_BYPRODUCTS} "${ICE_LAME_SOURCE_STAMP}")

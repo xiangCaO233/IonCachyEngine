@@ -3,6 +3,7 @@
 # * 本入口维护 Meson 构建适配与稳定消费接口，不修改 Rubber Band 上游源码。
 # * 只由源码依赖模式进入；FFTW 外部项目和 samplerate 目标必须已由前置脚本建立。
 include(ExternalProject)
+include("${PROJECT_SOURCE_DIR}/cmake/ICEMsvcExternalEnvironment.cmake")
 
 # * 将 CMake 构建类型映射到 Meson。 预编译库的 Debug 与 RelWithDebInfo 必须保留调试信息。
 # * 配置名按精确大小写判断，非标准配置不会自动继承 Debug 或含符号发布策略。
@@ -53,11 +54,11 @@ endif()
 
 # * 判断 Clang/GCC 的 LTO 参数
 # * 这组额外参数只面向非 Apple 的 Clang 发布配置，不是 GCC 的通用 LTO 配置。
-# * 本脚本仍引用外层命名的 LTO 开关，独立项目变量归属需另行治理；本批不改行为。
+# * 独立引擎使用自身的 LTO 开关，嵌入时由调用方传入偏好。
 set(RB_LTO_FLAGS "")
 if(NOT APPLE
    AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-   AND NOT MMM_DISABLE_CLANG_LTO
+   AND NOT ICE_DISABLE_CLANG_LTO
    AND (CMAKE_BUILD_TYPE STREQUAL "Release"
         OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo"
         OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
@@ -90,6 +91,26 @@ set(RB_TOOLCHAIN_C_FLAGS "${CMAKE_C_FLAGS}")
 set(RB_TOOLCHAIN_CPP_FLAGS "${CMAKE_CXX_FLAGS}")
 # C 与 C++ 共享通用 EXE 链接 flags，未按库类型选择 SHARED_LINKER_FLAGS。
 set(RB_TOOLCHAIN_LINK_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+# clang-cl 的 Meson sanity 检查经过编译驱动，不能直接接收 lld-link 的 /libpath。 从工具链提取库目录到
+# LIB，配置、依赖扫描和实际链接都使用同一环境。 ExternalProject 用占位分隔符传递 Windows 分号列表，保留带空格的 SDK 路径。
+set(RB_MSVC_ENV "")
+if(MSVC AND CMAKE_CROSSCOMPILING)
+  # 链接功能探针通过 clang-cl 驱动执行，不能仅为最终链接配置 c_ld。
+  string(APPEND RB_TOOLCHAIN_C_FLAGS " -fuse-ld=lld")
+  string(APPEND RB_TOOLCHAIN_CPP_FLAGS " -fuse-ld=lld")
+  separate_arguments(_rb_link_flags UNIX_COMMAND "${RB_TOOLCHAIN_LINK_FLAGS}")
+  set(RB_TOOLCHAIN_LINK_FLAGS "")
+  foreach(_rb_flag IN LISTS _rb_link_flags)
+    if(_rb_flag MATCHES "^/[Ll][Ii][Bb][Pp][Aa][Tt][Hh]:(.*)$")
+      # 库搜索路径由公共环境 helper 提供，不传入 Meson 链接参数。
+    else()
+      string(APPEND RB_TOOLCHAIN_LINK_FLAGS " \"${_rb_flag}\"")
+    endif()
+  endforeach()
+  # Meson 的 MSVC 头依赖探针可能不带 c_args，因此同时固化 INCLUDE。
+  ice_msvc_external_environment(RB_MSVC_ENV "__ICE_RB_SEPARATOR__")
+endif()
+
 # * 本分支由 C target 是否存在控制，C++ 追加的是 CXX target；两者需由工具链一致设置。
 # * 显式 triple 约束编译与链接目标，但不能代替 Meson 的 host_machine 描述。
 if(CMAKE_C_COMPILER_TARGET)
@@ -291,7 +312,8 @@ if(MSVC)
       -Db_vscrt=${RUBBERBAND_CRT}
       -Ddefault_library=${RUBBERBAND_LIBRARY_KIND}
       # 默认库类型在 setup 时固化，非 MSVC 已有 build.ninja 的短路逻辑不会自动同步切换。 * 关闭上游测试不代替 ICE
-      # 数值和实时验证，构建成功不能证明算法结果正确。
+      # 数值和实时验证，构建成功不能证明算法结果正确。 当前 MSVC 标准库至少要求 C++14，显式覆盖上游的 C++11 默认值。
+      -Dcpp_std=c++17
       -Dtests=disabled
       -Dcmdline=disabled
       # * Vamp、LADSPA、LV2 是独立插件入口，这里不把它们作为引擎嵌入 API 交付。
@@ -322,11 +344,36 @@ if(MSVC)
          "-Dcpp_link_args=${CPP_LINK_ARGS_VAL}")
   endif()
 
-  # * MSVC 交叉文件使用顶层 CMAKE_SOURCE_DIR 路径，嵌入项目时须确认确有该文件。
+  # 由当前 CMake 工具链生成机器文件，避免 PATH 中未带版本的 LLVM 与主构建不同。
+  # 文件位于构建目录，使独立引擎构建不依赖上层项目的交叉配置文件。
   if(CMAKE_CROSSCOMPILING)
-    list(APPEND MESON_SETUP_ARGS
-         "--cross-file=${CMAKE_SOURCE_DIR}/cmake/toolchain/meson-cross-cl.toml")
+    set(_rb_cross_file "${CMAKE_BINARY_DIR}/3rdpty/rubberband-msvc-cross.ini")
+    # Meson 按可执行文件名识别 clang-cl；版本后缀会被误识别为 GNU 驱动。 构建目录内的标准名称链接仍指向 CMake
+    # 已选定的同版本编译器。
+    set(_rb_compiler "${CMAKE_BINARY_DIR}/3rdpty/rubberband-tools/clang-cl")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/3rdpty/rubberband-tools")
+    file(CREATE_LINK "${CMAKE_C_COMPILER}" "${_rb_compiler}" SYMBOLIC)
+    # 归档器也按标准名称识别，避免 llvm-lib-22 被当成 GNU ar 使用 csr 参数。
+    set(_rb_archiver "${CMAKE_BINARY_DIR}/3rdpty/rubberband-tools/llvm-lib")
+    file(CREATE_LINK "${CMAKE_AR}" "${_rb_archiver}" SYMBOLIC)
+    # * 目标固定为当前交叉入口的 x86_64 Windows，不能使用宿主 Linux 的 ABI 探测值。
+    # * needs_exe_wrapper 禁止配置阶段直接在宿主运行目标程序。
+    # * c_ld 服务直接链接，编译驱动探针则由 -fuse-ld=lld 选择同目录链接器。
+    file(
+      WRITE "${_rb_cross_file}"
+      "[binaries]\nc = ['${_rb_compiler}', '-fuse-ld=lld']\ncpp = ['${_rb_compiler}', '-fuse-ld=lld']\nar = '${_rb_archiver}'\nc_ld = '${CMAKE_LINKER}'\ncpp_ld = '${CMAKE_LINKER}'\n[host_machine]\nsystem = 'windows'\ncpu_family = 'x86_64'\ncpu = 'x86_64'\nendian = 'little'\n[properties]\nneeds_exe_wrapper = true\n"
+    )
+    list(APPEND MESON_SETUP_ARGS "--cross-file=${_rb_cross_file}")
   endif()
+  # Meson 在重配置时缓存编译器和归档器类型；机器文件变化必须清除旧探测结果。 只在已有配置的外部 configure
+  # 步骤重建私有构建树，普通增量编译不执行此步骤。
+  set(_rb_setup_mode --reconfigure)
+  if(EXISTS "${RUBBERBAND_BUILD_DIR}/meson-private/coredata.dat")
+    set(_rb_setup_mode --wipe)
+  endif()
+  # 空 native 文件使用实际路径，Linux 不把 NUL 识别为 Windows 空设备。
+  set(_rb_native_file "${CMAKE_BINARY_DIR}/3rdpty/rubberband-native.ini")
+  file(WRITE "${_rb_native_file}" "# 不覆盖宿主编译器选项。\n")
 
   # 确定库文件产物路径 * MSVC 共享模式分别登记导入库和 DLL，静态模式消费带 static 后缀的归档。
   if(ICE_LINKAGE STREQUAL "shared")
@@ -339,11 +386,22 @@ if(MSVC)
         "${RUBBERBAND_INSTALL_DIR}/lib/rubberband-static.lib")
   endif()
 
+  # * 上游在 clang-cl 下仍安装 librubberband.a，但归档内容已经是 MSVC COFF。
+  # * 安装后统一名称，保持消费接口及预编译打包脚本的 rubberband-static.lib 契约。
+  # * 这里只复制字节，不剥离 CodeView，也不重新归档；原始安装文件继续保留。
+  set(_rb_normalize_command "")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND ICE_LINKAGE STREQUAL "static")
+    set(_rb_normalize_command
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${RUBBERBAND_INSTALL_DIR}/lib/librubberband.a" "${RUBBERBAND_LIBRARY}")
+  endif()
+
   # * 这个分支不使用上述 POSIX 时间戳检查，不能将非 MSVC 增量缓存语义套用到这里。 使用 CMake 环境包装器，避免 MSVC 构建依赖类
   #   Unix 命令行外壳。
   # * 只使用工作区现有源码，外部更新步骤为空，不触发仓库下载或源码替换。
   ExternalProject_Add(
     rubberband_project
+    LIST_SEPARATOR "__ICE_RB_SEPARATOR__"
     SOURCE_DIR "${RUBBERBAND_SOURCE_DIR}"
     BINARY_DIR "${RUBBERBAND_BUILD_DIR}"
     # * 依赖边同时包含 ExternalProject 与普通 CMake 库目标，确保 Meson 探针前库已就绪。
@@ -352,26 +410,30 @@ if(MSVC)
     # * 每次进入 Meson compile，由 Meson 自身处理增量，不等于每轮重编所有对象。
     BUILD_ALWAYS TRUE
     CONFIGURE_COMMAND
-      ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+      ${CMAKE_COMMAND} -E env ${RB_MSVC_ENV}
+      "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
-      # * 真实配置环境将 PATH/LIBDIR 都指向本地元数据，并清空 CMAKE_PREFIX_PATH。
-      # * native-file=NUL 是当前分支的宿主假设；MSVC ABI 不一定代表宿主就是 Windows。
-      "${RUBBERBAND_MESON_EXE}" setup ${MESON_SETUP_ARGS} --native-file=NUL
-      "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SOURCE_DIR}"
+      # * 真实配置环境将 PATH/LIBDIR 都指向本地元数据，并清空 CMAKE_PREFIX_PATH。 使用生成的空 native
+      #   文件，不依赖当前 shell 的空设备名称。
+      "${RUBBERBAND_MESON_EXE}" setup ${_rb_setup_mode} ${MESON_SETUP_ARGS}
+      --native-file=${_rb_native_file} "${RUBBERBAND_BUILD_DIR}"
+      "${RUBBERBAND_SOURCE_DIR}"
     # * 编译阶段保持相同依赖搜索环境，避免 Meson 重新检测时回到系统包。
     BUILD_COMMAND
-      ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+      ${CMAKE_COMMAND} -E env ${RB_MSVC_ENV}
+      "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
       "${RUBBERBAND_MESON_EXE}" compile -C "${RUBBERBAND_BUILD_DIR}"
     INSTALL_COMMAND
-      ${CMAKE_COMMAND} -E env "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
+      ${CMAKE_COMMAND} -E env ${RB_MSVC_ENV}
+      "PKG_CONFIG=${RUBBERBAND_PKG_CONFIG_EXE}"
       "PKG_CONFIG_PATH=${RUBBERBAND_PKG_CONFIG_DIR}"
       "PKG_CONFIG_LIBDIR=${RUBBERBAND_PKG_CONFIG_DIR}" "CMAKE_PREFIX_PATH="
       "${RUBBERBAND_MESON_EXE}" install -C "${RUBBERBAND_BUILD_DIR}"
       # * 安装不再次触发构建，要求前一编译步骤已成功，失败由外部项目命令传播。
-      --no-rebuild
+      --no-rebuild ${_rb_normalize_command}
     # 当前 byproducts 不包含 PDB，构建成功不能作为旁路符号打包完整的证明。
     BUILD_BYPRODUCTS "${RUBBERBAND_LIBRARY}" ${RUBBERBAND_RUNTIME_LIBRARY})
   # * 非 MSVC 分支使用 shell 环境字符串和源码戳，与上方直接命令执行分支语义不同。
