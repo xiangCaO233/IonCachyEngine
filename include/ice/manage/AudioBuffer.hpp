@@ -23,12 +23,17 @@ public:
     AudioDataFormat afmt;
     /// @brief 默认对象不准备音频存储。
     AudioBuffer() = default;
+    /// @brief 按格式准备存储，借用样本前需确认活动帧数和声道数。
     AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
 
-    // 删除拷贝，实现移动
-    AudioBuffer(const AudioBuffer&)            = delete;
+    /// @brief 禁止隐式复制整块 PCM 存储。
+    AudioBuffer(const AudioBuffer&) = delete;
+    /// @brief 禁止复制赋值，避免隐藏的存储分配与覆盖。
     AudioBuffer& operator=(const AudioBuffer&) = delete;
+    /// @brief 转移存储及声道表，源的声道数、活动长度与容量清零。
     AudioBuffer(AudioBuffer&& other) noexcept;
+    /// @brief 接管所有权并释放目标旧存储，自移动保持原状态。
+    /// @warning 目标旧样本借用失效；可能回收内存，仅用于控制阶段。
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
 
     /// @brief 控制阶段调整存储大小，可能使所有旧借用地址失效。
@@ -38,6 +43,7 @@ public:
     /// @param numFrames 新逻辑帧数。
     /// @return 未超过预分配容量时返回 true。
     /// @warning 音频回调热路径：本函数不分配内存。
+    /// 扩大活动长度不会清除重新暴露的旧样本，调用方须在消费前填充或清零。
     bool set_active_frames(size_t numFrames)
     {
         // 只改变对外可见长度，不能把较短块误当成需要重新分配的缓冲。
@@ -112,7 +118,7 @@ private:
     using ChannelData = std::vector<float>;
     /// @brief 声道之间不保证相邻，每个声道内部连续。
     std::vector<ChannelData> _data;
-    // 2. 依然需要指针数组以匹配接口
+    /// @brief 非拥有的平面地址表，调用方不得改写表项使其偏离自有存储。
     std::vector<float*> channel_pointers_;
 
     /// @brief 当前对外可见的逻辑帧数。
@@ -204,12 +210,17 @@ public:
 
     /// @brief 默认构造逻辑空缓冲，不调用对齐分配器。
     AudioBuffer() = default;
+    /// @brief 按格式准备存储，借用样本前需确认活动帧数和声道数。
     AudioBuffer(const AudioDataFormat& format, size_t num_frames = 0);
 
-    // 禁用拷贝，但实现高效的移动
-    AudioBuffer(const AudioBuffer&)            = delete;
+    /// @brief 禁止隐式复制整块 PCM 存储。
+    AudioBuffer(const AudioBuffer&) = delete;
+    /// @brief 禁止复制赋值，避免隐藏的存储分配与覆盖。
     AudioBuffer& operator=(const AudioBuffer&) = delete;
+    /// @brief 转移存储及声道表，源的声道数、活动长度与容量清零。
     AudioBuffer(AudioBuffer&& other) noexcept;
+    /// @brief 接管所有权并释放目标旧存储，自移动保持原状态。
+    /// @warning 目标旧样本借用失效；可能回收内存，仅用于控制阶段。
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
 
     /// @brief 准备连续存储和固定声道跨度，逻辑短块请改用 set_active_frames。
@@ -232,6 +243,7 @@ public:
         }
 
         // 声道存储按向量宽度向上取整，保证下一个声道起点仍满足对齐。
+        // 加法取整及后续声道数乘法未检查溢出，调用方必须限制请求规模。
         _aligned_num_frames =
             (num_frames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
         // 存储跨度在此次准备后固定，不随以后 set_active_frames 的短块改变。
@@ -252,6 +264,7 @@ public:
     /// @param numFrames 新逻辑帧数。
     /// @return 未超过预分配容量时返回 true。
     /// @warning 音频回调热路径：本函数不分配内存，也不刷新声道指针。
+    /// 活动范围和新对齐尾部不自动清零，扩大范围后不能假设其数据为静音。
     inline bool set_active_frames(size_t numFrames)
     {
         // 只调整活动范围；声道实际地址仍由准备阶段的固定跨度决定。
@@ -275,7 +288,7 @@ public:
     inline void clear()
     {
         if ( !_contiguous_buffer.empty() ) {
-            // 对于浮点数0,memset是安全且通常最快的
+            // 使用目标平台浮点零的全零位表示，一并清理全部声道及其填充区。
             std::memset(_contiguous_buffer.data(),
                         0,
                         _contiguous_buffer.size() * sizeof(float));
@@ -289,19 +302,16 @@ public:
             return;
         }
 
-        // 需要清零的帧数
+        // 仅清活动范围，对齐尾部不在此清除；尾部需由完整 clear 或写入流程维护。
         const size_t frames_to_clear = _original_num_frames - start_frame;
         if ( frames_to_clear == 0 ) return;
 
-        // 逐声道清零
+        // 地址使用固定存储跨度，不能按当前短块长度重新计算声道位置。
         for ( uint16_t ch = 0; ch < afmt.channels; ++ch ) {
-            // 获取第 ch 声道的起始指针
             float* channel_start_ptr = channel_pointers_[ch];
 
-            // 计算需要清零的内存区域的起始地址
             float* clear_start_ptr = channel_start_ptr + start_frame;
 
-            // 调用 memset
             std::memset(clear_start_ptr, 0, frames_to_clear * sizeof(float));
         }
     }
@@ -359,15 +369,8 @@ public:
             __m256 interleaved_vec = _mm256_loadu_ps(
                 src + i * 2);  // 使用 unaligned load，因为源不保证对齐
 
-            // 解交错
-            // 目标:
-            //   - 一个寄存器包含 [L0, L1, L2, L3, ?, ?, ?, ?]
-            //   - 另一个寄存器包含 [R0, R1, R2, R3, ?, ?, ?, ?]
-            //
-            // 使用 _mm256_shuffle_ps, 控制码 0b11011000 (0xD8)
-            // 它将源向量的元素按 [2,0,3,1]
-            // 的模式重排，分别在低128位和高128位通道内 [L0,R0,L1,R1,
-            // L2,R2,L3,R3] -> [L0,L1,R0,R1, L2,L3,R2,R3]
+            // 此重排属于历史未验证路径，不把中间向量直接标为完整单声道样本。
+            // 中间重排不能抵消下方写入宽度与步长的冲突。
             __m256 shuffled =
                 _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
 

@@ -25,7 +25,8 @@ struct EQBandOptions {
     double gain_db{ 0.0 };
 };
 
-/// @brief 通过控制侧预备状态实现实时安全参数热更新的图形均衡器。
+/// @brief 通过控制侧预备状态避免音频侧重建和释放的图形均衡器。
+/// 仅支持单音频读取者；状态获取在持续发布竞争下可能重试，不承诺有界等待。
 class GraphicEqualizer : public IEffectNode
 {
 public:
@@ -46,16 +47,19 @@ public:
     /// @brief 按线性倍率设置指定频段增益。
     /// @param bandIndex 频段索引。
     /// @param ratio 正线性倍率。
+    /// @warning 控制侧更新会加锁并分配新状态，不能用于音频回调。
     void set_band_gain_ratio(std::size_t bandIndex, float ratio);
 
     /// @brief 按 dB 设置指定频段增益。
     /// @param bandIndex 频段索引。
     /// @param db 增益，单位 dB。
+    /// @warning 控制侧更新会加锁并分配新状态，不能用于音频回调。
     void set_band_gain_db(std::size_t bandIndex, float db);
 
     /// @brief 设置指定频段的品质因数。
     /// @param bandIndex 频段索引。
     /// @param q 正品质因数。
+    /// @warning 控制侧更新会加锁并分配新状态，不能用于音频回调。
     void set_band_q_factor(std::size_t bandIndex, float q);
 
     /// @brief 获取频段数量。
@@ -98,6 +102,7 @@ protected:
     /// @param input 输入缓冲区。
     /// @warning 音频回调热路径：只在 block 边界取得一次状态快照，不得分配、
     /// 释放、获取锁或遍历控制侧容器。
+    /// 音频侧写 hazard，控制侧据此延后回收，输入输出存储不得重叠。
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:
@@ -116,6 +121,8 @@ private:
     /// @return 当前稳定状态。
     /// @warning 音频回调热路径：使用单读取者 hazard 协议，不得改为
     /// shared_ptr 或锁。
+    /// 音频侧读取 active 并写 hazard，控制侧发布 active 与读取 hazard。
+    /// 状态二次校验失败会重试，顺序一致语义不能独立弱化。
     PreparedFilterState* acquire_filter_state() noexcept;
 
     /// @brief 结束当前 block 的滤波状态读取临界区。

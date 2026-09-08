@@ -16,11 +16,18 @@ namespace ice
 /// @warning 首次访问可等待 future；必须在进入实时播放前完成准备。
 class CachyDecoder : public IDecoder
 {
+    /// @brief 单个声道连续样本存储的类型别名。
     using ChannelData = std::vector<float>;
 
 public:
     /// @brief 将整文件解码任务提交到调用方提供的线程池。
     /// 返回时任务可能尚未完成，工厂和路径由任务持有。
+    /// @param path 媒体路径，提交前复制，不借用调用方字符串。
+    /// @param target_format 交给工厂的目标格式；缓存以实例报告的格式为基础。
+    /// @param thread_pool 接收任务的后台线程池，必须仍可提交任务。
+    /// @param factory 非空解码工厂，任务通过共享所有权保持其存活。
+    /// @return 持有异步结果的策略对象，不代表文件已成功解码。
+    /// @warning 低频创建涉及分配与队列锁；历史提交/构造失败仍可能抛出异常。
     [[nodiscard]] static std::unique_ptr<CachyDecoder> create(
         std::string_view path, const ice::AudioDataFormat& target_format,
         ThreadPool& thread_pool, std::shared_ptr<IDecoderFactory> factory);
@@ -31,31 +38,49 @@ public:
     {
         // 以解码后的首声道长度为准，容器中的预估时长可能不精确。
         const auto& data = get_data();
-        // 确定下来的数据获取帧总数
         return data.pcm_data.empty() ? 0 : data.pcm_data[0].size();
     }
-    /// @brief 复制缓存切片，返回每声道实际写入帧数。
+    /// @brief 复制缓存切片，返回本次可用切片的帧数。
     /// 多余声道及未写入的尾部不由此接口清零。
+    /// @param buffer 可写声道指针表，需覆盖 num_channels 个有效声道。
+    /// @param num_channels 请求目标声道数；零声道时仍可能返回非零帧数。
+    /// @param start_frame 每声道缓存起始帧，不是交错样本偏移。
+    /// @param frame_count 目标容量允许的请求帧数，复制长度截断至缓存末尾。
+    /// @pre 非空目标与内部缓存不重叠，各目标声道有足够容量。
+    /// @warning 音频逐块读取链路：必须预先完成缓存加载，首次调用可能等待。
+    /// 预备后只读缓存和复制，禁止在此追加文件操作或动态扩容。
     size_t decode(float** buffer, uint16_t num_channels, size_t start_frame,
                   size_t frame_count) override;
     /// @brief 向容器追加只读切片；缓存对象必须活过所有借用视图。
+    /// @param origin_data 接收每个缓存声道视图的容器，不自动清理已有元素。
+    /// @param start_frame 每声道切片起始帧。
+    /// @param frame_count 请求帧数，按缓存剩余长度截断。
+    /// @return 每个新视图的帧数；零表示本次未追加视图，不表示容器为空。
+    /// @warning 首次访问可能等待，追加可能分配；不能当作实时安全的零拷贝接口。
     size_t origin(std::vector<std::span<const float>>& origin_data,
                   size_t start_frame, size_t frame_count) override;
 
 private:
-    // 包含解码结果的结构体
+    /// @brief 一次性发布的整文件解码结果，各声道保持相同帧数。
     struct DecodedData {
-        AudioDataFormat                 format;
+        /// @brief 解码实例报告的格式，必要时只调整单声道复制后的声道数。
+        AudioDataFormat format;
+        /// @brief 各声道独立连续存储，发布后不再改变容量或内容。
         std::vector<std::vector<float>> pcm_data;
     };
 
-    // 私有构造函数,接收一个 future
+    /// @brief 接管唯一的异步结果提取句柄，不等待任务完成。
+    /// @param future_data 后台整文件解码任务的结果。
     explicit CachyDecoder(std::future<DecodedData> future_data);
 
     /// @brief 使用一次性初始化发布结果，失败后缓存为空数据且不自动重试。
+    /// @return 由解码器拥有的稳定缓存引用，不可跨越解码器析构。
+    /// @warning 首次调用包含 call_once 与 future.get 等待；后续调用也经过
+    /// call_once。 历史处理仅捕获
+    /// std::exception，不能据此承诺所有异常都折叠为空数据。
     const DecodedData& get_data() const;
 
-    // future 持有后台解码任务的结果
+    /// @brief 由 call_once 内部唯一消费的后台结果句柄；get 后不再有效。
     mutable std::future<DecodedData> future_data_;
 
     /// @brief 缓存一次性取得的解码结果，与进程退出回调无关。

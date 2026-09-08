@@ -1,41 +1,33 @@
-# =============================================================================
-# CMake Toolchain File for cross-compiling from macOS to Windows (MinGW-w64)
-# =============================================================================
+# macOS 到 Windows x86_64 的历史 MinGW-w64 交叉编译配置。 必须由配置入口显式选择；不负责下载编译器、安装目标依赖或执行
+# Windows 程序。
 
-# 1. 设置目标系统信息 告诉 CMake 我们要构建的目标平台是 Windows
+# 声明目标系统及架构，不从当前宿主 CPU 推导，也不包含 ARM 目标分支。
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-# 1. 设置交叉编译器 指定 MinGW-w64 工具链中各个编译器的确切名称。 CMake 会在系统的 PATH 环境变量中查找这些程序。 确保您已经通过
-#   Homebrew (brew install mingw-w64) 或其他方式安装了此工具链。
+# 编译器名称依赖宿主 PATH 解析；前缀相同不保证工具版本与目标运行库兼容。 GCC、G++ 和资源编译器必须能在宿主执行，本文件不校验三者来自同一发行包。
 set(TOOLCHAIN_PREFIX x86_64-w64-mingw32)
 set(CMAKE_C_COMPILER ${TOOLCHAIN_PREFIX}-gcc)
 set(CMAKE_CXX_COMPILER ${TOOLCHAIN_PREFIX}-g++)
 set(CMAKE_RC_COMPILER ${TOOLCHAIN_PREFIX}-windres) # 用于处理 Windows 资源文件 (.rc)
 
-# 1. 设置 Sysroot (系统根) - 这是隔离环境的核心 - Sysroot 是一个目录，包含了目标平台的所有头文件、库和二进制文件。 - 这确保了
-#   CMake 只会使用我们为 Windows 准备的库，而不会误用 macOS 上的库。 - 将下面的路径替换为您存放 MinGW-w64 工具链和所有
-#   Windows 依赖库的根目录。 (通常是您通过 MSYS2 pacman 安装并复制过来的 mingw64 目录)
+# 系统根仍是特定开发机的绝对路径，迁移环境前必须准备相应目录并调整配置。 普通 set 会覆盖当前作用域同名值；本脚本没有提供可移植的路径缓存选项。
+# 系统根只描述目标文件布局，不证明库的架构、编译器 ABI 或调试配置匹配。
 set(CMAKE_SYSROOT "/Users/xiang2333/Documents/win-mingw64-toolchain/mingw64")
 
-# 1. 强制 CMake 只在 Sysroot 中查找依赖 - 防止“环境泄漏” 这是交叉编译中最关键的设置，可以防止 CMake 找到并使用主机
-#   (macOS) 上的任何库 (例如 /opt/homebrew 或 /usr/local 下的库)。
+# 为标准查找命令设置目标根；这不是文件访问沙箱，不能约束显式绝对路径引用。
 set(CMAKE_FIND_ROOT_PATH ${CMAKE_SYSROOT})
 
-# * CMAKE_FIND_ROOT_PATH_MODE_PROGRAM: 设置为 NEVER，意味着像 moc, uic
-#   这样的主机工具应该在宿主机系统上查找， 而不是在 Sysroot 里 (Sysroot 里的 .exe 无法在 macOS 上运行)。
+# 构建期间运行的工具在宿主侧查找，避免误选系统根中的 Windows 可执行文件。 此设置不为目标程序提供模拟器，也不使交叉编译后的测试自动可运行。
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 
-# * CMAKE_FIND_ROOT_PATH_MODE_LIBRARY, INCLUDE, PACKAGE: 设置为 ONLY，意味着所有的库 (.a,
-#   .lib, .so, .dll)、头文件 (.h) 以及 CMake 包配置文件 (FindXXX.cmake, xxxConfig.cmake)
-#   都必须且只能在 CMAKE_FIND_ROOT_PATH (即 Sysroot) 中查找。
+# 库、头文件和配置模式的包查找默认限定到目标根，减少误选宿主二进制的机会。 Find 模块本身仍从 CMAKE_MODULE_PATH
+# 等模块位置加载，并非只能放在系统根。 查找调用可显式覆盖根路径模式，模块也可直接构造路径，不能宣称绝无宿主依赖泄漏。
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# 1. (可选) 设置一些特定于 Windows 的编译和链接标志 例如，默认隐藏控制台窗口 set(CMAKE_EXE_LINKER_FLAGS_INIT
-#   "-mwindows")
-
+# 输出的是本次选择值，不表示目录存在、编译器已通过检测或交叉链接已成功。
 message(STATUS "Toolchain: Loaded macOS to Windows MinGW-w64.")
 message(STATUS "  - Sysroot: ${CMAKE_SYSROOT}")
 message(STATUS "  - C++ Compiler: ${CMAKE_CXX_COMPILER}")

@@ -23,6 +23,7 @@ struct SourceNode::ReferenceProviderState {
 
     /// @brief 查询状态是否包含有效 provider。
     /// @return 任一 provider 有效时返回 true。
+    /// @warning 绝对调度的音频热路径查询；只检查入口存在，不访问外部资源。
     bool valid() const noexcept
     {
         // 这里只判断是否存在读取入口，不能验证外部 context 是否仍存活。
@@ -114,7 +115,8 @@ void SourceNode::process(AudioBuffer& buffer)
     } else if ( const std::size_t scheduledStart =
                     m_scheduledStartFrame.load(std::memory_order_relaxed);
                 scheduledStart > 0U ) {
-        // provider 快照由 hazard 保护，读取期间控制侧不能销毁捕获对象。
+        // hazard
+        // 保活快照及其拥有的捕获资源，不延长裸指针或引用捕获对象的生命周期。
         // 只取一次参考帧，避免同一块的调度基准随回调读数变化。
         const ReferenceProviderState* provider = acquireReferenceProvider();
         const bool        providerValid        = provider && provider->valid();
@@ -330,6 +332,7 @@ void SourceNode::reclaimRetiredReferenceProvidersLocked()
 
 /// @brief 发布读取意图并复查活动地址，取得可安全解引用的快照。
 /// @warning 音频热路径；只访问 seq_cst 原子，不得改为互斥锁或共享所有权。
+/// 控制侧持续发布时可反复重试，不保证固定次数或固定回调耗时。
 const SourceNode::ReferenceProviderState*
 SourceNode::acquireReferenceProvider() noexcept
 {

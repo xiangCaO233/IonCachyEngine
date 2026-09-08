@@ -20,17 +20,27 @@
 #include "ice/out/play/sdl/SDLPlayer.hpp"
 #include "ice/thread/ThreadPool.hpp"
 
+/// @brief 使用本机音频文件组装效果图并手动试听 SDL 输出。
+/// @details 这是依赖硬编码路径与实体设备的演示，不是自动化通过/失败测试。
+/// @warning 低频示例入口：执行文件访问、设备初始化和长时间
+/// sleep，不能用于音频回调。
+/// @warning 分离的诊断线程按引用捕获局部变量，固定延时不保证局部对象存活；
+/// 短音轨或提前退出时仍存在生命周期风险，本示例不能作为安全线程回收模板。
 void test()
 {
+    // 线程池先于音轨池构造、后于其析构，使局部池清理期间仍有工作线程对象。
     ice::ThreadPool thread_pool(8);
 #ifdef __APPLE__
+    // 路径仅适用于原开发机器，不从参数或测试资源目录选择输入。
     auto file1 = "/Users/2333xiang/Music/Tensions - チョコレーション.mp3";
     auto file2 =
         "/Users/2333xiang/Music/Neko Hacker,利香 - GHOST (feat. 利香).mp3";
 #else
+    // 非 Apple 分支也使用 Linux 绝对路径，Windows 上不能假定这些资源存在。
     auto file1 =
         "/home/xiang/Documents/music game maps/Mind Enhancement - "
         "PIKASONIC/Mind Enhancement - PIKASONIC.mp3";
+    // 后续赋值覆盖前一候选，最终只加载最后一次指定的 file1。
     file1 =
         "/home/xiang/Documents/music game maps/Tensions - 3秒ルール/Tensions - "
         "3秒ルール.mp3";
@@ -40,24 +50,28 @@ void test()
     auto file2 =
         "/home/xiang/Documents/MusicMapRepo/osu/1134062 LeaF - "
         "Mopemope/audio.mp3";
-#endif  //__APPLE__
-    // test
+#endif
+    // 同一路径重复查询用于演示缓存复用，不是多份独立解码实例的创建入口。
     ice::AudioPool audiopool;
     auto           track1Weak = audiopool.get_or_load(thread_pool, file1);
-    track1Weak                = audiopool.get_or_load(
+    // 第一次默认 CACHY 命中后不会因第二次请求 STREAMING 就切换已有轨道策略。
+    track1Weak = audiopool.get_or_load(
         thread_pool, file1, ice::CachingStrategy::STREAMING);
+    // 从弱句柄取得强引用，使音源图创建前能检查轨道是否实际可用。
     auto track1 = track1Weak.lock();
 
     auto track2Weak = audiopool.get_or_load(thread_pool, file2);
-    track2Weak      = audiopool.get_or_load(thread_pool, file2);
-    auto track2     = track2Weak.lock();
+    // 第二轨也重复查询；这里只验证返回对象可用，没有断言两次句柄是否指向同一对象。
+    track2Weak  = audiopool.get_or_load(thread_pool, file2);
+    auto track2 = track2Weak.lock();
 
     if ( !track1 || !track2 ) {
+        // 设备尚未初始化，失败可直接返回；main 目前仍返回成功退出码。
         fmt::print("failed to load audio tracks\n");
         return;
     }
 
-    // 获取音频轨道信息
+    // 打印文件元数据只供人工核对，不表示实际输出设备采用了相同采样格式。
     fmt::print("frames:{},{}\n",
                track1->get_media_info().frame_count,
                track2->get_media_info().frame_count);
@@ -68,12 +82,15 @@ void test()
                track1->get_media_info().format.samplerate,
                track2->get_media_info().format.samplerate);
 
+    // OpenAL 只用于枚举演示，本次真正输出选择 SDL，不创建 ALPlayer 播放实例。
     ice::ALPlayer::init_backend();
     auto ds = ice::ALPlayer::list_devices();
+    // 枚举结果可以为空，这里只遍历已有项，不访问不存在的首设备。
     std::ranges::for_each(ds, [](const ice::ALAudioDeviceInfo& device) {
         fmt::print("al devicename:{}\n", device.name);
     });
 
+    // SDL 子系统初始化必须先于设备枚举与 player.open。
     ice::SDLPlayer::init_backend();
 
     auto devices = ice::SDLPlayer::list_devices();
@@ -81,89 +98,91 @@ void test()
         fmt::print("deviceid:{},devicename:{}\n", device.id, device.name);
     });
 
-    // auto selected_device = devices[0].id;
-
+    // 枚举列表仅展示，没有按索引选设备；后面的无参 open 使用后端默认设备。
     ice::SDLPlayer player;
 
+    // 图节点在启动供数前创建，共享所有权负责让上游轨道随音源节点存活。
     auto source = std::make_shared<ice::SourceNode>(track1);
     source->play();
+    // 第二音源虽进入播放状态，但下文未加入混音总线，不会因 play 就自动输出。
     auto source2 = std::make_shared<ice::SourceNode>(track2);
     source2->play();
 
     using namespace std::chrono_literals;
 
-    // source->set_playpos(1min + 100us);
-
+    // 循环音源不会依靠文件末尾结束供数，示例以主线程等待后显式 stop 收尾。
     source->setloop(true);
 
     auto stretcher = std::make_shared<ice::TimeStretcher>();
 
-    // 设置播放速度
+    // 请求原速仅设置参数；本入口没有显式调用 prepare 来建立变速节点预热状态。
     stretcher->set_playback_ratio(1.);
 
     stretcher->set_inputnode(source);
 
+    // 请求零半音偏移，保留音高节点作为图连接演示，不在此校验声学结果。
     auto pitchalter = std::make_shared<ice::PitchAlter>();
     pitchalter->set_pitch_shift(0.);
     pitchalter->set_inputnode(stretcher);
 
+    // 未接入图的 source2 循环标志不影响当前输出，仍会参与下文演示等待时长计算。
     source2->setloop(true);
 
     auto mixer = std::make_shared<ice::MixBus>();
 
+    // 当前总线只有一条已连接支路：source → stretcher → pitchalter。
     mixer->add_source(pitchalter);
 
+    // 固定十段中心频率用于示范控制接口，不按当前音频采样率重新生成频段。
     std::vector<double> freqs = { 31,   62,   125,  250,  500,
                                   1000, 2000, 4000, 8000, 16000 };
     auto                eq    = std::make_shared<ice::GraphicEqualizer>(freqs);
 
+    // 实际写入前三段的 Q 为 q/2，后面的演示日志只打印 q，二者并不相同。
     const double q = std::numbers::sqrt3;
 
     eq->set_band_q_factor(0, q / 2.0);
     eq->set_band_q_factor(1, q / 2.0);
     eq->set_band_q_factor(2, q / 2.0);
 
+    // 低频三段同时提升；没有配套削峰验证，不能把这些参数当作通用安全预设。
     eq->set_band_gain_db(0, 9);
     eq->set_band_gain_db(1, 9);
     eq->set_band_gain_db(2, 9);
 
-    // 启用均衡器
+    // 均衡器接在总线之后，其输出直接成为本次 player 的图根。
     eq->set_inputnode(mixer);
 
-    // mixer->add_source(source2);
-
-    // auto stretcher = std::make_shared<Stretcher>(source ,1.2 ,0.8);
-    // auto mixer = std::make_shared<Mixer>();
-    // mixer.add_source({stretcher ,source2 });
+    // 压缩器虽持有 eq 输入，但未被 player 或其他消费节点引用为输出根。
+    // 因此以下压缩参数在当前实际播放链路上不生效，不提供均衡提升后的峰值保护。
     auto compressor = std::make_shared<ice::Compressor>();
     compressor->set_inputnode(eq);
-    // 为处理人声设置典型的参数
-    // 设置一个相对较低的阈值，以便捕捉到大部分的演唱信号
+    // 负阈值示范 dB 参数接口，不根据输入电平估计最佳压缩阈值。
     compressor->set_threshold_db(-30.0f);
 
-    // 设置一个适中的压缩比，既能控制住大音量，又不会听起来太死板
-    // 4:1 的压缩比
+    // 压缩比与补偿增益独立配置，设置前者不会自动调整后者。
     compressor->set_ratio(4.f);
 
-    // 设置一个较快的启动时间，以便能迅速对爆破音('p', 'b')做出反应
+    // 启动时间固定 50ms，未进行瞬态测试，不能据此声称能抑制所有爆破峰值。
     compressor->set_attack_ms(50.0f);
 
-    // 设置一个与音乐节奏相关的释放时间(beat / 2)，让声音听起来自然
+    // 释放时间固定 150ms，没有读取 BPM，不是按当前音乐节拍计算的时值。
     compressor->set_release_ms(150.0f);
 
-    // 压缩了信号，整体音量变小，提回来
+    // 补偿值仅作接口示范；当前压缩器未连接，不能解释为实际输出已增加 6dB。
     compressor->set_makeup_gain_db(6.0f);
 
+    // 在设备开始供数前绑定图根，运行中替换图需要另外遵守播放器同步约束。
     player.set_source(eq);
 
-    // player.set_source(mixer);
-
+    // 这里没有检查 open 返回状态，示例的退出码无法报告设备打开失败。
     player.open();
-    // player.open(selected_device);
     player.start();
 
+    // 等待两轨时长最大值只是演示计时，不是设备排空或所有节点完成的同步信号。
     auto total_time = std::max(source->total_time(), source2->total_time());
 
+    // 单位输出按纳秒换算供人工阅读，不用于推进音频播放游标。
     fmt::print("total:\n");
     fmt::print("{}ns\n", total_time.count());
     fmt::print("{}us\n", total_time.count() / 1000.0);
@@ -171,16 +190,21 @@ void test()
     fmt::print("{}s\n", total_time.count() / 1000.0 / 1000.0 / 1000.0);
     fmt::print("{}min\n", total_time.count() / 1000.0 / 1000.0 / 1000.0 / 60.0);
 
-    // eq自动控制lambda
+    /// @brief 预留的低频均衡器扫参演示，当前未调用。
+    /// @warning 每轮阻塞 2.5 秒，不能放入音频回调或交互更新线程。
     auto eq_controll = [&]() {
         int count = 0;
         while ( count < 16 ) {
+            // 先等待再写入，第一轮把原先的 9dB 改为 0dB，不是平滑衔接原值。
             std::this_thread::sleep_for(std::chrono::milliseconds(2500ms));
 
+            // 三次 setter
+            // 分别提交，不保证音频侧把三个频段当成一份原子快照接收。
             eq->set_band_gain_db(0, count * 3);
             eq->set_band_gain_db(1, count * 3);
             eq->set_band_gain_db(2, count * 3);
 
+            // 日志显示请求值，不读取节点实际接收或钳制后的参数。
             fmt::print(
                 "[q={}]band [31hz,62hz,125hz] gain:{}db\n", q, count * 3);
 
@@ -188,10 +212,13 @@ void test()
         }
     };
 
-    // pitch自动控制lambda
+    /// @brief 预留的低频音高步进演示，当前未调用。
+    /// @warning 每轮阻塞 7.5
+    /// 秒，按引用使用图节点，执行期间必须保证节点与捕获变量存活。
     auto pitch_controll = [&]() {
         int count = 0;
         while ( count < 16 ) {
+            // 步进而非连续插值，不用于验证无爆音的实时音高自动化。
             std::this_thread::sleep_for(std::chrono::milliseconds(7500ms));
             pitchalter->set_pitch_shift(count * 1.5);
             fmt::print("pitch alt:{}semitones\n", count * 1.5);
@@ -199,27 +226,39 @@ void test()
         }
     };
 
+    /// @brief 延迟读取一次变速诊断值的示例线程，不参与音频供数。
+    /// @warning detach
+    /// 不延长按引用捕获对象的生命周期，当前没有完成确认或退出回收。
     std::thread get_actual_play_ratio([&]() {
-        // eq_controll();
-        // pitch_controll();
+        // 两个扫参 lambda 都未调用；当前线程只睡眠一次后读取诊断值。
+        // 500ms 不是预热或首块处理完成的保证，读数可能仍是初始化阶段的值。
         std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
         fmt::print("actual playback ratio:{}\n",
                    stretcher->get_actual_playback_ratio());
     });
     get_actual_play_ratio.detach();
 
+    // 主线程不监听停止事件，此阻塞不可用于产品内需要即时取消的播放控制流程。
     std::this_thread::sleep_for(total_time);
-    // player.join();
 
+    // 先结束供数再关闭设备，最后退出 SDL 子系统，避免后台继续访问已释放设备。
     player.stop();
     player.close();
     ice::SDLPlayer::quit_backend();
 }
 
+/// @brief 运行手工播放演示并输出分配计数。
+/// @param argc 当前不使用，不据命令行参数数量选择测试资源。
+/// @param argv 当前不解析，输入路径固定在 test 内。
+/// @return 固定返回 0；不表示音频加载、设备输出或实时安全测试通过。
+/// @warning 入口包含长时间等待和实体设备访问，不应作为无设备 CI 的回归用例。
 int main(int argc, char* argv[])
 {
+    // 统计范围覆盖示例调用；分离线程可能跨越返回边界，不能据此保证所有活动均已收尾。
     ice::reset_allocation_counters();
     test();
+    // 输出计数没有实时路径专属断言，也没有按阈值决定进程退出状态。
     ice::print_allocation_stats();
+    // 加载失败同样走到此处；自动化验证应使用独立 CTest 而非本示例退出码。
     return 0;
 }

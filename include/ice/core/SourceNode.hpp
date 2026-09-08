@@ -43,10 +43,14 @@ public:
     /// @warning 销毁前必须停止调用 process 的音频线程。
     ~SourceNode() override;
 
-    SourceNode(const SourceNode&)            = delete;
+    /// @brief 禁止复制节点，避免复制播放游标与单读取者保护协议。
+    SourceNode(const SourceNode&) = delete;
+    /// @brief 禁止复制赋值，不提供播放状态替换语义。
     SourceNode& operator=(const SourceNode&) = delete;
-    SourceNode(SourceNode&&)                 = delete;
-    SourceNode& operator=(SourceNode&&)      = delete;
+    /// @brief 禁止移动节点，保持注册回调期间的对象地址稳定。
+    SourceNode(SourceNode&&) = delete;
+    /// @brief 禁止移动赋值，不转移在途回调与 hazard 状态。
+    SourceNode& operator=(SourceNode&&) = delete;
 
     /// @brief 从当前播放位置读取请求帧并填充缓冲区。
     /// @param buffer 调用方预分配且格式为 ICEConfig::internal_format 的缓冲区。
@@ -62,6 +66,8 @@ public:
     }
 
     /// @brief 暂停音源。
+    /// @warning 控制侧或音频 EOF 分支 release
+    /// 写入；只影响随后读取标志的处理，不等待在途 process 退出。
     void pause() { m_isPlaying.store(false, std::memory_order_release); }
 
     /// @brief 开始或继续播放音源。
@@ -73,6 +79,7 @@ public:
 
     /// @brief 设置线性音量。
     /// @param value 新的线性音量。
+    /// @pre 使用有限增益；不裁剪范围或平滑切换，负值会反相。
     void setvolume(float value)
     {
         m_volume.store(value, std::memory_order_relaxed);
@@ -98,6 +105,8 @@ public:
 
     /// @brief 设置音轨内播放帧位置。
     /// @param framePosition 新的源帧。
+    /// @warning 与音频侧游标写入并发时可能被覆盖；两次 relaxed
+    /// 存储不组成定位/通知标志事务。
     void set_playpos(std::size_t framePosition)
     {
         m_playbackPosition.store(framePosition, std::memory_order_relaxed);
@@ -106,6 +115,7 @@ public:
 
     /// @brief 添加播放进度回调。
     /// @param callback 回调对象。
+    /// @pre callback 必须非空，处理时直接解引用；回调实现不得修改此集合。
     /// @warning 只能在 process 停止时修改回调集合。
     void add_playcallback(const std::shared_ptr<PlayCallBack>& callback)
     {
@@ -138,6 +148,8 @@ public:
     /// @tparam Rep duration 数值类型。
     /// @tparam Period duration 时间比例。
     /// @param timePosition 从音轨起始点计算的时间。
+    /// @pre 时间换算后的帧数必须有限、非负且可表示为
+    /// size_t；截断到总长度发生在类型转换之后。
     template<typename Rep, typename Period>
     void set_playpos(const std::chrono::duration<Rep, Period>& timePosition)
     {
@@ -150,11 +162,15 @@ public:
             std::chrono::duration_cast<DoubleSeconds>(timePosition).count();
         const auto requestedFrame =
             static_cast<std::size_t>(seconds * sampleRate);
+        // 上界裁剪不修复浮点到无符号整数转换之前的负值或越界。
         set_playpos(std::min(requestedFrame, m_totalFrames));
     }
 
     /// @brief 设置相对于参考时钟的预定开始帧。
     /// @param frame 参考时间线上的目标帧；零表示取消预定。
+    /// @warning
+    /// 两种调度状态分别存储，不提供并发切换的事务保证；应在暂停且无在途处理时设置再
+    /// play。
     void set_scheduled_start_frame(std::size_t frame)
     {
         m_scheduledStartDelayFrames.store(0U, std::memory_order_relaxed);
@@ -173,6 +189,8 @@ public:
     ///
     /// 此模式不依赖外部参考时钟，适用于节点位于全局变速器之后的路由。
     /// 设置后会清除绝对参考帧调度。
+    /// @warning
+    /// 不会自动启动播放；暂停时延迟不递减，切换设置须避免与在途处理竞争。
     void set_scheduled_start_delay_frames(std::size_t frames)
     {
         m_scheduledStartFrame.store(0U, std::memory_order_relaxed);
@@ -238,6 +256,7 @@ public:
 
     /// @brief 获取音轨原始格式。
     /// @return 音轨媒体格式。
+    /// @pre 构造时音轨非空；返回借用引用，不保证与当前内部输出格式相同。
     const AudioDataFormat& format() const
     {
         return m_track->get_media_info().format;
@@ -289,7 +308,8 @@ private:
     void releaseReferenceProvider() noexcept;
 
     /// @brief 对当前播放周期发送一次输入结束通知。
-    /// @warning 音频回调热路径：仅访问 lock-free 原子并调用稳定函数指针。
+    /// @warning 音频回调热路径：以 acq_rel 交换通知标志，控制侧定位时 relaxed
+    /// 复位；不得增加等待或回调对象复制。
     void notifyFinalInput() noexcept;
 
     /// @brief 将已读取到缓冲区起点的 PCM 原地移动到 block 内起播位置。
@@ -325,7 +345,8 @@ private:
     std::set<std::shared_ptr<PlayCallBack>> m_callbacks;
 
     /// @brief 下一次读取的音轨源帧。
-    /// @warning 控制线程和音频线程均可写；relaxed 提供无锁定位语义。
+    /// @warning 控制线程和音频线程均可写；relaxed
+    /// 仅保证单值原子访问，不保证定位请求不被回调覆盖。
     std::atomic<std::size_t> m_playbackPosition{ 0U };
 
     /// @brief 线性音量。

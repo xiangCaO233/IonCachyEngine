@@ -20,45 +20,52 @@
 
 namespace ice
 {
+/// @brief 音频池解码器选择；COREAUDIO 当前仅为保留枚举，未建立工厂。
 enum class CodecBackend {
     FFMPEG,
     COREAUDIO,
 };
-// 透明的哈希结构体。
-// 能对 std::string, const char*, std::string_view进行哈希，
-// 无需创建 std::string 对象
+/// @brief 为拥有型路径键和借用型查询提供一致的透明哈希。
 struct StringHash {
-    // 这个标签用于开启透明性
+    /// @brief 允许 unordered_map 查找借用字符串，避免为查缓存构造路径键。
     using is_transparent = void;
+    /// @brief 对零结尾字符串按内容计算哈希，调用方保证非空有效指针。
     [[nodiscard]] size_t operator()(const char* txt) const
     {
         return std::hash<std::string_view>{}(txt);
     }
+    /// @brief 对限定长度的借用字符串计算哈希，不要求零结尾。
     [[nodiscard]] size_t operator()(std::string_view txt) const
     {
         return std::hash<std::string_view>{}(txt);
     }
+    /// @brief 为存储键提供与等值 string_view 一致的哈希结果。
     [[nodiscard]] size_t operator()(const std::string& txt) const
     {
         return std::hash<std::string>{}(txt);
     }
 };
 
+/// @brief 按路径及文件状态缓存共享音轨，加载和资源回收均属于非实时工作。
+/// 相对路径、大小写或符号链接不会归一化，调用方须统一路径表示以共享缓存。
 class AudioPool
 {
 public:
-    // 构造AudioPool
+    /// @brief 选择解码工厂，当前仅 FFMPEG 建立可用实现。
     explicit AudioPool(
         CodecBackend codec_backend = ICEConfig::default_codec_backend);
-    // 析构AudioPool
+    /// @brief 释放缓存持有的音轨引用；外部强引用可继续保活已取出的音轨。
     virtual ~AudioPool() = default;
 
     /// @brief 从缓存中移除指定音频文件。
     /// @param file UTF-8 音频文件路径。
+    /// @warning 低频控制侧独占锁操作，可能析构完整音轨，不可在音频回调调用。
     void invalidate(std::string_view file)
     {
+        // 不读取文件签名，显式失效适用于同大小、同时间戳覆盖后强制重载。
         std::unique_lock<std::shared_mutex> lock(pool_mutex);
         if ( auto it = pool.find(file); it != pool.end() ) {
+            // 删除缓存所有权而不强制撤销外部引用，已在播放的音轨可继续存活。
             pool.erase(it);
         }
     }
@@ -72,12 +79,19 @@ public:
         std::unique_lock<std::shared_mutex> lock(pool_mutex);
         const std::size_t                   previous_size = pool.size();
         std::erase_if(pool, [](const auto& entry) {
+            // 唯一强引用意味着只有缓存保活；外部 weak_ptr 随回收自然过期。
             return !entry.second.track || entry.second.track.use_count() == 1;
         });
         return previous_size - pool.size();
     }
 
-    // 载入文件到音频池
+    /// @brief 返回匹配文件状态的音轨，缓存未命中时在写锁下创建音轨。
+    /// @param thread_pool 音轨解码任务使用的线程池，生命周期须覆盖后台任务。
+    /// @param file UTF-8 路径借用值，插入缓存时复制为拥有型键。
+    /// @param strategy 仅用于新音轨，命中缓存时不更换已有缓存策略。
+    /// @return 音轨弱引用，不保证后台解码完成，也不替调用方持有播放期所有权。
+    /// @warning 每次调用均查询文件系统，未命中可分配、等待锁或创建解码任务。
+    /// 必须从低频资源加载流程调用，不能用于每帧查表或音频回调取样。
     template<std::convertible_to<std::string_view> StringLike>
     [[nodiscard]] std::weak_ptr<AudioTrack>
     get_or_load(ThreadPool& thread_pool, const StringLike& file,
@@ -85,6 +99,7 @@ public:
     {
         std::string_view sv_name(file);
         const auto       currentSignature = read_file_signature(sv_name);
+        // 签名读取在缓存锁外，减少持锁 IO；文件并发写入时不构成内容快照。
         // 使用共享锁,允许多个线程同时读取
         {
             std::shared_lock<std::shared_mutex> lock(pool_mutex);
@@ -95,11 +110,9 @@ public:
                 return it->second.track;
             }
         }
-        // 资源可能不存在,或者已过期
-        // 释放读锁
+        // 从读锁升级为写锁之前存在竞争窗口，下面必须再次检查缓存。
 
-        // 写锁保护
-        // 使用排他锁,只允许一个线程进入写入流程
+        // 同路径并发未命中只创建一次资源；创建期间也会阻塞其他路径的写入。
         std::unique_lock<std::shared_mutex> lock(pool_mutex);
 
         // 再次检查
@@ -114,12 +127,11 @@ public:
             // 文件已变化或资源无效,移除旧缓存
             pool.erase(it);
         }
-        // 需要加载
-        // 独占写锁,创建资源
+        // 建立音轨不等于全量 PCM 已就绪，缓存可持有仍在后台解码的对象。
         auto new_data =
             AudioTrack::create(sv_name, thread_pool, decoder_factory, strategy);
 
-        // C++20 map::emplace的键类型必须是key_type,所以需要构造string
+        // 缓存键必须拥有路径文本，不能把调用方临时 string_view 存入 map。
         pool.emplace(std::string(sv_name),
                      CachedTrack{ new_data, currentSignature });
 
@@ -140,9 +152,10 @@ private:
 
         /// @brief 比较两个文件状态签名。
         /// @param rhs 右侧签名。
-        /// @return 内容一致时返回 true。
+        /// @return 状态字段一致时返回 true，不保证文件内容字节完全相同。
         bool operator==(const FileSignature& rhs) const
         {
+            // 大小和时间不变的覆盖写无法被发现；两个无效签名也会比较相等。
             return valid == rhs.valid && size == rhs.size &&
                    write_time == rhs.write_time;
         }
@@ -163,6 +176,7 @@ private:
     static std::filesystem::path make_filesystem_path(std::string_view file)
     {
 #ifdef __cpp_char8_t
+        // 显式指定 UTF-8 编码，不让 Windows 窄字符路径按本地代码页解释。
         const auto* data = reinterpret_cast<const char8_t*>(file.data());
         return std::filesystem::path(std::u8string(data, data + file.size()));
 #else
@@ -179,6 +193,7 @@ private:
         const auto      path = make_filesystem_path(file);
         if ( !std::filesystem::is_regular_file(path, filesystemError) ||
              filesystemError ) {
+            // 缺失、目录或权限错误均返回无效签名，不缓存半次状态读取结果。
             return {};
         }
 
@@ -193,14 +208,15 @@ private:
             return {};
         }
         signature.valid = true;
+        // 三次文件系统查询并非原子操作，加载后文件仍可能变化，下次访问再复查。
         return signature;
     }
 
-    // 读写锁--可同时读,写时不可读不可写
+    /// @brief 保护缓存条目及所有权更新；读操作可并发，加载和回收独占。
     mutable std::shared_mutex pool_mutex;
-    // 解码器工厂实现
+    /// @brief 共享解码工厂，创建音轨时传递给其后台加载流程。
     std::shared_ptr<IDecoderFactory> decoder_factory;
-    // 音频轨道池
+    /// @brief 拥有路径键与音轨强引用，文件状态仅用作低成本失效判断。
     std::unordered_map<std::string, CachedTrack, StringHash, std::equal_to<>>
         pool;
 };

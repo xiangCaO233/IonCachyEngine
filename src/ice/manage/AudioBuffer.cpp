@@ -50,7 +50,7 @@ AudioBuffer& AudioBuffer::operator=(AudioBuffer&& other) noexcept
 void AudioBuffer::resize(const AudioDataFormat& format, size_t num_frames)
 {
     afmt = format;
-    // 为每个声道调整大小，这会导致多次独立的内存分配
+    // 任一声道或地址表扩容失败时，不提供整体状态回滚。
     // 声道数减小时销毁多余声道，增大时建立新的独立数组。
     _data.resize(afmt.channels);
     for ( auto& channel_data : _data ) {
@@ -61,7 +61,7 @@ void AudioBuffer::resize(const AudioDataFormat& format, size_t num_frames)
     m_activeFrames  = num_frames;
     m_frameCapacity = num_frames;
     // 任一声道 resize 都可能搬迁存储，必须在全部调整后重建指针。
-    // 更新指针数组
+    // 更新全部成功后才可重新发布缓冲，不能与借用旧指针的消费者并发。
     sync_pointers();
 }
 /// @brief 将各声道 vector 的地址同步到平面 PCM 指针表。

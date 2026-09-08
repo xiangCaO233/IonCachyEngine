@@ -18,6 +18,7 @@ namespace ice
     // 元信息来自探测阶段；PCM 实际帧数应另行向解码器查询。
     // 此处不缓存 probe 失败原因，失败只由空句柄向上传递。
     MediaInfo info;
+    // 工厂非空由调用方保证；空工厂不会通过此处的 probe 失败分支返回。
     if ( !decoder_factory->probe(path, info) ) {
         return nullptr;
     }
@@ -36,7 +37,8 @@ AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
 {
 
     // 目标格式在此从全局配置取快照；播放期间修改配置不会重采样已有缓存。
-    // 这里只处理已定义枚举值，调用方不可传入越界转换得到的策略。
+    // 这里只处理已定义枚举值；非法枚举会留下空
+    // decoder，后续访问没有空指针保护。
     // 音轨不维护播放游标，切换播放位置不会重新构造此策略。
     // 策略对象独占持有，而不同播放节点共享整个音轨的生命周期。
     switch ( strategy ) {
@@ -47,7 +49,8 @@ AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
                                        ice::ICEConfig::internal_format,
                                        thread_pool,
                                        decoder_factory);
-        // 解码失败会在策略首次消费结果时折叠为空缓存。
+        // 解码任务的 std::exception
+        // 会在首次消费时折叠为空缓存，不代表所有失败都被捕获。
         // 因此探测成功与可读取音频是两个独立的就绪条件。
         break;
     }

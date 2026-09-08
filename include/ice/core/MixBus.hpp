@@ -23,6 +23,8 @@ enum class MixBusChannelMode : uint8_t {
 };
 
 /// @brief 混音总线，通过不可变来源快照汇总多个音频节点。
+/// @pre 输入图必须无环；同一来源不得被其他线程同时
+/// process，快照只保活节点，不串行化节点内部状态。
 class MixBus : public IAudioNode
 {
 public:
@@ -48,10 +50,12 @@ public:
 
     /// @brief 按插入顺序添加输入音频节点。
     /// @param src 输入音频节点；空节点会被忽略。
+    /// @warning 控制路径会加锁、分配快照及复制所有权，不得从音频回调调用。
     void add_source(std::shared_ptr<IAudioNode> src);
 
     /// @brief 移除输入音频节点。
     /// @param src 输入音频节点。
+    /// @warning 控制路径会加锁并可能析构旧快照；返回不代表在途读取已经结束。
     void remove_source(const std::shared_ptr<IAudioNode>& src);
 
     /// @brief 在不改变来源索引的前提下原子替换一个输入节点。
@@ -64,6 +68,7 @@ public:
                         std::shared_ptr<IAudioNode>        replacement);
 
     /// @brief 清空全部输入音频节点。
+    /// @warning 控制路径可能分配和回收，不能替代停止音频回调的同步步骤。
     void clear();
 
     /// @brief 在控制线程回收已越过音频读取临界区的来源快照。
@@ -103,6 +108,8 @@ public:
 
     /// @brief 获取当前双声道输出模式。
     /// @return 当前输出模式。
+    /// @warning 每块后处理读取控制侧发布的独立枚举，使用
+    /// relaxed；不得附加锁或资源查询。
     MixBusChannelMode get_channel_mode() const
     {
         return static_cast<MixBusChannelMode>(
@@ -113,6 +120,7 @@ public:
     /// @param mute 是否静音左声道。
     void set_mute_left(bool mute)
     {
+        // 左右静音是互斥模式，不是两个独立开关；取消左静音不撤销其他模式。
         if ( mute ) {
             set_channel_mode(MixBusChannelMode::MuteLeft);
         } else if ( get_channel_mode() == MixBusChannelMode::MuteLeft ) {
@@ -124,6 +132,7 @@ public:
     /// @param mute 是否静音右声道。
     void set_mute_right(bool mute)
     {
+        // 读后写不是原子事务，多控制者并发修改可能覆盖另一方的模式更新。
         if ( mute ) {
             set_channel_mode(MixBusChannelMode::MuteRight);
         } else if ( get_channel_mode() == MixBusChannelMode::MuteRight ) {

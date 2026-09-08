@@ -1,16 +1,13 @@
-# cmake/configure-project.cmake
-
-# 添加avx指令集编译选项
+# 引擎目录级指令集配置，在创建库、示例及子目录目标之前执行。 Apple 分支不附加指令集参数，MSVC 分支当前也未启用额外选项。 其他编译器无条件添加
+# AVX2，不按目标架构探测，也不生成运行时分派版本。 部署端必须支持该指令集；此配置不能据编译成功推导旧 CPU 可运行。
 if(APPLE)
 
 else()
   if(MSVC)
-    # add_compile_options("/arch:AVX2")
+    # 保留空分支，不把非 MSVC 参数传给此工具链。
   else()
     add_compile_options("-mavx2")
   endif()
 endif()
 
-# 运行时内存检查 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address")
-# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+# 本入口未启用内存消毒器；普通构建通过不包含消毒器运行验证。

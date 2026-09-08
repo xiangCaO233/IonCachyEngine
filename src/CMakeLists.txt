@@ -4,8 +4,7 @@
 # 一并编进库。 CONFIGURE_DEPENDS 让新增实现文件触发重配置，避免手动刷新源列表。
 file(GLOB_RECURSE ICE_SOURCES CONFIGURE_DEPENDS "ice/*.cpp")
 
-# 依赖链接偏好为 shared 时，IonCachyEngine 本体也生成 DLL，避免主程序吸收音频引擎目标代码。
-# 保留已有静态库目标名，避免破坏按目标名构建引擎的脚本。
+# 依赖链接偏好为 shared 时，引擎本体生成平台共享库，Windows 上对应 DLL。 保留已有静态库目标名，避免破坏按目标名构建引擎的脚本。
 set(ICE_LIBRARY_TARGET IonCachyEngine-static)
 set(ICE_LIBRARY_TYPE STATIC)
 if(ICE_LINKAGE STREQUAL "shared")
@@ -27,7 +26,8 @@ if(ICE_LINKAGE STREQUAL "shared" AND WIN32)
     PUBLIC ICE_SHARED_LIBRARY)
 endif()
 
-# 构建树使用源码 include；安装后改用安装前缀内的相对 include 目录。
+# 构建树使用源码 include；安装后改用安装前缀内的相对 include 目录。 INSTALL_INTERFACE
+# 仅预留消费路径，本文件没有安装头文件或导出目标的规则。
 target_include_directories(
   ${ICE_LIBRARY_TARGET} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
                                $<INSTALL_INTERFACE:include>)
@@ -51,19 +51,19 @@ if(ICE_BUILD_TESTS)
     TimeStretcherRealtimeTest
     "${CMAKE_CURRENT_SOURCE_DIR}/../tests/TimeStretcherRealtimeTest.cpp")
   target_link_libraries(TimeStretcherRealtimeTest PRIVATE ${ICE_LIBRARY_TARGET})
-  # 链接器包装是受平台约束的补充分配观测，非 GNU/Clang 平台不添加这些选项。
+  # C 堆包装仅在非 Apple 的 UNIX GNU/Clang 配置启用，Windows Clang64 不在其中。
   if(UNIX
      AND NOT APPLE
      AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    # GNU ld 的 wrap 机制覆盖静态 RubberBand 内部调用的 C 堆函数。 实时安全测试因此可同时检测 operator new 与
-    # C 堆分配。 编译宏与 wrap 选项必须同时启用，否则测试入口与被包装符号不匹配。
+    # wrap 只观测最终链接时可重定向的 C 堆符号，不能据此覆盖共享库内部所有分配。
+    # 编译宏与链接选项配套，避免测试入口与包装符号不一致；工具链须支持此链接选项。
     target_compile_definitions(TimeStretcherRealtimeTest
                                PRIVATE ICE_TEST_WRAP_MALLOC=1)
     target_link_options(
       TimeStretcherRealtimeTest PRIVATE "-Wl,--wrap=malloc" "-Wl,--wrap=calloc"
       "-Wl,--wrap=realloc" "-Wl,--wrap=free")
   endif()
-  # CTest 只登记可确定结束的自动化用例，示例播放器不参与无人值守测试。
+  # 只登记自动化用例，示例播放器不参与无人值守测试；此处没有设置 CTest 超时。
   add_test(NAME IonTimeStretcherRealtimeTest COMMAND TimeStretcherRealtimeTest)
   # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。 源码依赖模式不一定定义运行时复制函数，因此先检查
   # helper 是否存在。

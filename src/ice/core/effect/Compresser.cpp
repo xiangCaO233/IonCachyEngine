@@ -7,16 +7,18 @@ namespace ice
 /// @brief 逐声道跟随包络并施加阈值以上的动态衰减。
 /// @warning 每音频块调用；当前系数更新可能扩容包络，尚非完整实时安全实现。
 /// 控制 setter 同时修改非原子脏标记，必须在处理停止时调整参数。
+/// @warning 处理读取控制侧原子参数，当前默认顺序一致；补偿值甚至逐样本读取。
+/// 本路径仍有可替代的历史原子及扩容，注释不构成实时约束已满足的证明。
 void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
-    // 确保输入和输出缓冲区是兼容的
+    // 仅检查帧数与声道数，不校验两块缓冲采样率；正常基类调用应已保证格式一致。
     if ( output.num_frames() != input.num_frames() ||
          output.num_channels() != input.num_channels() ) {
-        // 直接返回
+        // 不兼容时保留输出原内容，不主动静音，调用方不可将正常返回视为有效输出。
         return;
     }
 
-    // 将输入拷贝到输出
+    // 后续原位修改输出，输入保持只读；这里依赖两块样本存储不重叠。
     for ( uint16_t ch = 0; ch < input.num_channels(); ++ch ) {
         std::memcpy(output.raw_ptrs()[ch],
                     input.raw_ptrs()[ch],
@@ -31,17 +33,17 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
     if ( needs_update || fmt.samplerate != sample_rate ) {
         sample_rate = fmt.samplerate;
 
-        // 根据毫秒计算平滑系数
-        // 公式: coeff = exp(-1.0 / (time_ms * sample_rate * 0.001))
+        // 将毫秒时间常数换成单样本指数衰减；时间为正且采样率有效才能得到稳定系数。
         attack_coeff =
             std::exp(-1.0 / (attack_ms.load() * sample_rate * 0.001));
         release_coeff =
             std::exp(-1.0 / (release_ms.load() * sample_rate * 0.001));
 
-        // 将补充增益从dB转换为线性倍率
+        // 此缓存目前未用于逐样本乘法；实际增益仍在下方重新读取并转换。
         makeup_gain_linear = std::pow(10.0, makeup_gain_db.load() / 20.0);
 
-        // 调整包络状态数组的大小以匹配声道数
+        // resize 保留已有元素，新声道从零 dB 开始，并非每次更新都重置所有包络。
+        // 此条件不包含声道变化，单独改变声道数而不置脏可能使状态数组尺寸不匹配。
         envelope_db.resize(num_channels, 0.0);
 
         needs_update = false;
@@ -63,9 +65,8 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
             // 使用绝对值来检测电平，并加上一个极小值防止log(0)
             double sample_db = 20.0 * std::log10(std::fabs(in_sample) + 1e-9);
 
-            // 包络跟随:平滑地更新“感知到的音量” (envelope_db_)
-            // 如果新来的样本更响，就用更快的 attack_coeff_ 去逼近它
-            // 如果新来的样本更轻，就用更慢的 release_coeff_ 去回落
+            // 在 dB 域平滑，不是先平滑线性振幅再换算电平。
+            // 上升与下降按电平比较选择系数；调用方配置决定哪个时间常数更快。
             if ( sample_db > envelope_db[ch] ) {
                 envelope_db[ch] =
                     sample_db + attack_coeff * (envelope_db[ch] - sample_db);
@@ -77,8 +78,7 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
             // 增益计算:根据当前感知到的音量，计算需要施加多大的衰减
             double gain_reduction_db = 0.0;
             if ( envelope_db[ch] > thresh_db ) {
-                // 音量超过了阈值
-                // 计算超出的部分
+                // 仅处理超阈值部分，低于阈值时仍会应用独立补偿增益。
                 double overshoot_db = envelope_db[ch] - thresh_db;
                 // 根据压缩比，计算需要压掉多少dB
                 // 例如 4:1 只保留超阈值部分的四分之一，而非缩小整个输入。
@@ -91,7 +91,7 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
             // 将总增益从dB转换为线性倍率
             double total_gain_linear = std::pow(10.0, total_gain_db / 20.0);
 
-            // 应用最终的增益
+            // 不对最终样本限幅，正补偿或低于一的比率都可能让输出超过单位幅度。
             channel_data[i] = in_sample * static_cast<float>(total_gain_linear);
         }
     }

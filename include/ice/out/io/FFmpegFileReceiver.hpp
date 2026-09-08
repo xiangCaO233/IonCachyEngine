@@ -22,6 +22,8 @@ namespace ice
 {
 
 /// @brief 使用 FFmpeg 编码器写入音频文件的离线接收端。
+/// @details start 同步执行；除 stop 与运行标志查询外，对象配置、诊断和资源访问
+/// 需要由调用者串行安排。错误或取消可能留下不完整文件，不提供事务式替换。
 class FFmpegFileReceiver : public IReceiver
 {
 public:
@@ -33,46 +35,64 @@ public:
         const AudioDataFormat& format = ICEConfig::internal_format);
 
     /// @brief 析构并释放 FFmpeg 资源。
+    /// @warning 可能编码排尾并执行文件 IO；必须等待 start
+    /// 返回后再销毁，不提供线程 join。
     ~FFmpegFileReceiver() override;
 
-    /// @brief 设置目标写入帧数。
-    /// @param frame_count 需要从 source 拉取并编码的总帧数。
+    /// @brief 设置输入音频图的帧预算，不是编码器输出样本数。
+    /// @param frame_count 按输入采样率计数的总帧数；零值会被 start 拒绝。
+    /// @warning 配置路径：不能与 start 并发修改普通成员。
     void set_target_frames(std::size_t frame_count);
 
     /// @brief 设置每次拉取和编码的块大小。
-    /// @param frame_count 块帧数。
+    /// @param frame_count 输入块帧数；零值忽略，非零值会调整缓冲。
+    /// @warning 配置路径：可能重新分配内存，不能与编码或图拉取并发。
     void set_block_frames(std::size_t frame_count);
 
-    /// @brief 设置写入进度回调。
-    /// @param callback 参数为已写入帧数。
+    /// @brief 设置在 start 调用线程同步执行的输入进度回调。
+    /// @param callback 参数为已送入编码链路的输入帧数，不保证已经写入文件。
+    /// @warning 不允许并发替换；回调不得重入 close 或销毁正在执行 start
+    /// 的对象。
     void set_progress_callback(std::function<void(std::size_t)> callback);
 
-    /// @brief 获取已成功写入的帧数。
-    /// @return 已写入帧数。
+    /// @brief 获取已送入编码链路的累计输入帧数。
+    /// @return 输入采样率下的帧计数，不是重采样输出数量或磁盘持久化进度。
+    /// @warning 普通成员查询不提供跨线程同步；编码期间宜通过回调转发进度。
     [[nodiscard]] std::size_t frames_written() const;
 
     /// @brief 获取最近一次失败原因。
-    /// @return 错误文本。
+    /// @return 内部错误字符串的借用引用，后续操作可能覆盖内容。
+    /// @warning 不能与错误更新、open 或对象销毁并发读取。
     [[nodiscard]] const std::string& error_message() const;
 
     /// @brief 打开输出文件和 FFmpeg 编码器。
     /// @return 成功时返回 true。
+    /// @warning 离线文件操作：可能创建或截断已有文件，失败不会恢复原文件内容。
     bool open() override;
 
-    /// @brief 写入 trailer 并关闭输出文件。
+    /// @brief 尝试正常排尾并释放输出链路；已有错误时跳过补尾。
+    /// @warning 离线耗时路径：可能编码与写文件，不能与 start
+    /// 并发；不删除部分输出。
     void close() override;
 
     /// @brief 同步拉取 source 并写完整个目标文件。
-    /// @return 成功时返回 true。
+    /// @return 输入预算及收尾成功时返回 true，取消同样返回
+    /// false；进入编码循环后会在返回前关闭资源，前置检查失败则直接返回。
     /// @warning 离线耗时路径：会持续拉取音频图并编码文件，不能在音频实时线程或
     /// UI 热路径中调用。
+    /// @warning 原子运行标志不是互斥获取，不支持多个线程并发 start。
     bool start() override;
 
     /// @brief 请求停止离线编码。
+    /// @warning 跨线程协作取消：只发布标志，不等待退出，也不能中断当前编码、IO
+    /// 或回调。
+    /// @details 新 open 会清除旧停止标记；正常排尾阶段不持续检查停止请求。
     void stop() override;
 
     /// @brief 查询接收端是否正在离线编码。
-    /// @return 正在编码时返回 true。
+    /// @return 最近发布的原子状态；false 不保证 close 已完成或资源可并发销毁。
+    /// @warning 跨线程查询仅用于状态展示，安全回收仍须等待执行 start
+    /// 的线程完成。
     [[nodiscard]] bool is_running() const override;
 
 private:
@@ -84,34 +104,40 @@ private:
     /// @return 成功时返回 true。
     bool open_resampler();
 
-    /// @brief 写入一块音频。
+    /// @brief 转换输入块并入 FIFO，提交已满足编码帧长的样本。
     /// @param buffer 引擎平面浮点缓冲。
     /// @param frame_count 有效帧数。
-    /// @return 成功时返回 true。
+    /// @return 转换和入队成功时返回 true，不保证已经产生编码包。
     bool write_buffer(const AudioBuffer& buffer, std::size_t frame_count);
 
     /// @brief 将转换后的音频样本写入 FIFO。
     /// @param converted_data 转换后的声道数据。
     /// @param frame_count 转换后的帧数。
-    /// @return 成功时返回 true。
+    /// @return 完整入队或空输入时返回 true；缺 FIFO 当前也按无操作处理。
+    /// @details 复制样本但不接管输入数组所有权，帧数按输出采样率计算。
     bool write_converted_to_fifo(uint8_t** converted_data, int frame_count);
 
     /// @brief 将 FIFO 中足够编码的样本送入编码器。
     /// @param flush 是否正在结束编码，允许写出不足一整帧的尾部。
+    /// @details 短尾不在此补零；发送失败不回滚已取出的 FIFO 数据和 PTS。
     /// @return 成功时返回 true。
     bool encode_fifo(bool flush);
 
-    /// @brief 刷新重采样器和编码器。
+    /// @brief 依次排出转换延迟、FIFO 尾部和编码器包，再写容器 trailer。
+    /// @warning 离线收尾不检查停止标记，失败不能无条件重试或回滚输出。
     /// @return 成功时返回 true。
     bool finish_encoding();
 
     /// @brief 发送一帧给编码器。
     /// @param frame FFmpeg 音频帧；nullptr 表示刷新编码器。
+    /// @details 发送成功后立即取包；send 返回 EAGAIN
+    /// 也按失败处理，没有重试分支。
     /// @return 成功时返回 true。
     bool send_frame(AVFrame* frame);
 
     /// @brief 接收并写出编码包。
-    /// @return 成功时返回 true。
+    /// @return 当前无包可取或编码器 EOF 时返回 true，其他接收及写包错误返回
+    /// false。
     bool drain_packets();
 
     /// @brief 记录 FFmpeg 错误文本。
@@ -139,9 +165,13 @@ private:
     std::size_t m_blockFrames{ 65536 };
 
     /// @brief 已从音频图拉取并送入编码链路的帧数。
+    /// @details 在输入时钟下累计，close 后保留供查询，新 open
+    /// 时清零；不与写线程外同步。
     std::size_t m_framesWritten{ 0 };
 
     /// @brief 进度回调。
+    /// @details 在编码线程执行，不自动投递
+    /// UI；其捕获对象必须覆盖每次同步通知的生命周期。
     std::function<void(std::size_t)> m_progressCallback;
 
     /// @brief 最近一次错误文本。
@@ -149,19 +179,23 @@ private:
 
     /// @brief 离线编码运行标记。
     /// @warning 低频跨线程查询标记；仅由 start/close 写入，UI 或任务线程读取。
+    /// @details 原子避免状态读写的数据竞争，不保护普通成员；start 在 close
+    /// 前即可清除此值。
     std::atomic<bool> m_running{ false };
 
     /// @brief 离线编码停止请求。
-    /// @warning 低频跨线程停止标记；由 stop 写入，start 的离线循环读取。
+    /// @warning stop 跨线程写 true，open 清 false，start
+    /// 每离线块读取；用于协作取消而非阻塞同步。
     std::atomic<bool> m_stopRequested{ false };
 
     /// @brief FFmpeg 输出容器上下文。
+    /// @details 由接收端拥有，close 关闭所需 AVIO 并释放容器及其流对象。
     AVFormatContext* m_formatContext{ nullptr };
 
     /// @brief FFmpeg 音频编码器上下文。
     AVCodecContext* m_codecContext{ nullptr };
 
-    /// @brief FFmpeg 输出音频流。
+    /// @brief 容器拥有的音频流观察指针，容器释放后仅清空，不单独释放。
     AVStream* m_stream{ nullptr };
 
     /// @brief 复用的编码输出包。
@@ -173,13 +207,16 @@ private:
     /// @brief 缓存重采样后样本并按编码器帧长输出的 FIFO。
     AVAudioFifo* m_fifo{ nullptr };
 
-    /// @brief 下一个编码帧的 PTS。
+    /// @brief 下一个编码帧的 PTS，单位为实际编码采样率的一个样本周期。
+    /// @details 发送前即推进，不等同于成功写包的时长，也不用于输入进度回调。
     int64_t m_nextPts{ 0 };
 
     /// @brief 输出链路是否已打开。
     bool m_opened{ false };
 
     /// @brief trailer 是否已经写出。
+    /// @details
+    /// 只在写尾成功后置位，用于防止重复正常收尾，不表示文件已完成磁盘持久化。
     bool m_trailerWritten{ false };
 };
 
