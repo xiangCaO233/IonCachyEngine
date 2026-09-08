@@ -18,27 +18,32 @@ namespace ice
     // 元信息来自探测阶段；PCM 实际帧数应另行向解码器查询。
     // 此处不缓存 probe 失败原因，失败只由空句柄向上传递。
     MediaInfo info;
-    // 工厂非空由调用方保证；空工厂不会通过此处的 probe 失败分支返回。
-    if ( !decoder_factory->probe(path, info) ) {
+    // 在调用工厂前验证句柄与策略，避免将非法配置带入构造。
+    if ( !decoder_factory ||
+         (strategy != CachingStrategy::CACHY &&
+          strategy != CachingStrategy::STREAMING) ||
+         !decoder_factory->probe(path, info) ) {
         return nullptr;
     }
     // 音轨会跨播放节点共享；元信息在此复制并归音轨所有。
-    return std::shared_ptr<AudioTrack>(
-        new AudioTrack(path, thread_pool, decoder_factory, strategy, info));
+    auto track = std::make_shared<AudioTrack>(
+        CreationKey{}, path, thread_pool, decoder_factory, strategy, info);
+    // 后端创建失败时不发布不可读取的音轨。
+    return track->decoder ? std::move(track) : nullptr;
 };
 
 /// @brief 保存路径及元信息，并创建唯一拥有的解码策略。
 /// 缓存策略在构造时确定，后续全局默认值变更不替换既有解码器。
 /// @warning 构造可分配并提交后台任务，不能从音频回调触发。
-AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
+AudioTrack::AudioTrack(CreationKey, std::string_view path,
+                       ThreadPool&                      thread_pool,
                        std::shared_ptr<IDecoderFactory> decoder_factory,
                        CachingStrategy strategy, const MediaInfo& info)
-    : file_path(path), media_info(info)
+    : media_info(info), m_strategy(strategy), file_path(path)
 {
 
     // 目标格式在此从全局配置取快照；播放期间修改配置不会重采样已有缓存。
-    // 这里只处理已定义枚举值；非法枚举会留下空
-    // decoder，后续访问没有空指针保护。
+    // 工厂已经验证枚举值，后端创建失败通过空 decoder 向工厂传播。
     // 音轨不维护播放游标，切换播放位置不会重新构造此策略。
     // 策略对象独占持有，而不同播放节点共享整个音轨的生命周期。
     switch ( strategy ) {
@@ -55,8 +60,8 @@ AudioTrack::AudioTrack(std::string_view path, ThreadPool& thread_pool,
         break;
     }
     case CachingStrategy::STREAMING: {
-        // 当前流式策略是占位实现，创建成功不意味着支持流式播放。
-        // 保留策略分支，但消费方仍须以实际帧数判断有无数据。
+        // 流式创建同步准备首块，后续页由专用后台线程读取。
+        // 未就绪页输出静音，音频回调不等待文件访问。
         decoder = StreamingDecoder::create(path,
                                            ice::ICEConfig::internal_format,
                                            thread_pool,

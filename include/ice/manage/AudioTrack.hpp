@@ -19,7 +19,7 @@ class AudioBuffer;
 enum class CachingStrategy {
     /// @brief 后台解码整个文件，准备完成后读取不可变缓存。
     CACHY,
-    /// @brief 流式策略选择值，当前对应实现仍为不提供帧的占位对象。
+    /// @brief 后台按需预读固定数量的 PCM 页，缺页时输出静音。
     STREAMING
 };
 
@@ -27,12 +27,20 @@ class ThreadPool;
 /// @brief 共享媒体元信息与解码策略；播放游标由消费音轨的节点维护。
 class AudioTrack
 {
+    /// @brief 仅静态工厂能够提供的构造凭证，保留统一探测入口。
+    struct CreationKey {};
+
 public:
+    /// @brief 由工厂探测后构造，公开仅供 make_shared 转发内部凭证。
+    AudioTrack(CreationKey, std::string_view p, ThreadPool& thread_pool,
+               std::shared_ptr<IDecoderFactory> decoder_factory,
+               CachingStrategy strategy, const MediaInfo& info);
+
     /// @brief 探测媒体并按缓存策略创建音轨，探测失败返回空句柄。
     /// @param path 媒体路径，原样复制保存，不自动转为绝对路径。
     /// @param thread_pool 缓存策略提交任务所用线程池。
-    /// @param decoder_factory 非空工厂，探测与实际解码由同一工厂负责。
-    /// @param strategy 已定义的策略值；非法枚举没有回退分支。
+    /// @param decoder_factory 探测与实际解码由同一工厂负责，空工厂返回空句柄。
+    /// @param strategy 已定义的策略值；非法枚举返回空句柄。
     /// @return 探测成功后的音轨句柄，不保证已解码出可播放帧。
     /// @warning 文件探测及策略创建只允许在资源加载路径调用。
     [[nodiscard]] static std::shared_ptr<AudioTrack> create(
@@ -55,7 +63,13 @@ public:
 
     /// @brief 查询解码策略实际提供的帧数。
     /// @warning 完全缓存策略首次查询可能等待后台任务，须在播放前完成。
-    inline size_t num_frames() const { return decoder->num_frames(); }
+    inline size_t num_frames() const
+    {
+        return decoder ? decoder->num_frames() : 0;
+    }
+
+    /// @brief 返回创建时确定的解码策略，便于上层选择 PCM 视图或分块读取。
+    CachingStrategy cachingStrategy() const noexcept { return m_strategy; }
 
     /// @brief 将帧区间读取转发给音轨持有的解码策略。
     /// 不会调整缓冲格式或为调用方扩容。
@@ -70,8 +84,11 @@ public:
                      size_t frame_count) const
     {
         // 此处不推进独立游标，因此多个节点可请求同一缓存的不同片段。
-        return decoder->decode(
-            buffer.raw_ptrs(), buffer.afmt.channels, start_frame, frame_count);
+        return decoder ? decoder->decode(buffer.raw_ptrs(),
+                                         buffer.afmt.channels,
+                                         start_frame,
+                                         frame_count)
+                       : 0;
     }
     /// @brief 向容器追加只读 PCM 视图，音轨须活过这些视图。
     /// 当前位置参数最终转换为解码器使用的整数帧索引。
@@ -85,16 +102,15 @@ public:
                        double start_frame, double frame_count)
     {
         // 保留解码器的追加语义；复用容器时由调用方清理旧的借用切片。
-        decoder->origin(origin_data, start_frame, frame_count);
+        if ( decoder ) decoder->origin(origin_data, start_frame, frame_count);
     }
 
 private:
-    /// @brief 接收已探测元信息并按策略建立解码器，只由工厂入口使用。
-    AudioTrack(std::string_view p, ThreadPool& thread_pool,
-               std::shared_ptr<IDecoderFactory> decoder_factory,
-               CachingStrategy strategy, const MediaInfo& info);
     /// @brief 探测时复制的源媒体信息，不随后台解码进度更新。
     MediaInfo media_info;
+
+    /// @brief 构造后不可变，多个播放节点可以安全查询。
+    CachingStrategy m_strategy;
 
     /// @brief 创建参数的自有字符串副本，不借用调用方 string_view。
     std::string file_path;

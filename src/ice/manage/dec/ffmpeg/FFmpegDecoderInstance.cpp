@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "ice/execptions/load_error.hpp"
@@ -343,6 +344,33 @@ public:
     /// @warning 低频解码工作线程操作，可能进行文件 IO、重建或错误输出。
     bool seek_to_frame(size_t frame_offset)
     {
+        // 从头重放要求恢复完整初始状态；仅 flush 不保证重置 AAC 等解码器的
+        // 噪声合成历史。先准备候选上下文，失败时不破坏仍可用的旧实例。
+        // 释放函数只管理候选上下文，不捕获当前实例；失败返回也能完整回收。
+        // 容器和重采样格式保持不变，重新打开解码器仍使用原流参数。
+        // 这里的分配仅在后台定位执行，设备回调只访问已发布的 PCM 页。
+        /// @brief 释放尚未交给实例接管的候选解码上下文。
+        const auto releaseContext = [](AVCodecContext* context) {
+            avcodec_free_context(&context);
+        };
+        std::unique_ptr<AVCodecContext, decltype(releaseContext)> freshContext(
+            nullptr, releaseContext);
+        if ( frame_offset == 0 ) {
+            freshContext.reset(avcodec_alloc_context3(avcodec));
+            if ( !freshContext ||
+                 avcodec_parameters_to_context(
+                     freshContext.get(),
+                     avfmt_ctx->streams[stream_index]->codecpar) < 0 ) {
+                return false;
+            }
+            // 保留原有损坏包容错策略，避免重放后使用不同的错误处理配置。
+            // 后端专有初始状态由 avcodec_open2 重建，不能复制已运行的内部状态。
+            freshContext->err_recognition = avcodec_ctx->err_recognition;
+            freshContext->flags           = avcodec_ctx->flags;
+            if ( avcodec_open2(freshContext.get(), avcodec, nullptr) < 0 ) {
+                return false;
+            }
+        }
         // 将帧偏移量转换回FFmpeg的时间基单位
         int64_t timestamp =
             av_rescale_q(frame_offset,
@@ -358,6 +386,11 @@ public:
         avcodec_flush_buffers(avcodec_ctx);
         av_packet_unref(avpacket);
         av_frame_unref(avframe);
+        if ( freshContext ) {
+            // 已解除旧帧引用后再替换上下文，候选由现有析构路径接管。
+            avcodec_free_context(&avcodec_ctx);
+            avcodec_ctx = freshContext.release();
+        }
         conversion_buffer_remains   = 0;
         conversion_buffer_offset    = 0;
         m_pendingPacketTargetFrames = 0;
@@ -466,43 +499,23 @@ public:
                     }
                 }
             } else if ( ret == AVERROR_EOF ) {
-                // 解码器 EOF 后还有重采样器滤波延迟，需用空输入继续取尾部。
-                int flushed_count;
-                do {
-                    // 先冲洗到临时缓冲区
-                    const int output_capacity =
-                        ensure_conversion_buffer_capacity(0);
-                    flushed_count =
-                        swr_convert(swr_ctx,
-                                    (uint8_t**)conversion_buffer.raw_ptrs(),
-                                    output_capacity,
-                                    nullptr,
-                                    0);
-                    if ( flushed_count > 0 ) {
-                        duplicateMonoChannelToTargetChannels(
-                            static_cast<size_t>(flushed_count));
-                        // 再从临时缓冲区拷贝到最终位置
-                        size_t frames_needed = chunksize - frames_decoded_total;
-                        size_t frames_to_copy =
-                            std::min((size_t)flushed_count, frames_needed);
-                        // 当前只拷贝请求剩余量，未把多余 flush
-                        // 帧登记为下次余量。
-                        // 小块读取遇到长尾时可能丢尾，不能按此路径承诺完整尾部交付。
-                        for ( uint16_t ch = 0; ch < ice_format.channels;
-                              ++ch ) {
-                            const float* src =
-                                conversion_buffer.raw_ptrs()[ch] +
-                                conversion_buffer_offset;
-                            float* dest = buffer[ch] + frames_decoded_total;
-                            std::memcpy(
-                                dest, src, frames_to_copy * sizeof(float));
-                        }
-                        frames_decoded_total += frames_to_copy;
-                    }
-                } while ( flushed_count > 0 );
-                // 循环以重采样器无正输出结束，即便本次请求空间已用尽也继续排空。
-                // 到达文件末尾，跳出整个while循环
-                break;
+                // 将排尾结果纳入普通余量协议，避免小块读取丢弃未交付样本。
+                // 每轮最多转换一次；请求已满时由循环条件退出，余量留给下次
+                // read。
+                const int output_capacity =
+                    ensure_conversion_buffer_capacity(0);
+                const int flushed_count =
+                    swr_convert(swr_ctx,
+                                (uint8_t**)conversion_buffer.raw_ptrs(),
+                                output_capacity,
+                                nullptr,
+                                0);
+                if ( flushed_count <= 0 ) break;
+                duplicateMonoChannelToTargetChannels(
+                    static_cast<size_t>(flushed_count));
+                conversion_buffer_offset  = 0;
+                conversion_buffer_remains = static_cast<size_t>(flushed_count);
+                continue;
             } else if ( recoverFromDecodeError(ret) ) {
                 continue;
             } else {
