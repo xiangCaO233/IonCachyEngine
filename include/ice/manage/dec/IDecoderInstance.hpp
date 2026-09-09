@@ -1,11 +1,12 @@
-#ifndef ICE_IDECODERINSTANCE_HPP
-#define ICE_IDECODERINSTANCE_HPP
+#pragma once
 
 #include <cstddef>
-#include <ice/manage/AudioFormat.hpp>
 
 namespace ice
 {
+/// @brief 仅借用音频格式，接口声明不需要其字段布局。
+struct AudioDataFormat;
+
 /// @brief 有独立游标的顺序解码状态，不提供内部并发访问保证。
 class IDecoderInstance
 {
@@ -37,5 +38,3 @@ public:
     virtual size_t get_source_total_frames() const = 0;
 };
 }  // namespace ice
-
-#endif  // ICE_IDECODERINSTANCE_HPP

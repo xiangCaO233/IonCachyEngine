@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# MSVC 交叉构建按 link.exe 名称寻找入口；实际执行环境指定的 LLVM 链接器。
 set -euo pipefail
 
+# exec 保留链接器退出状态与信号语义；逐项转发参数，路径空格不应被重新拆分。
 exec "${ICE_LLD_LINK:-lld-link-22}" "$@"

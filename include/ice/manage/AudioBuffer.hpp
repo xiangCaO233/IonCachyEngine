@@ -1,16 +1,24 @@
-#ifndef ICE_AUDIOBUFFER_HPP
-#define ICE_AUDIOBUFFER_HPP
+#pragma once
 
+#include <ice/manage/AudioFormat.hpp>
+
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <ice/execptions/buffer_error.hpp>
-#include <ice/manage/AudioFormat.hpp>
+#include <limits>
+#include <memory>
+#include <utility>
 #include <vector>
 
-#ifdef __clang__
-#    include <algorithm>
-#endif  //__clang__
+#ifdef __linux__
+// 系统头必须位于全局作用域，避免其声明随业务头的包含顺序进入 ice。
+// SIMD 实现依赖编译目标的 AVX 能力，不在本头做运行时 CPU 派发。
+#    include <immintrin.h>
+#    include <mm_malloc.h>
+#endif
+
 namespace ice
 {
 #ifndef __linux__
@@ -37,7 +45,10 @@ public:
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
 
     /// @brief 控制阶段调整存储大小，可能使所有旧借用地址失效。
-    void resize(const AudioDataFormat& format, size_t num_frames);
+    /// @return 尺寸可表示且调整完成时为 true；尺寸超界返回 false 并保留原状态。
+    /// @details 零声道统一清空活动长度与容量，无论请求帧数是否为零。
+    /// 扩容先准备替代存储，分配失败保留原状态，但仍可能抛出异常。
+    bool resize(const AudioDataFormat& format, size_t num_frames);
 
     /// @brief 在不改变已分配存储的前提下设置逻辑帧数。
     /// @param numFrames 新逻辑帧数。
@@ -94,13 +105,17 @@ public:
     /// @brief 返回当前格式中的声道数，声道索引须小于此值。
     size_t num_channels() const { return afmt.channels; }
     /// @brief 累加等格式等长度的缓冲，输出不做限幅。
-    /// @warning 音频路径调用前必须验证格式，历史错误分支仍抛出异常。
-    void operator+=(const AudioBuffer& other)
+    /// @return 格式或活动长度不匹配时返回 false，目标保持不变。
+    /// @warning 每个混音块调用，禁止引入分配、阻塞或异常。
+    bool operator+=(const AudioBuffer& other) noexcept
     {
         if ( afmt != other.afmt || num_frames() != other.num_frames() ) {
-            throw ice::buffer_error(
-                "AudioBuffer_Baseline format mismatch for mixing.");
+            // 验证先于样本访问，拒绝整块而不产生部分混音结果。
+            return false;
         }
+        // 默认构造的空缓冲没有声道表；兼容的零帧混音无需访问存储。
+        // 保留前置格式校验，使空输入也遵守整块兼容性契约。
+        if ( num_frames() == 0U ) return true;
         const size_t   frames   = num_frames();
         const uint16_t channels = num_channels();
         for ( uint16_t ch = 0; ch < channels; ++ch ) {
@@ -111,6 +126,7 @@ public:
                 dest[i] += src[i];
             }
         }
+        return true;
     }
 
 private:
@@ -131,74 +147,89 @@ private:
     void sync_pointers();
 };
 #else
-// Linux 混音路径使用受限指针承诺与显式对齐分配。
-#    define ICE_RESTRICT __restrict__
-#    include <mm_malloc.h>
-/// @brief 为连续 PCM 提供固定字节对齐的无状态分配器。
-/// @warning 分配和释放只允许发生在控制路径，失败沿用历史异常语义。
-template<typename T, size_t Alignment> class AlignedAllocator
-{
-public:
-    using value_type      = T;
-    using pointer         = T*;
-    using const_pointer   = const T*;
-    using reference       = T&;
-    using const_reference = const T&;
-    using size_type       = std::size_t;
-    using difference_type = std::ptrdiff_t;
-
-    /// @brief 容器重绑定元素类型时保持相同的字节对齐约束。
-    template<typename U> struct rebind {
-        using other = AlignedAllocator<U, Alignment>;
-    };
-
-    /// @brief 无状态构造，不预先申请任何样本存储。
-    AlignedAllocator() noexcept {}
-    /// @brief 元素类型转换不改变分配器对齐策略或引入实例状态。
-    template<typename U>
-    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept
-    {
-    }
-
-    /// @brief 按元素数申请对齐存储，不初始化元素内容。
-    pointer allocate(size_type n)
-    {
-        // 先约束元素数乘以字节宽度，防止整数溢出导致申请容量过小。
-        if ( n > std::size_t(-1) / sizeof(T) ) {
-            throw std::bad_alloc();
-        }
-        if ( auto p =
-                 static_cast<pointer>(_mm_malloc(n * sizeof(T), Alignment)) ) {
-            return p;
-        }
-        throw std::bad_alloc();
-    }
-
-    /// @brief 使用与对齐分配匹配的释放入口，大小参数不参与回收。
-    void deallocate(pointer p, size_type) noexcept { _mm_free(p); }
-
-    // 分配器不保存实例状态，同类型实例可以相互释放所分配的存储。
-    friend bool operator==(const AlignedAllocator&,
-                           const AlignedAllocator&) noexcept
-    {
-        return true;
-    }
-    friend bool operator!=(const AlignedAllocator&,
-                           const AlignedAllocator&) noexcept
-    {
-        return false;
-    }
-};
-
-#    include "ice/manage/AudioFormat.hpp"
-
-// SIMD 实现依赖编译目标的 AVX 能力，不在本头做运行时 CPU 派发。
-#    include <immintrin.h>
-
 /// @brief Linux 连续平面 PCM 缓冲，声道起点按固定 SIMD 跨度排列。
 /// 有效长度可逐块改变，但已有存储的声道间隔只在 resize 时更新。
 class AudioBuffer
 {
+    /// @brief 独占连续样本存储，以返回值传播对齐申请失败。
+    /// 仅用于平凡 float 元素，保留原 vector 的前缀和增长清零语义。
+    class AlignedSampleStorage
+    {
+    public:
+        /// @brief 空存储不分配，删除器始终与对齐申请入口配对。
+        AlignedSampleStorage() = default;
+        /// @brief 转移存储后将源的长度和容量归零，使其可继续复用。
+        AlignedSampleStorage(AlignedSampleStorage&& other) noexcept
+            : m_data(std::move(other.m_data))
+            , m_size(std::exchange(other.m_size, 0))
+            , m_capacity(std::exchange(other.m_capacity, 0))
+        {
+        }
+        /// @brief 接管存储并释放旧块，自移动保持已有样本。
+        AlignedSampleStorage& operator=(AlignedSampleStorage&& other) noexcept
+        {
+            if ( this != &other ) {
+                m_data     = std::move(other.m_data);
+                m_size     = std::exchange(other.m_size, 0);
+                m_capacity = std::exchange(other.m_capacity, 0);
+            }
+            return *this;
+        }
+        /// @brief 限制可表示的样本数，防止字节乘法和指针差值溢出。
+        static size_t max_size() noexcept
+        {
+            return static_cast<size_t>(
+                       std::numeric_limits<std::ptrdiff_t>::max()) /
+                   sizeof(float);
+        }
+        /// @brief 调整有效元素数；扩容失败时原地址、容量和样本均保持不变。
+        /// @warning 控制侧分配和释放；热路径不得调整存储容量。
+        bool resize(size_t count)
+        {
+            if ( count > max_size() ) return false;
+            if ( count > m_capacity ) {
+                // 先准备新块，失败不提交任何可见状态，也不释放旧存储。
+                std::unique_ptr<float, decltype(&_mm_free)> prepared(
+                    static_cast<float*>(
+                        _mm_malloc(count * sizeof(float), SIMD_ALIGNMENT)),
+                    &_mm_free);
+                if ( !prepared ) return false;
+                // 连续前缀保持原顺序，声道跨度解释仍由外层 resize 决定。
+                if ( m_size != 0 )
+                    std::memcpy(
+                        prepared.get(), m_data.get(), m_size * sizeof(float));
+                std::memset(prepared.get() + m_size,
+                            0,
+                            (count - m_size) * sizeof(float));
+                m_data     = std::move(prepared);
+                m_capacity = count;
+            } else if ( count > m_size ) {
+                // 缩短后重新增长也必须清零新暴露区域，不能恢复先前的旧尾部。
+                std::memset(
+                    m_data.get() + m_size, 0, (count - m_size) * sizeof(float));
+            }
+            m_size = count;
+            return true;
+        }
+        /// @brief 清除有效元素，保留容量以支持低频准备复用。
+        void clear() noexcept { m_size = 0; }
+        /// @brief 查询有效元素是否为空，不以保留容量判断。
+        bool empty() const noexcept { return m_size == 0; }
+        /// @brief 返回有效元素数，不包括尚未激活的保留容量。
+        size_t size() const noexcept { return m_size; }
+        /// @brief 借用当前对齐样本地址，扩容或移动赋值后须重新获取。
+        float* data() noexcept { return m_data.get(); }
+
+    private:
+        /// @brief 唯一拥有对齐块，析构通过匹配的释放入口回收。
+        std::unique_ptr<float, decltype(&_mm_free)> m_data{ nullptr,
+                                                            &_mm_free };
+        /// @brief 已初始化的有效样本数，缩短时不释放容量。
+        size_t m_size{ 0 };
+        /// @brief 当前块最多能容纳的样本数，失败分配不修改。
+        size_t m_capacity{ 0 };
+    };
+
 public:
     /// @brief 连续存储的字节对齐要求。
     static constexpr size_t SIMD_ALIGNMENT = 32;
@@ -225,39 +256,72 @@ public:
 
     /// @brief 准备连续存储和固定声道跨度，逻辑短块请改用 set_active_frames。
     /// @warning 会分配并重建地址表，只允许控制线程在处理停止时调用。
-    inline void resize(const AudioDataFormat& format, size_t num_frames)
+    /// @return 尺寸超界时为 false，原格式、容量和样本保持不变。
+    /// @details 零声道将请求帧数归零，建立无可激活样本的空状态。
+    /// 样本与声道表申请失败均返回 false，失败前不修改原状态。
+    inline bool resize(const AudioDataFormat& format, size_t num_frames)
     {
-        // 相同格式和逻辑长度直接复用，不清除原有 PCM 内容。
-        if ( format == afmt && _original_num_frames == num_frames ) return;
-        afmt                 = format;
-        _original_num_frames = num_frames;
-
-        // 空格式或零帧使逻辑容量归零，旧声道地址表也必须同步清除。
-        if ( afmt.channels == 0 || num_frames == 0 ) {
+        // 零声道不描述任何样本，活动长度与容量必须共同归零，不能保留虚假帧数。
+        if ( format.channels == 0 ) num_frames = 0;
+        // 活动长度可独立缩短，仅它相同不能跳过调用方显式请求的容量调整。
+        // 格式、活动长度和准备容量全部一致才复用，仍保留已有 PCM 内容。
+        if ( format == afmt && _original_num_frames == num_frames &&
+             _frame_capacity == num_frames )
+            return true;
+        size_t alignedFrames = 0;
+        if ( format.channels != 0 && num_frames != 0 ) {
+            // 对齐加法先校验，不能让最大尺寸绕回零而发布虚假的活动长度。
+            if ( num_frames >
+                 std::numeric_limits<size_t>::max() - (SIMD_VECTOR_SIZE - 1) )
+                return false;
+            alignedFrames =
+                (num_frames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
+            // 用除法检查总元素数，同时遵守存储的元素/字节容量上限。
+            if ( alignedFrames >
+                 _contiguous_buffer.max_size() / format.channels )
+                return false;
+        }
+        // 空状态不需要分配，可直接同步清除格式、活动范围与声道表。
+        if ( format.channels == 0 || num_frames == 0 ) {
+            afmt                 = format;
+            _original_num_frames = 0;
             _contiguous_buffer.clear();
-            channel_pointers_.clear();
+            // 空状态保留表容量，raw_ptrs 根据准备容量隐藏旧表项。
             _aligned_num_frames         = 0;
             _storage_aligned_num_frames = 0;
             _frame_capacity             = 0;
-            return;
+            return true;
         }
 
-        // 声道存储按向量宽度向上取整，保证下一个声道起点仍满足对齐。
-        // 加法取整及后续声道数乘法未检查溢出，调用方必须限制请求规模。
-        _aligned_num_frames =
-            (num_frames + SIMD_VECTOR_SIZE - 1) & ~(SIMD_VECTOR_SIZE - 1);
-        // 存储跨度在此次准备后固定，不随以后 set_active_frames 的短块改变。
-        _storage_aligned_num_frames = _aligned_num_frames;
-        // 允许激活的上限仍是请求值，额外对齐空间不扩大公开容量契约。
+        // 扩容指针表先在临时容器中完成，失败不会使旧表的借用地址失效。
+        // 表容量足够时不额外分配；样本调整成功后刷新表也不会再扩容。
+        std::unique_ptr<float*, decltype(&std::free)> preparedPointers{
+            nullptr, &std::free
+        };
+        if ( format.channels > m_pointerCapacity ) {
+            // 声道数为 uint16_t，转换为 size_t 后乘指针宽度不会溢出。
+            preparedPointers.reset(static_cast<float**>(std::malloc(
+                static_cast<size_t>(format.channels) * sizeof(float*))));
+            if ( !preparedPointers ) return false;
+        }
+        // float 元素调整失败保持原存储，此前不能修改格式或公开容量。
+        // 沿用连续存储的前缀保留语义，不在本次失败修复中改变声道重排规则。
+        const size_t total_floats = format.channels * alignedFrames;
+        if ( !_contiguous_buffer.resize(total_floats) ) return false;
+
+        // 此后仅转移已准备的表并更新元数据，不再发生新的存储申请。
+        if ( preparedPointers ) {
+            channel_pointers_ = std::move(preparedPointers);
+            m_pointerCapacity = format.channels;
+        }
+        afmt                        = format;
+        _original_num_frames        = num_frames;
+        _aligned_num_frames         = alignedFrames;
+        _storage_aligned_num_frames = alignedFrames;
+        // 对齐填充不扩大允许激活的逻辑容量，声道跨度仍固定到本次准备结果。
         _frame_capacity = num_frames;
-
-        // 声道共用一次样本分配；容量改变会使此前借出的样本地址失效。
-        // 一次性分配所有内存
-        const size_t total_floats = afmt.channels * _storage_aligned_num_frames;
-        _contiguous_buffer.resize(total_floats);
-
-        // 更新内部指针
         sync_pointers();
+        return true;
     }
 
     /// @brief 在不改变已分配存储的前提下设置逻辑帧数。
@@ -308,7 +372,7 @@ public:
 
         // 地址使用固定存储跨度，不能按当前短块长度重新计算声道位置。
         for ( uint16_t ch = 0; ch < afmt.channels; ++ch ) {
-            float* channel_start_ptr = channel_pointers_[ch];
+            float* channel_start_ptr = channel_pointers_.get()[ch];
 
             float* clear_start_ptr = channel_start_ptr + start_frame;
 
@@ -319,15 +383,14 @@ public:
     /// @brief 借用可写声道表，容量改变或销毁后原地址不再有效。
     inline float** raw_ptrs()
     {
-        return channel_pointers_.empty() ? nullptr : channel_pointers_.data();
+        return _frame_capacity == 0 ? nullptr : channel_pointers_.get();
     }
     /// @brief 只读借用样本和声道地址，不延长缓冲生命周期。
     inline const float* const* raw_ptrs() const
     {
-        return channel_pointers_.empty()
-                   ? nullptr
-                   : reinterpret_cast<const float* const*>(
-                         channel_pointers_.data());
+        return _frame_capacity == 0 ? nullptr
+                                    : reinterpret_cast<const float* const*>(
+                                          channel_pointers_.get());
     }
 
     /// @brief 当前有效帧数，交给非向量消费者时不包含对齐尾部。
@@ -353,79 +416,92 @@ public:
             dest_R[i] = src[i * 2 + 1];  // 写入右声道
         }
     }
-    /// @brief 历史 SIMD 双声道拆分入口，按对齐长度访问输入。
-    /// @warning 当前四帧步长与八浮点写入不匹配，不能视为已验证安全的转换。
-    /// 调用前需独立审查尾部容量、写入对齐及重排结果，普通块长不足以保证安全。
+    /// @brief 将双声道交错 PCM 拆分到活动范围，不读写对齐尾部。
+    /// @param src 至少包含活动帧数两倍的浮点样本，与目标存储不重叠。
+    /// 目标活动区之外保持原内容，调用方需要静音填充时应显式清理。
+    /// 源指针不要求额外 SIMD 对齐；接口不持有指针，返回后即可释放源。
+    /// 固定声道数和活动长度须由准备接口维护，处理期间不得并发修改。
+    /// @warning 音频热路径复用固定容量，空指针或非双声道格式保持目标不变。
     inline void write_interleaved_stereo(const float* src)
     {
-        // 假设 afmt.channels == 2 且缓冲区大小匹配
-        float**      dest           = this->raw_ptrs();
-        const size_t aligned_frames = this->aligned_frames_per_channel();
-
-        // 我们一次处理8个浮点数（4帧），所以循环步长为4
-        for ( size_t i = 0; i < aligned_frames; i += 4 ) {
-            // 加载4个交错的立体声样本 (L0,R0,L1,R1,L2,R2,L3,R3)
-            // 此处实际使用一次 256 位非对齐加载读取四个交错立体声帧。
-            __m256 interleaved_vec = _mm256_loadu_ps(
-                src + i * 2);  // 使用 unaligned load，因为源不保证对齐
-
-            // 此重排属于历史未验证路径，不把中间向量直接标为完整单声道样本。
-            // 中间重排不能抵消下方写入宽度与步长的冲突。
-            __m256 shuffled =
-                _mm256_shuffle_ps(interleaved_vec, interleaved_vec, 0xD8);
-
-            // 历史跨 128 位 lane 重排；不能仅凭变量名认定已得到连续左声道。
-            // 该入口的正确性必须结合前一步 shuffle 与最终写入区间一起验证。
-            __m256 left_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x20);
-
-            // 另一控制码选取不同 lane，但仍不能据此认定完整解交错已完成。
-            __m256 right_vec = _mm256_permute2f128_ps(shuffled, shuffled, 0x31);
-
-            // 八浮点对齐写入与四帧循环步长存在冲突，保留为独立修复事项。
-            _mm256_store_ps(dest[0] + i, left_vec);
-            _mm256_store_ps(dest[1] + i, right_vec);
+        // 在索引左右声道前拒绝不适用的格式，零帧不需要有效源地址。
+        if ( !src || num_channels() != 2U || num_frames() == 0U ) return;
+        float**      dest   = this->raw_ptrs();
+        const size_t frames = num_frames();
+        size_t       i      = 0U;
+        // 每次输入八浮点即四帧，输出每声道恰好四浮点，保持步长与写宽一致。
+        // 只处理完整四帧组，不使用向上补齐长度，源无需额外可读填充。
+        for ( ; frames - i >= 4U; i += 4U ) {
+            const __m128 first  = _mm_loadu_ps(src + i * 2U);
+            const __m128 second = _mm_loadu_ps(src + i * 2U + 4U);
+            // 两输入各选偶数位置得到 L0..L3，奇数位置得到 R0..R3。
+            const __m128 left =
+                _mm_shuffle_ps(first, second, _MM_SHUFFLE(2, 0, 2, 0));
+            const __m128 right =
+                _mm_shuffle_ps(first, second, _MM_SHUFFLE(3, 1, 3, 1));
+            // 非对齐存储不依赖每组地址满足原 256 位指令的对齐要求。
+            _mm_storeu_ps(dest[0] + i, left);
+            _mm_storeu_ps(dest[1] + i, right);
+        }
+        // 最多三帧的尾部按标量处理，不覆盖下一声道或目标容量中的保留区。
+        for ( ; i < frames; ++i ) {
+            dest[0][i] = src[i * 2U];
+            dest[1][i] = src[i * 2U + 1U];
         }
     }
 
-    /// @brief 向量化累加兼容缓冲，包含本块对齐填充区。
-    /// @warning 热路径须预先保证格式匹配和源目标不重叠，错误分支沿用异常。
-    inline void operator+=(const AudioBuffer& other)
+    /// @brief 向量化累加兼容缓冲的活动前缀，允许自身累加并保留未激活尾部。
+    /// @return 格式或活动长度不匹配时返回 false，目标保持不变。
+    /// @warning 每个混音块调用，禁止引入分配、阻塞或异常。
+    inline bool operator+=(const AudioBuffer& other) noexcept
     {
         if ( afmt != other.afmt || num_frames() != other.num_frames() ) {
-            throw ice::buffer_error("AudioBuffer format mismatch for mixing.");
+            // 验证先于样本访问，拒绝整块而不产生部分混音结果。
+            return false;
         }
+        // 默认构造的空缓冲没有声道表；兼容的零帧混音无需访问存储。
+        // 保留前置格式校验，使空输入也遵守整块兼容性契约。
+        if ( num_frames() == 0U ) return true;
 
-        // 使用 ICE_RESTRICT 告知编译器指针不重叠，允许更激进的优化
-        float* const* ICE_RESTRICT       all_dest_channels = this->raw_ptrs();
-        const float* const* ICE_RESTRICT all_src_channels  = other.raw_ptrs();
+        // 自身累加属于有效输入，不能向编译器声明源目标必定不重叠。
+        float* const*       all_dest_channels = this->raw_ptrs();
+        const float* const* all_src_channels  = other.raw_ptrs();
 
-        // 向量累加会消费对齐尾部，输入准备流程应保证填充区不含旧有效音频。
-        const size_t   aligned_frames = this->aligned_frames_per_channel();
-        const uint16_t channels       = this->num_channels();
+        // 只处理活动帧，预留空间及旧块尾部不会参与当前混音。
+        const size_t   frames   = this->num_frames();
+        const uint16_t channels = this->num_channels();
 
         // 按声道逐段处理，各声道起点已由准备阶段保证满足向量对齐。
         for ( uint16_t ch = 0; ch < channels; ++ch ) {
-            float* ICE_RESTRICT       dest = all_dest_channels[ch];
-            const float* ICE_RESTRICT src  = all_src_channels[ch];
+            float*       dest = all_dest_channels[ch];
+            const float* src  = all_src_channels[ch];
 
-            for ( size_t i = 0; i < aligned_frames; i += SIMD_VECTOR_SIZE ) {
+            size_t i = 0;
+            // 完整向量组仍使用对齐加载，短尾不能跨过活动边界。
+            for ( ; frames - i >= SIMD_VECTOR_SIZE; i += SIMD_VECTOR_SIZE ) {
                 __m256 dest_vec   = _mm256_load_ps(dest + i);
                 __m256 src_vec    = _mm256_load_ps(src + i);
                 __m256 result_vec = _mm256_add_ps(dest_vec, src_vec);
                 _mm256_store_ps(dest + i, result_vec);
             }
+            // 剩余不足一个向量的样本逐个累加，零帧时两条循环均不执行。
+            for ( ; i < frames; ++i ) {
+                dest[i] += src[i];
+            }
         }
+        return true;
     }
 
 private:
-    /// @brief 对齐连续存储类型，整个声道集合只持有一个样本分配块。
-    using AlignedFloatVector =
-        std::vector<float, AlignedAllocator<float, SIMD_ALIGNMENT> >;
     /// @brief 按固定存储跨度建立的借用地址表，本身不拥有样本。
-    std::vector<float*> channel_pointers_;
+    std::unique_ptr<float*, decltype(&std::free)> channel_pointers_{
+        nullptr, &std::free
+    };
+    /// @brief 指针表已准备的元素容量，空状态保留，移动时与表一同转移。
+    size_t m_pointerCapacity{ 0 };
 
     /// @brief 唯一拥有全部声道及其填充区的对齐连续存储。
-    AlignedFloatVector _contiguous_buffer;
+    AlignedSampleStorage _contiguous_buffer;
 
     /// @brief 对外可见的每声道有效帧数，不含对齐填充。
     size_t _original_num_frames = 0;
@@ -439,25 +515,23 @@ private:
     size_t _frame_capacity = 0;
 
     /// @brief 根据固定存储跨度重建各声道地址。
-    /// @warning 指针表可扩容，只允许在存储准备阶段调用。
+    /// @pre resize 已准备足够的指针表容量，此处不分配。
     inline void sync_pointers()
     {
         // 零声道不允许发布任何可索引的样本指针。
         if ( afmt.channels == 0 ) {
-            channel_pointers_.clear();
+            // 空状态保留表容量，raw_ptrs 根据准备容量隐藏旧表项。
             return;
         }
 
-        // 地址表准备与样本准备同属控制阶段，逐块切换长度不经过此处。
-        channel_pointers_.resize(afmt.channels);
+        // 样本和表都已成功准备，只填充借用地址，不能在提交后再次申请内存。
         float* base_ptr = _contiguous_buffer.data();
         for ( uint16_t i = 0; i < afmt.channels; ++i ) {
             // 指针指向连续内存块的正确偏移位置
-            channel_pointers_[i] = base_ptr + i * _storage_aligned_num_frames;
+            channel_pointers_.get()[i] =
+                base_ptr + i * _storage_aligned_num_frames;
         }
     }
 };
 #endif  // __linux__ 平台存储分支
 }  // namespace ice
-
-#endif  // ICE_AUDIOBUFFER_HPP

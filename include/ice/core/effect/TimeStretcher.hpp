@@ -11,7 +11,9 @@
 namespace ice
 {
 
-/// @brief 支持实时安全状态切换的播放速度与音高处理节点。
+/// @brief 通过预热状态切换处理播放速度与音高的节点。
+/// @details 仅精确单位速度与零音高采用旁路，维持一对一复制的容量约束。
+/// 近单位参数仍进入预热后端，不能用容差直通改变输入时钟。
 class TimeStretcher : public IEffectNode
 {
 public:
@@ -220,7 +222,7 @@ private:
 
     /// @brief 稳定读取输入连续区间 provider 并校验结果。
     /// @param maxInputFrames 当前仍计划拉取的最大输入帧数。
-    /// @return 可安全处理的连续输入区间。
+    /// @return 长度不超过预算的区间；配置不稳定时回退整段，不能保证边界完整。
     /// @warning 音频回调热路径：只读原子并调用轻量函数指针。
     [[nodiscard]] InputSpan read_input_span(std::size_t maxInputFrames) const;
 
@@ -299,6 +301,7 @@ private:
     std::uint64_t m_nextStateGeneration{ 1U };
 
     /// @brief 音频线程已激活的状态代际。
+    /// @warning 音频侧 release 发布、控制侧 acquire 读取，用于确认参数已接收。
     std::atomic<std::uint64_t> m_activeStateGeneration{ 0U };
 
     /// @brief 控制线程提交的 discontinuity 请求代际。
@@ -315,9 +318,13 @@ private:
     std::atomic<std::uint64_t> m_providerConfigurationSequence{ 0U };
 
     /// @brief 外部 provider 的非拥有上下文。
+    /// @warning 控制侧写、音频侧读，以原子字段避免配置更新时的数据竞争；
+    /// 字段使用 relaxed 并复查配置序号，不延长上下文寿命。
     std::atomic<const void*> m_discontinuityProviderContext{ nullptr };
 
     /// @brief 外部 provider 的轻量读取函数。
+    /// @warning 控制侧 relaxed 写、音频侧 relaxed
+    /// 读并复查序号，禁止并发销毁上下文。
     std::atomic<DiscontinuityGenerationReader> m_discontinuityGenerationReader{
         nullptr
     };
@@ -327,9 +334,12 @@ private:
     std::atomic<std::uint64_t> m_inputBoundaryConfigurationSequence{ 0U };
 
     /// @brief 输入边界 provider 的非拥有上下文。
+    /// @warning 控制侧 relaxed 写、音频侧 relaxed
+    /// 读并复查序号，原子地址不拥有对象。
     std::atomic<void*> m_inputBoundaryProviderContext{ nullptr };
 
     /// @brief 输入边界 provider 的轻量查询函数。
+    /// @warning 控制侧写、音频侧读，通过原子避免字段竞争，不等待配置发布完成。
     std::atomic<InputBoundaryReader> m_inputBoundaryReader{ nullptr };
 
     /// @brief 音频线程私有的最近外部代际。
@@ -339,13 +349,17 @@ private:
     bool m_hasObservedProviderGeneration{ false };
 
     /// @brief 供控制线程诊断的最近外部代际。
+    /// @warning 音频侧 release 发布、控制侧 acquire
+    /// 读取，只用于观测已消费代际。
     std::atomic<std::uint64_t> m_publishedProviderGeneration{ 0U };
 
     /// @brief 控制线程或上游回调提交的 final 请求代际。
     /// @warning 请求侧 release 递增、处理侧 acquire 消费，不直接更改后端对象。
     std::atomic<std::uint64_t> m_requestedFinalGeneration{ 0U };
 
-    /// @brief 音频线程已提交给 RubberBand 的 final 代际。
+    /// @brief 音频线程已消费的 final 代际，旁路不向 RubberBand 提交。
+    /// @warning 音频侧 release 发布、控制侧 acquire
+    /// 读取，与排尾完成标志分别观察。
     std::atomic<std::uint64_t> m_consumedFinalGeneration{ 0U };
 
     /// @brief 当前 final 流的应用层预算是否已经交付完。

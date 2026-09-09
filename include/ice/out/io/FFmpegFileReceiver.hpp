@@ -1,13 +1,15 @@
 #pragma once
 
+#include <ice/config/config.hpp>
+#include <ice/manage/AudioBuffer.hpp>
+#include <ice/manage/AudioFormat.hpp>
+#include <ice/out/IReceiver.hpp>
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <ice/config/config.hpp>
-#include <ice/manage/AudioBuffer.hpp>
-#include <ice/out/IReceiver.hpp>
 #include <string>
 
 struct AVCodecContext;
@@ -41,16 +43,19 @@ public:
 
     /// @brief 设置输入音频图的帧预算，不是编码器输出样本数。
     /// @param frame_count 按输入采样率计数的总帧数；零值会被 start 拒绝。
+    /// @details 运行期间忽略修改，当前导出预算保持不变。
     /// @warning 配置路径：不能与 start 并发修改普通成员。
     void set_target_frames(std::size_t frame_count);
 
     /// @brief 设置每次拉取和编码的块大小。
-    /// @param frame_count 输入块帧数；零值忽略，非零值会调整缓冲。
+    /// @param frame_count 输入块帧数；零值或超过 int 上界时保留原配置。
+    /// @details 运行期间忽略修改，不使音源处理中的缓冲失效。
     /// @warning 配置路径：可能重新分配内存，不能与编码或图拉取并发。
     void set_block_frames(std::size_t frame_count);
 
     /// @brief 设置在 start 调用线程同步执行的输入进度回调。
     /// @param callback 参数为已送入编码链路的输入帧数，不保证已经写入文件。
+    /// @details 运行期间忽略替换，防止回调销毁正在执行的自身。
     /// @warning 不允许并发替换；回调不得重入 close 或销毁正在执行 start
     /// 的对象。
     void set_progress_callback(std::function<void(std::size_t)> callback);
@@ -71,12 +76,13 @@ public:
     bool open() override;
 
     /// @brief 尝试正常排尾并释放输出链路；已有错误时跳过补尾。
+    /// 关闭错误通过 error_message 保存，但不覆盖已有编码错误或取消原因。
     /// @warning 离线耗时路径：可能编码与写文件，不能与 start
     /// 并发；不删除部分输出。
     void close() override;
 
     /// @brief 同步拉取 source 并写完整个目标文件。
-    /// @return 输入预算及收尾成功时返回 true，取消同样返回
+    /// @return 输入预算、收尾及输出流关闭均成功时返回 true，取消同样返回
     /// false；进入编码循环后会在返回前关闭资源，前置检查失败则直接返回。
     /// @warning 离线耗时路径：会持续拉取音频图并编码文件，不能在音频实时线程或
     /// UI 热路径中调用。
@@ -113,7 +119,7 @@ private:
     /// @brief 将转换后的音频样本写入 FIFO。
     /// @param converted_data 转换后的声道数据。
     /// @param frame_count 转换后的帧数。
-    /// @return 完整入队或空输入时返回 true；缺 FIFO 当前也按无操作处理。
+    /// @return 完整入队或空输入时返回 true；正帧缺资源或负帧数返回 false。
     /// @details 复制样本但不接管输入数组所有权，帧数按输出采样率计算。
     bool write_converted_to_fifo(uint8_t** converted_data, int frame_count);
 
@@ -136,9 +142,9 @@ private:
     bool send_frame(AVFrame* frame);
 
     /// @brief 接收并写出编码包。
-    /// @return 当前无包可取或编码器 EOF 时返回 true，其他接收及写包错误返回
-    /// false。
-    bool drain_packets();
+    /// @param draining 已发送结束帧时为 true，要求最终观察到 EOF。
+    /// @return 普通取包遇到 EAGAIN 或最终排空遇到 EOF 时成功，否则报告错误。
+    bool drain_packets(bool draining);
 
     /// @brief 记录 FFmpeg 错误文本。
     /// @param prefix 错误上下文。
@@ -180,12 +186,14 @@ private:
     /// @brief 离线编码运行标记。
     /// @warning 低频跨线程查询标记；仅由 start/close 写入，UI 或任务线程读取。
     /// @details 原子避免状态读写的数据竞争，不保护普通成员；start 在 close
-    /// 前即可清除此值。
+    /// 前即可清除此值。所有访问使用 relaxed，不发布诊断或资源生命周期。
     std::atomic<bool> m_running{ false };
 
     /// @brief 离线编码停止请求。
     /// @warning stop 跨线程写 true，open 清 false，start
     /// 每离线块读取；用于协作取消而非阻塞同步。
+    /// @details relaxed 足以传递独立布尔请求，不依赖其他数据的先行发布。
+    /// 对象生命周期与配置串行化仍由调用者保证，不能从取消已发送推断退出。
     std::atomic<bool> m_stopRequested{ false };
 
     /// @brief FFmpeg 输出容器上下文。

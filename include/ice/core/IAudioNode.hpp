@@ -1,5 +1,4 @@
-#ifndef ICE_IAUDIONODE_HPP
-#define ICE_IAUDIONODE_HPP
+#pragma once
 
 #include "ice/manage/AudioBuffer.hpp"
 
@@ -31,5 +30,3 @@ public:
 };
 
 }  // namespace ice
-
-#endif  // ICE_IAUDIONODE_HPP

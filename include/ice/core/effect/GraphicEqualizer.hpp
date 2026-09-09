@@ -1,5 +1,4 @@
-#ifndef ICE_GRAPHICEQUALIZER_HPP
-#define ICE_GRAPHICEQUALIZER_HPP
+#pragma once
 
 #include "ice/core/effect/IEffectNode.hpp"
 #include "ice/manage/AudioFormat.hpp"
@@ -155,5 +154,3 @@ private:
 };
 
 }  // namespace ice
-
-#endif  // ICE_GRAPHICEQUALIZER_HPP

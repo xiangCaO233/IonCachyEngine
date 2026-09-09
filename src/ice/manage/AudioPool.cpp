@@ -2,6 +2,8 @@
 
 #include "ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp"
 
+#include <memory>
+
 namespace ice
 {
 /// @brief 按配置建立共享解码工厂，尚不打开媒体或启动解码。
@@ -13,7 +15,7 @@ AudioPool::AudioPool(CodecBackend codec_backend)
     switch ( codec_backend ) {
     case CodecBackend::FFMPEG: {
         // 工厂不保留当前媒体句柄，每个音轨建立各自的解码上下文。
-        decoder_factory = std::make_shared<FFmpegDecoderFactory>();
+        m_decoderFactory = std::make_shared<FFmpegDecoderFactory>();
         break;
     }
     case CodecBackend::COREAUDIO: {

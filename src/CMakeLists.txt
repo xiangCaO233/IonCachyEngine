@@ -43,7 +43,8 @@ add_library(ICE::IonCachyEngine ALIAS ${ICE_LIBRARY_TARGET})
 
 if(ICE_BUILD_TESTS)
   # 示例程序供交互运行；实时测试单独注册到 CTest，不自动运行音频示例。 示例含设备播放流程，只构建它并不表示当前机器的音频设备可用。
-  add_executable(testIonCachyEngin main.cpp)
+  # 全局分配替换仅链接到演示程序，放在 ice/ 收集范围外，避免改变引擎宿主和其他测试的分配行为。
+  add_executable(testIonCachyEngin main.cpp diagnostics/AllocationTracker.cpp)
   target_link_libraries(testIonCachyEngin PRIVATE ${ICE_LIBRARY_TARGET}
                                                   fmt::fmt)
   # 回归测试链接当前构建的引擎，不以仓库中的旧引擎预编译包替代。

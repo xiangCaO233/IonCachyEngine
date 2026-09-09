@@ -1,5 +1,4 @@
-#ifndef ICE_SOURCENODE_HPP
-#define ICE_SOURCENODE_HPP
+#pragma once
 
 #include <algorithm>
 #include <atomic>
@@ -409,5 +408,3 @@ private:
     std::atomic<std::uint64_t> m_rejectedProcessCount{ 0U };
 };
 }  // namespace ice
-
-#endif  // ICE_SOURCENODE_HPP

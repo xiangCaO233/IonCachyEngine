@@ -1,13 +1,10 @@
 #include <ice/out/io/FFmpegFileReceiver.hpp>
 
-#include <algorithm>
-#include <cctype>
-#include <cstdint>
-#include <limits>
-#include <memory>
-#include <string>
-#include <utility>
-#include <vector>
+// 图处理调用需要完整节点定义，不能借用接收端基类的传递包含。
+#include <ice/core/IAudioNode.hpp>
+#include <ice/manage/AudioBuffer.hpp>
+#include <ice/manage/AudioFormat.hpp>
+#include <ice/out/IReceiver.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -22,10 +19,37 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+// AVERROR 的 errno 参数来自标准头，不依赖 FFmpeg 的间接导入。
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+
 namespace ice
 {
 namespace
 {
+
+/// @brief 检查输入格式能否用于缓冲与 FFmpeg 有符号采样率接口。
+/// @param format 引擎输入格式，不修改调用方配置。
+/// @return 数量与采样率可表示时为 true，不代表编码器支持该组合。
+/// 构造、块配置和打开共用边界，防止无效格式在报错前先分配音频存储。
+bool is_valid_input_format(const AudioDataFormat& format)
+{
+    return format.channels > 0 && format.samplerate > 0 &&
+           format.samplerate <= std::numeric_limits<int>::max();
+}
 
 /// @brief 输出容器和编码器选择结果。
 // 名称借用静态字符串，不负责释放；容器与编码器可以分别覆盖。
@@ -124,21 +148,21 @@ std::string ffmpeg_error_string(int code)
     return buffer;
 }
 
-/// @brief 判断错误码是否表示编码器暂时无包可取。
+/// @brief 按输入是否结束判断取包的预期终止状态。
 /// @param code FFmpeg 错误码。
+/// @param draining 已成功发送结束帧时为 true。
 /// @return 需要停止 drain 但不是失败时返回 true。
-bool is_packet_drain_finished(int code)
+bool is_packet_drain_finished(int code, bool draining)
 {
-    // EAGAIN 是本轮暂无输出，EOF 是编码器已排空；两者只共用停止取包的判断。
+    // 普通输入等待下一帧，结束输入则必须确认 EOF，不能以暂无输出替代完整排空。
     // 此函数不能用于把 send_frame 的所有负返回值也当作可忽略状态。
-    return code == AVERROR(EAGAIN) || code == AVERROR_EOF;
+    return code == (draining ? AVERROR_EOF : AVERROR(EAGAIN));
 }
 
-/// @brief 判断编码器是否支持指定采样格式。
+/// @brief 查询一次能力表并按引擎偏好选择采样格式。
 /// @param codec 编码器。
-/// @param sampleFormat 采样格式。
-/// @return 支持时返回 true。
-bool supports_sample_format(const AVCodec* codec, AVSampleFormat sampleFormat)
+/// @return 支持的格式；失败携带原始查询错误码或无候选的 EINVAL。
+std::expected<AVSampleFormat, int> select_sample_format(const AVCodec* codec)
 {
     const void* configs     = nullptr;
     int         configCount = 0;
@@ -149,86 +173,58 @@ bool supports_sample_format(const AVCodec* codec, AVSampleFormat sampleFormat)
                                      0,
                                      &configs,
                                      &configCount);
-    if ( configRet < 0 || !configs ) {
-        // 无法取得能力表时按可尝试处理，把最终拒绝交给 avcodec_open2。
-        // 这不是已验证支持格式的证据，也没有将查询失败单独暴露给调用者。
-        return true;
-    }
+    // 查询错误不能等同于不限制格式，必须在打开编码器前向上层传播失败。
+    if ( configRet < 0 ) return std::unexpected(configRet);
+    // 成功且空表在 FFmpeg 契约中表示支持全部值，仍选择引擎偏好的平面浮点。
+    if ( !configs ) return AV_SAMPLE_FMT_FLTP;
+    if ( configCount <= 0 ) return std::unexpected(AVERROR(EINVAL));
 
-    const auto* formats = static_cast<const AVSampleFormat*>(configs);
-    // 能力表为非拥有只读数据，不释放；同时尊重计数与结束标识防止越界扫描。
-    for ( int index = 0;
-          index < configCount && formats[index] != AV_SAMPLE_FMT_NONE;
-          ++index ) {
-        if ( formats[index] == sampleFormat ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// @brief 选择编码器支持的采样格式。
-/// @param codec 编码器。
-/// @return 采样格式。
-AVSampleFormat select_sample_format(const AVCodec* codec)
-{
-    // 优先浮点以贴近引擎输入，随后才回退整数或双精度，并不等于最终文件位深。
     constexpr AVSampleFormat preferredFormats[] = {
         AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_FLT,  AV_SAMPLE_FMT_S16P,
         AV_SAMPLE_FMT_S16,  AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S32,
-        AV_SAMPLE_FMT_DBLP, AV_SAMPLE_FMT_DBL,  AV_SAMPLE_FMT_NONE,
+        AV_SAMPLE_FMT_DBLP, AV_SAMPLE_FMT_DBL,
     };
-
-    for ( const AVSampleFormat format : preferredFormats ) {
-        // NONE 只是本地候选列表终止符，不能传给编码器作为真实采样格式。
-        if ( format == AV_SAMPLE_FMT_NONE ) {
-            break;
-        }
-        if ( supports_sample_format(codec, format) ) {
-            return format;
+    const auto* formats = static_cast<const AVSampleFormat*>(configs);
+    // 能力表仅借用且不释放；尊重计数和结束标记，不按候选项重复查询编码器。
+    for ( const auto preferred : preferredFormats ) {
+        for ( int index = 0;
+              index < configCount && formats[index] != AV_SAMPLE_FMT_NONE;
+              ++index ) {
+            if ( formats[index] == preferred ) return preferred;
         }
     }
-
-    const void* configs     = nullptr;
-    int         configCount = 0;
-    const int   configRet =
-        avcodec_get_supported_config(nullptr,
-                                     codec,
-                                     AV_CODEC_CONFIG_SAMPLE_FORMAT,
-                                     0,
-                                     &configs,
-                                     &configCount);
-    if ( configRet >= 0 && configs && configCount > 0 ) {
-        // 常见格式均未命中时保留编码器首选的其他格式，不强制转换成某个固定整数位深。
-        return static_cast<const AVSampleFormat*>(configs)[0];
-    }
-    // 无有效能力信息的最终后备仍需 avcodec_open2 验证，不能在此保证可编码。
-    return AV_SAMPLE_FMT_FLTP;
+    // 无常用格式时保留编码器首项；结束标记不能作为成功值返回。
+    if ( formats[0] == AV_SAMPLE_FMT_NONE )
+        return std::unexpected(AVERROR(EINVAL));
+    return formats[0];
 }
 
 /// @brief 选择编码器支持的采样率。
 /// @param codec 编码器。
 /// @param desiredSampleRate 期望采样率。
-/// @return 采样率。
-int select_sample_rate(const AVCodec* codec, std::uint32_t desiredSampleRate)
+/// @return 支持的正采样率；失败携带原始查询错误码或无效能力表的 EINVAL。
+std::expected<int, int> select_sample_rate(const AVCodec* codec,
+                                           std::uint32_t  desiredSampleRate)
 {
-    // 调用链需提供可表示为 int 的采样率；这里没有对 uint32_t 的上界另行验证。
+    // open_encoder 已验证输入为正且不超过 int 上界，窄化不会改变采样时钟。
     // 输出采样率只描述编码器输入时钟，转换后帧数不与引擎输入帧计数直接相等。
     const auto  desired     = static_cast<int>(desiredSampleRate);
     const void* configs     = nullptr;
     int         configCount = 0;
     const int   configRet   = avcodec_get_supported_config(
         nullptr, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0, &configs, &configCount);
-    if ( configRet < 0 || !configs || configCount <= 0 ) {
-        // 无能力表时尝试原请求值，不自动改用 44.1kHz 或 48kHz。
-        return desired;
-    }
+    // 查询失败与成功但不限制取值必须区分，不能用原请求掩盖查询错误。
+    if ( configRet < 0 ) return std::unexpected(configRet);
+    if ( !configs ) return desired;
+    if ( configCount <= 0 ) return std::unexpected(AVERROR(EINVAL));
 
     const auto* sampleRates = static_cast<const int*>(configs);
     int         fallback    = 0;
     // 只寻找精确匹配；后备使用表中首项，不是选择数值最接近的采样率。
     for ( int index = 0; index < configCount && sampleRates[index] != 0;
           ++index ) {
+        // 负值不是可用时钟，拒绝损坏的能力项而非传入 time_base。
+        if ( sampleRates[index] < 0 ) return std::unexpected(AVERROR(EINVAL));
         if ( fallback == 0 ) {
             fallback = sampleRates[index];
         }
@@ -236,7 +232,8 @@ int select_sample_rate(const AVCodec* codec, std::uint32_t desiredSampleRate)
             return desired;
         }
     }
-    return fallback > 0 ? fallback : desired;
+    if ( fallback == 0 ) return std::unexpected(AVERROR(EINVAL));
+    return fallback;
 }
 
 /// @brief 选择编码器支持的声道布局。
@@ -256,6 +253,11 @@ int select_channel_layout(const AVCodec* codec, int desiredChannels,
     AVChannelLayout desiredLayout{};
     // 仅按声道数生成默认排列，没有从上游传入自定义声道顺序。
     av_channel_layout_default(&desiredLayout, desiredChannels);
+    // 默认生成也必须满足布局结构约束，不能仅凭正声道数认定转换可用。
+    if ( !av_channel_layout_check(&desiredLayout) ) {
+        av_channel_layout_uninit(&desiredLayout);
+        return AVERROR(EINVAL);
+    }
 
     const void* configs     = nullptr;
     int         configCount = 0;
@@ -266,7 +268,12 @@ int select_channel_layout(const AVCodec* codec, int desiredChannels,
                                      0,
                                      &configs,
                                      &configCount);
-    if ( configRet >= 0 && configs && configCount > 0 ) {
+    // 查询失败保留原始错误码，不能误用默认布局绕过失败。
+    if ( configRet < 0 ) {
+        av_channel_layout_uninit(&desiredLayout);
+        return configRet;
+    }
+    if ( configs && configCount > 0 ) {
         const auto* layouts = static_cast<const AVChannelLayout*>(configs);
         const AVChannelLayout* fallback = nullptr;
         // 表中的布局只借用，选中后复制到输出对象，避免输出依赖静态能力表的存储。
@@ -274,6 +281,11 @@ int select_channel_layout(const AVCodec* codec, int desiredChannels,
               index < configCount && layouts[index].nb_channels > 0;
               ++index ) {
             const AVChannelLayout* layout = &layouts[index];
+            // 数量与掩码或自定义映射必须一致，拒绝把无效布局复制到编码上下文。
+            if ( !av_channel_layout_check(layout) ) {
+                av_channel_layout_uninit(&desiredLayout);
+                return AVERROR(EINVAL);
+            }
             if ( !fallback ) {
                 fallback = layout;
             }
@@ -293,7 +305,12 @@ int select_channel_layout(const AVCodec* codec, int desiredChannels,
         }
     }
 
-    // 能力表不可用时尝试默认布局；临时布局在所有成功选择路径都需解除其内部资源。
+    // 非空能力表没有可选项时应拒绝，只有成功且空指针才表示全部布局受支持。
+    if ( configs ) {
+        av_channel_layout_uninit(&desiredLayout);
+        return AVERROR(EINVAL);
+    }
+    // 不限制布局时使用默认排列，复制后统一释放临时对象。
     const int ret = av_channel_layout_copy(output, &desiredLayout);
     av_channel_layout_uninit(&desiredLayout);
     return ret;
@@ -354,12 +371,16 @@ struct SampleArray {
 /// @brief 保存输出配置并为离线块预分配引擎缓冲，不在构造时打开文件。
 /// @param output_path 将在 open 时使用的输出路径。
 /// @param format 输入图的声道数与采样率配置。
+/// 编码器与容器的能力验证推迟到 open，构造不证明输出组合可用。
+/// 缓冲分配仍由 AudioBuffer 管理，此构造不将底层分配异常转换为错误码。
 /// @warning 低频路径：缓冲初始化可能分配内存，不用于实时音频回调。
 FFmpegFileReceiver::FFmpegFileReceiver(std::filesystem::path  output_path,
                                        const AudioDataFormat& format)
     : IReceiver(format), m_outputPath(std::move(output_path)), m_format(format)
 {
-    m_buffer.resize(m_format, m_blockFrames);
+    // 无效格式保留空缓冲，具体失败诊断仍由 open 提供。
+    if ( is_valid_input_format(m_format) )
+        m_buffer.resize(m_format, m_blockFrames);
 }
 
 /// @brief 关闭输出链路并释放资源，调用前必须保证没有并发 start。
@@ -371,33 +392,42 @@ FFmpegFileReceiver::~FFmpegFileReceiver()
 
 /// @brief 设置输入帧预算，而非编码器最终样本数或容器包数量。
 /// @param frame_count 按输入采样率计数的帧数，零值会在 start 时被拒绝。
+/// @details 运行期间保留原预算，回调重入不能把部分导出改判为完成。
 /// @warning 配置路径：普通成员无同步，不能与离线循环并发修改。
 void FFmpegFileReceiver::set_target_frames(std::size_t frame_count)
 {
+    // 这里只拒绝同步回调重入，不以原子检查代替普通成员所需的串行访问约束。
+    if ( m_running.load(std::memory_order_relaxed) ) return;
     // 预算按输入时钟解释，不包含编码器延迟、末帧填充或容器头尾占用。
     m_targetFrames = frame_count;
 }
 
 /// @brief 更新离线拉取块大小并调整缓冲。
-/// @param frame_count 非零块帧数，零值保持原设置。
+/// @param frame_count 可表示为 int 的正块帧数，无效值保持原设置。
+/// @details 运行期间保留原块大小，避免音源重入时使当前缓冲失效。
 /// @warning 配置路径：会重新分配缓冲，不允许与 start 并发调用。
 void FFmpegFileReceiver::set_block_frames(std::size_t frame_count)
 {
-    if ( frame_count == 0 ) {
-        // 避免 start 每轮处理零帧却无法推进累计进度。
+    // process 及进度回调均在 start 调用栈内，不允许它们重分配正在使用的缓冲。
+    if ( m_running.load(std::memory_order_relaxed) ) return;
+    if ( !is_valid_input_format(m_format) || frame_count == 0 ||
+         frame_count > std::numeric_limits<int>::max() ) {
+        // 零值无法推进进度，超界值无法传给 FFmpeg，均保留原有配置。
         return;
     }
-    // 非零尺寸当前没有上限检查，后续分配和 FFmpeg int 窄化还有额外约束。
-    m_blockFrames = frame_count;
-    m_buffer.resize(m_format, m_blockFrames);
+    // 先确认缓冲接受尺寸，再发布配置，避免 resize 拒绝后容量与预算不一致。
+    if ( m_buffer.resize(m_format, frame_count) ) m_blockFrames = frame_count;
 }
 
 /// @brief 替换在离线编码线程同步执行的进度回调。
 /// @param callback 接收已送入编码链路的累计输入帧数，空回调表示不通知。
+/// @details 运行期间忽略替换请求，保持当前回调对象存活直至调用返回。
 /// @warning 不允许并发替换；回调不得重入 close 或销毁仍在执行 start 的接收端。
 void FFmpegFileReceiver::set_progress_callback(
     std::function<void(std::size_t)> callback)
 {
+    // 同步回调若替换自身会销毁仍在执行的闭包；必须在赋值前拒绝重入。
+    if ( m_running.load(std::memory_order_relaxed) ) return;
     // 保存回调不调度任务，后续通知就在 start 的调用线程执行，没有异常隔离。
     m_progressCallback = std::move(callback);
 }
@@ -433,7 +463,7 @@ bool FFmpegFileReceiver::open()
     m_nextPts        = 0;
     m_trailerWritten = false;
     // 新 open 会清除停止请求，所以启动前的 stop 不保证在下一轮继续生效。
-    m_stopRequested.store(false);
+    m_stopRequested.store(false, std::memory_order_relaxed);
 
     if ( !open_encoder() ) {
         // 私有初始化分阶段写入成员句柄，统一由 close
@@ -475,9 +505,18 @@ void FFmpegFileReceiver::close()
     }
     if ( m_formatContext ) {
         // NOFILE 容器不拥有这里打开的 AVIO 文件句柄，不能无条件关闭 pb。
-        if ( !(m_formatContext->oformat->flags & AVFMT_NOFILE) &&
-             m_formatContext->pb ) {
-            avio_closep(&m_formatContext->pb);
+        // 初始化可能只取得上下文而没有输出格式，失败清理不能再次解引用空格式。
+        // 若仍持有显式 IO 句柄，缺格式时也回收它；已知 NOFILE
+        // 容器保持原有边界。
+        if ( m_formatContext->pb &&
+             (!m_formatContext->oformat ||
+              !(m_formatContext->oformat->flags & AVFMT_NOFILE)) ) {
+            // 关闭会刷新输出缓存，trailer 成功不保证最后一次 IO 也成功。
+            const int closeResult = avio_closep(&m_formatContext->pb);
+            // 保留更早的编码或取消原因，只在此前无错误时记录关闭失败。
+            if ( closeResult < 0 && m_errorMessage.empty() ) {
+                set_ffmpeg_error("Failed to close output file", closeResult);
+            }
         }
         avformat_free_context(m_formatContext);
     }
@@ -489,7 +528,7 @@ void FFmpegFileReceiver::close()
     m_nextPts        = 0;
     m_opened         = false;
     m_trailerWritten = false;
-    m_running.store(false);
+    m_running.store(false, std::memory_order_relaxed);
 }
 
 /// @brief 在调用线程拉取输入预算、编码并完成输出。
@@ -498,9 +537,11 @@ void FFmpegFileReceiver::close()
 /// @return 预算处理及正常收尾均成功时返回 true；取消也返回 false。
 /// @warning 离线循环：分配、编码、回调和文件写入可阻塞，禁止作为实时回调路径。
 /// @warning running 的 load/store 不是互斥获取，不支持两个线程并发进入 start。
+/// @warning 每离线块以 relaxed 读取 stop
+/// 写入的取消标志，不借此接收其他线程数据。
 bool FFmpegFileReceiver::start()
 {
-    if ( m_running.load() ) {
+    if ( m_running.load(std::memory_order_relaxed) ) {
         set_error("FFmpegFileReceiver is already running");
         return false;
     }
@@ -514,19 +555,30 @@ bool FFmpegFileReceiver::start()
     }
 
     // 原子标志不保护整个对象，普通配置与编码资源仍需由本次调用线程独占。
-    m_running.store(true);
+    m_running.store(true, std::memory_order_relaxed);
     bool ok = true;
 
-    while ( m_framesWritten < m_targetFrames && !m_stopRequested.load() ) {
+    while ( m_framesWritten < m_targetFrames &&
+            !m_stopRequested.load(std::memory_order_relaxed) ) {
         // 尾块只拉取剩余预算，输入计数不会因固定块长而越过目标。
         const std::size_t frameCount =
             std::min(m_blockFrames, m_targetFrames - m_framesWritten);
         // 按本块预算调整有效长度，不把上一完整块的旧尾部误作为本次有效输入。
-        m_buffer.resize(m_format, frameCount);
+        if ( !m_buffer.resize(m_format, frameCount) ) {
+            // 尺寸准备失败时不拉取图或推进进度，统一走后续错误清理。
+            set_error("Failed to resize input audio buffer");
+            ok = false;
+            break;
+        }
         m_buffer.clear();
         // 未绑定音源时仍编码清零缓冲；这里没有把缺源当成错误或提前 EOF。
         if ( get_source() ) {
             get_source()->process(m_buffer);
+        }
+        // 音源处理可能耗时或主动请求停止，返回后先观察取消再提交本块。
+        // 已推进的音源状态不回滚；这里只阻止尚未编码的数据继续进入输出链路。
+        if ( m_stopRequested.load(std::memory_order_relaxed) ) {
+            break;
         }
         // 失败块不计入进度，但可能已转换或写入部分数据，因此不能按计数原地重放。
         if ( !write_buffer(m_buffer, frameCount) ) {
@@ -541,7 +593,7 @@ bool FFmpegFileReceiver::start()
         }
     }
 
-    if ( m_stopRequested.load() && ok ) {
+    if ( m_stopRequested.load(std::memory_order_relaxed) && ok ) {
         // 取消被记录为失败；已有编码错误优先保留，不被通用 stopped 文本覆盖。
         set_error("FFmpegFileReceiver stopped");
         ok = false;
@@ -552,24 +604,28 @@ bool FFmpegFileReceiver::start()
 
     // 先清运行标记再 close；观察者不能仅凭 is_running=false
     // 就并发销毁或重配对象。
-    m_running.store(false);
+    m_running.store(false, std::memory_order_relaxed);
     close();
-    return ok;
+    // 资源回收继续完成后再汇总关闭错误，不能把写尾成功当作最终导出成功。
+    return ok && m_errorMessage.empty();
 }
 
 /// @brief 发布协作停止请求，不等待正在执行的块完成。
 /// @warning 跨线程控制：循环在块边界读取；不能中断当前编码、文件 IO
 /// 或进度回调。
+/// @warning relaxed 仅传递取消值，start 读取该值不获得其他普通成员的访问权。
 void FFmpegFileReceiver::stop()
 {
-    m_stopRequested.store(true);
+    m_stopRequested.store(true, std::memory_order_relaxed);
 }
 
 /// @brief 查询离线循环的原子状态标志，不作为资源回收完成通知。
 /// @return 最近发布的运行状态。
+/// @warning 供跨线程状态展示，以 relaxed 读取 start/close
+/// 写入的值，不同步资源。
 bool FFmpegFileReceiver::is_running() const
 {
-    return m_running.load();
+    return m_running.load(std::memory_order_relaxed);
 }
 
 /// @brief 协商输出格式并依次建立容器、编码器、文件与重采样链路。
@@ -579,13 +635,20 @@ bool FFmpegFileReceiver::is_running() const
 /// @warning 文件可能在后续初始化失败前已创建或截断，不提供文件内容回滚。
 bool FFmpegFileReceiver::open_encoder()
 {
-    if ( m_format.channels == 0 || m_format.samplerate == 0 ) {
-        // 零声道或零采样率无法定义转换关系，必须在创建输出文件前拒绝。
+    if ( !is_valid_input_format(m_format) ) {
+        // 输入采样率用于有符号的编码与重采样接口，不能依赖窄化后的值协商。
+        // 在上下文分配和文件创建前拒绝，避免非法输入走到部分初始化路径。
         set_error("Invalid FFmpegFileReceiver input format");
         return false;
     }
 
-    const std::string           outputPath = path_to_utf8(m_outputPath);
+    const std::string outputPath = path_to_utf8(m_outputPath);
+    // C 字符串接口会截断嵌入空字符，必须先拒绝，防止覆盖路径前缀对应的文件。
+    // 空路径同样不进入格式推断或文件创建，失败保持外部文件内容不变。
+    if ( outputPath.empty() || outputPath.find('\0') != std::string::npos ) {
+        set_error("Invalid FFmpegFileReceiver output path");
+        return false;
+    }
     const OutputFormatSelection outputSelection =
         select_output_format(m_outputPath);
     // 显式格式覆盖优先；未覆盖时由输出路径让 FFmpeg 选择 muxer。
@@ -593,9 +656,14 @@ bool FFmpegFileReceiver::open_encoder()
                                              nullptr,
                                              outputSelection.formatName,
                                              outputPath.c_str());
-    if ( ret < 0 || !m_formatContext || !m_formatContext->oformat ) {
-        // 同时检查错误码和输出句柄，不能只凭非负返回值继续解引用上下文。
+    if ( ret < 0 ) {
+        // 接口报告失败时保留原始错误码，与缺失输出句柄的契约异常区分。
         set_ffmpeg_error("Failed to allocate output context", ret);
+        return false;
+    }
+    if ( !m_formatContext || !m_formatContext->oformat ) {
+        // 非负返回值不能证明句柄有效，也不能当作错误码生成矛盾的成功文本。
+        set_error("Output context or format is missing after allocation");
         return false;
     }
 
@@ -630,6 +698,22 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
+    // 在取得临时布局资源前检查格式，错误出口无需遗留布局清理责任。
+    // 仅在失败分支读取 error，成功分支才解引用，避免使用会抛出的 value 访问。
+    // 诊断保留后由 open 的失败清理回收已建立的上下文，不覆盖最初查询原因。
+    const auto sampleFormat = select_sample_format(codec);
+    if ( !sampleFormat ) {
+        set_ffmpeg_error("Failed to select encoder sample format",
+                         sampleFormat.error());
+        return false;
+    }
+    // 成功值与错误分离，避免用零时钟或格式结束标记编码失败原因。
+    const auto sampleRate = select_sample_rate(codec, m_format.samplerate);
+    if ( !sampleRate ) {
+        set_ffmpeg_error("Failed to select encoder sample rate",
+                         sampleRate.error());
+        return false;
+    }
     AVChannelLayout outputLayout{};
     // 输出布局允许按编码器能力回退，重采样器将处理与输入声道数不一致的情况。
     ret = select_channel_layout(
@@ -642,11 +726,10 @@ bool FFmpegFileReceiver::open_encoder()
     m_codecContext->codec_id = codecId;
     // 接收端只创建音频流，不复制输入文件中的视频、封面或标签。
     m_codecContext->codec_type = AVMEDIA_TYPE_AUDIO;
-    m_codecContext->sample_fmt = select_sample_format(codec);
+    m_codecContext->sample_fmt = *sampleFormat;
     // 采样率回退后，PTS 与重采样输出都必须使用实际选中的编码采样率。
-    m_codecContext->sample_rate =
-        select_sample_rate(codec, m_format.samplerate);
-    m_codecContext->time_base = AVRational{ 1, m_codecContext->sample_rate };
+    m_codecContext->sample_rate = *sampleRate;
+    m_codecContext->time_base   = AVRational{ 1, m_codecContext->sample_rate };
     // 显式允许实验性编码器，不把成功打开解释为所有格式均具有相同成熟度。
     m_codecContext->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
     if ( should_set_default_bitrate(codecId) ) {
@@ -742,8 +825,13 @@ bool FFmpegFileReceiver::open_resampler()
                                   nullptr);
     av_channel_layout_uninit(&inputLayout);
     // 临时布局可立即释放，后续转换只依赖已交给 swr 的配置状态。
-    if ( ret < 0 || !m_swrContext ) {
+    if ( ret < 0 ) {
         set_ffmpeg_error("Failed to allocate audio resampler", ret);
+        return false;
+    }
+    if ( !m_swrContext ) {
+        // 仅有成功状态码而缺少转换器时仍失败，诊断不调用成功码的错误转换。
+        set_error("Audio resampler is missing after allocation");
         return false;
     }
 
@@ -759,8 +847,8 @@ bool FFmpegFileReceiver::open_resampler()
     m_fifo = av_audio_fifo_alloc(m_codecContext->sample_fmt,
                                  m_codecContext->ch_layout.nb_channels,
                                  static_cast<int>(m_blockFrames));
-    // 初始容量来自 m_blockFrames 的 int 转换，上游 setter
-    // 没有检查该窄化的上界。
+    // 默认块大小及 setter 均保证正值和 int 上界，此处沿用已验证的容量。
+    // 容量合法不代表分配必然成功，空句柄仍需进入初始化失败清理。
     if ( !m_fifo ) {
         set_error("Failed to allocate encoder audio FIFO");
         return false;
@@ -788,8 +876,14 @@ bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
         return false;
     }
 
+    // 源节点可访问可写缓冲，不能仅凭 process 正常返回就信任其保持了块契约。
+    // 先检查格式与长度，再索引声道表，避免减少声道或缩短存储导致越界读取。
+    if ( buffer.afmt != m_format || buffer.num_frames() != frame_count ||
+         buffer.frame_capacity() < frame_count ) {
+        set_error("Audio source changed the output buffer contract");
+        return false;
+    }
     const float* const* input = buffer.raw_ptrs();
-    // 这里只检查指针存在，缓冲实际长度和格式一致性由调用链保证。
     // 缓冲缺失不以静音替代，否则会把上游状态错误伪装为正常音频导出。
     if ( !input ) {
         set_error("Invalid audio buffer");
@@ -805,7 +899,7 @@ bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
 
     const int inputFrames = static_cast<int>(frame_count);
     // 查询包含当前转换器延迟在内的容量上界，不把输入帧数直接作为输出容量。
-    const int outputCapacity = swr_get_out_samples(m_swrContext, inputFrames);
+    int outputCapacity = swr_get_out_samples(m_swrContext, inputFrames);
     // 负查询结果不能转成无符号分配大小，以免把错误当作巨型样本容量。
     if ( outputCapacity < 0 ) {
         set_ffmpeg_error("Failed to query resampler output samples",
@@ -813,9 +907,9 @@ bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
         return false;
     }
     if ( outputCapacity == 0 ) {
-        // 当前分支直接成功返回且不调用
-        // swr_convert，不能把它描述为已实际消费输入。
-        return true;
+        // 零输出上界不代表已经消费输入，仍须把本块交给转换器维护延迟状态。
+        // 准备一个样本的有效输出存储，避免分配零长度数组；实际容量如实传入。
+        outputCapacity = 1;
     }
 
     SampleArray convertedSamples;
@@ -863,20 +957,29 @@ bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
 /// @brief 复制转换后的样本到 FIFO，调用后不保留输入数组所有权。
 /// @param converted_data 按编码器格式组织的平面或交错样本指针。
 /// @param frame_count 输出采样率下的帧数。
-/// @return 成功入队或无有效输入时返回 true；短写也作为失败报告。
-/// @warning 离线路径：FIFO 可能扩容，当前累加容量没有额外的 int 溢出检查。
+/// @return 成功入队或零帧无操作时返回 true；无效状态和短写返回 false。
+/// @warning 离线路径：FIFO 可能扩容和复制样本，不能在实时回调中调用。
 bool FFmpegFileReceiver::write_converted_to_fifo(uint8_t** converted_data,
                                                  int       frame_count)
 {
-    if ( !m_fifo || !converted_data || frame_count <= 0 ) {
-        // 缺 FIFO
-        // 与空输入都按无操作成功处理；正常写块入口会先检查链路是否打开。
-        return true;
+    // 零帧无需访问任何存储，但正帧输入不能在缺失资源时静默丢弃。
+    // 调用者依据成功值增加输入进度，错误的无操作成功会把漏写样本计入结果。
+    if ( frame_count == 0 ) return true;
+    if ( !m_fifo || !converted_data || frame_count < 0 ) {
+        set_error("Invalid converted audio FIFO input");
+        return false;
     }
 
-    int ret =
-        // 保留原有残留样本，并为本次转换结果一起预留容量。
-        av_audio_fifo_realloc(m_fifo, av_audio_fifo_size(m_fifo) + frame_count);
+    const int queuedFrames = av_audio_fifo_size(m_fifo);
+    // 两个正 int 相加前先验证剩余范围，不能先溢出再依赖 FFmpeg 拒绝容量。
+    // 负队列长度也不是有效状态，避免据此缩小容量或继续写入。
+    if ( queuedFrames < 0 ||
+         queuedFrames > std::numeric_limits<int>::max() - frame_count ) {
+        set_error("Encoder audio FIFO size is out of range");
+        return false;
+    }
+    // 保留原有残留样本，并为本次转换结果一起预留容量。
+    int ret = av_audio_fifo_realloc(m_fifo, queuedFrames + frame_count);
     if ( ret < 0 ) {
         set_ffmpeg_error("Failed to resize encoder audio FIFO", ret);
         return false;
@@ -901,19 +1004,27 @@ bool FFmpegFileReceiver::write_converted_to_fifo(uint8_t** converted_data,
 
 /// @brief 按编码器要求从 FIFO 取样本，构造帧并同步发送。
 /// @param flush 结束阶段允许提交不足固定帧长的最后一帧。
-/// @return 所有可提交样本处理成功时返回 true，缺链路时当前实现也返回 true。
+/// @return 所有可提交样本处理成功时返回 true，缺少编码资源时返回 false。
 /// @warning 离线编码路径：逐帧分配 AVFrame 与样本区，发送后可能进行文件写入。
 bool FFmpegFileReceiver::encode_fifo(bool flush)
 {
     if ( !m_fifo || !m_codecContext ) {
-        return true;
+        // 缺失队列或编码器并非排空成功，内部不变量被破坏时仍向上层报告失败。
+        set_error("Encoder audio FIFO or codec is not initialized");
+        return false;
     }
 
     const int codecFrameSize = m_codecContext->frame_size;
     // FIFO 的数量均为输出采样率下每声道帧数，不能与 m_framesWritten
     // 输入计数混用。
-    while ( av_audio_fifo_size(m_fifo) > 0 ) {
+    while ( true ) {
+        // 每轮使用一次可信快照；负值不是空队列，不能作为成功排空处理。
         const int availableFrames = av_audio_fifo_size(m_fifo);
+        if ( availableFrames < 0 ) {
+            set_error("Invalid encoder audio FIFO size");
+            return false;
+        }
+        if ( availableFrames == 0 ) break;
         if ( !flush && codecFrameSize > 0 &&
              availableFrames < codecFrameSize ) {
             // 固定帧长编码器在普通写入时等待补齐，不能提前排出每块不足长度的尾部。
@@ -932,6 +1043,12 @@ bool FFmpegFileReceiver::encode_fifo(bool flush)
             break;
         }
 
+        // PTS 从零单调增长，在分配和移出 FIFO 前确认下一时间戳仍可表示。
+        if ( m_nextPts < 0 ||
+             m_nextPts > std::numeric_limits<int64_t>::max() - frameSamples ) {
+            set_error("Encoder audio timestamp is out of range");
+            return false;
+        }
         // 自定义删除器统一释放帧及其样本引用，任何失败分支都无需手动重复清理。
         std::unique_ptr<AVFrame, AVFrameDeleter> frame(av_frame_alloc());
         if ( !frame ) {
@@ -944,7 +1061,6 @@ bool FFmpegFileReceiver::encode_fifo(bool flush)
         // 每个新 AVFrame 显式设置格式属性，不依赖上一次帧的状态或默认采样配置。
         frame->sample_rate = m_codecContext->sample_rate;
         frame->pts         = m_nextPts;
-        // 累计 PTS 没有额外溢出检查，超长输入预算仍需调用方约束。
         // 布局复制使该帧独立持有布局描述，不把编码上下文的内部指针转移出去。
         int ret = av_channel_layout_copy(&frame->ch_layout,
                                          &m_codecContext->ch_layout);
@@ -964,7 +1080,7 @@ bool FFmpegFileReceiver::encode_fifo(bool flush)
         ret = av_audio_fifo_read(
             // 读取会移出 FIFO；后面发送失败时当前实现不把样本重新放回队列。
             m_fifo,
-            reinterpret_cast<void**>(frame->data),
+            reinterpret_cast<void**>(frame->extended_data),
             frameSamples);
         if ( ret < frameSamples ) {
             if ( ret < 0 ) {
@@ -977,7 +1093,7 @@ bool FFmpegFileReceiver::encode_fifo(bool flush)
 
         // FIFO 已读出但编码发送尚未完成，失败时不会把这些样本重新放回队列。
         m_nextPts += frameSamples;
-        // FIFO 使用 frame->data 而非 extended_data，大量平面声道仍需另行验证。
+        // extended_data 同时覆盖交错存储和超过固定 data 数组容量的平面声道。
         // PTS 先于发送推进，失败后不能从这个内部计数推断已成功写入的输出时长。
         if ( !send_frame(frame.get()) ) {
             return false;
@@ -1000,6 +1116,15 @@ bool FFmpegFileReceiver::finish_encoding()
         return true;
     }
 
+    // 已打开状态必须具有完整链路，缺资源不能按空延迟或空队列继续写尾。
+    // 检查放在未打开状态的早退之后，允许 open 失败时清理部分初始化句柄。
+    // 此处留下诊断使 close 跳过补尾重试，随后仍按已有顺序释放剩余资源。
+    // 不在错误路径重建转换器，以免丢失原链路累计的延迟和时间戳。
+    if ( !m_swrContext || !m_fifo || !m_codecContext || !m_formatContext ||
+         !m_stream || !m_packet ) {
+        set_error("Encoder resources are incomplete during finalization");
+        return false;
+    }
     // 排尾不再触发输入进度回调，延迟样本不会追加到 m_framesWritten 的输入计数。
     while ( m_swrContext ) {
         // 此阶段不读取 m_stopRequested，开始正常收尾后 stop
@@ -1078,16 +1203,16 @@ bool FFmpegFileReceiver::finish_encoding()
 
 /// @brief 提交一帧后立即尽可能取出当前编码包。
 /// @param frame 已按编码器格式准备的帧；nullptr 表示不再提供输入并排出延迟包。
-/// @return 提交及取包成功时返回 true，无编码上下文时当前实现也返回 true。
+/// @return 提交及取包成功时返回 true，缺少编码上下文时返回 false。
 /// @warning 离线编码路径：可能编码和写文件，不保留调用者帧指针供异步任务使用。
 /// @warning send 的负返回值全部按失败处理，没有针对 EAGAIN 先 drain
 /// 后重试的分支。
 bool FFmpegFileReceiver::send_frame(AVFrame* frame)
 {
     if ( !m_codecContext ) {
-        // 缺上下文被当作无操作；正常入口依赖 open
-        // 建立的不变量，而非在此强制校验。
-        return true;
+        // 即使调用链通常由 open 保证资源存在，也不能把漏发帧报告为成功。
+        set_error("Encoder codec is not initialized");
+        return false;
     }
 
     // 发送成功只说明编码器接收了输入，一帧可能暂时不产生包，也可能产生多个包。
@@ -1100,16 +1225,17 @@ bool FFmpegFileReceiver::send_frame(AVFrame* frame)
         return false;
     }
     // 及时取空输出以便后续输入继续提交，不假定一次发送只对应一次 receive。
-    return drain_packets();
+    return drain_packets(frame == nullptr);
 }
 
 /// @brief 取出当前可用的编码包，换算时间基并写入唯一音频流。
-/// @return 遇到 EAGAIN/EOF 时返回 true，编码或封装写入错误返回 false。
+/// @param draining 已成功发送结束帧，必须取到 EOF 才算排空完成。
+/// @return 普通取包遇到 EAGAIN 或最终排空遇到 EOF 时成功，其他负值均失败。
 /// @warning 离线 IO
 /// 路径：循环次数由编码器输出决定，不检查停止标记或限制执行时间。
 /// @warning 依赖 codec、stream 与 format
 /// 上下文已就绪；这里只单独验证复用包存在。
-bool FFmpegFileReceiver::drain_packets()
+bool FFmpegFileReceiver::drain_packets(bool draining)
 {
     if ( !m_packet ) {
         // 没有复用包无法接收编码结果，不能把资源未初始化解释成暂无输出。
@@ -1121,13 +1247,14 @@ bool FFmpegFileReceiver::drain_packets()
     while ( true ) {
         // 持续取包直到本轮无数据或编码器 EOF，不用硬编码包数猜测编码延迟。
         int ret = avcodec_receive_packet(m_codecContext, m_packet);
-        if ( is_packet_drain_finished(ret) ) {
-            // EAGAIN 表示下次输入后还可继续，EOF
-            // 则表示编码器已结束；二者都非文件写入错误。
+        if ( is_packet_drain_finished(ret, draining) ) {
+            // 结束帧成功送入后不再有下一次输入，必须观察到真正的编码器 EOF。
+            // 普通阶段只接受 EAGAIN，提前 EOF 不能冒充本帧已正常处理。
             return true;
         }
         if ( ret < 0 ) {
-            // 其他负值才作为编码失败，错误信息与下方 muxer 写失败区分保存。
+            // 状态不匹配也保留原始错误，阻止上层继续写正常 trailer。
+            // 不对 EAGAIN 忙等重试：结束帧之后时间流逝不会补充新的输入。
             set_ffmpeg_error("Failed to receive encoded packet", ret);
             return false;
         }

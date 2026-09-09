@@ -1,5 +1,4 @@
-#ifndef ICE_MIXBUS_HPP
-#define ICE_MIXBUS_HPP
+#pragma once
 
 #include <atomic>
 #include <cstddef>
@@ -250,5 +249,3 @@ private:
     std::atomic<std::uint64_t> m_rejectedProcessCount{ 0U };
 };
 }  // namespace ice
-
-#endif  // ICE_MIXBUS_HPP

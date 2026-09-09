@@ -1,20 +1,30 @@
 #include <ice/out/play/openal/ALPlayer.hpp>
 
+#include <ice/core/IAudioNode.hpp>
+#include <ice/manage/AudioBuffer.hpp>
+
+#include <SDL3/SDL_thread.h>
 #include <al.h>
 #include <alc.h>
-#include <fmt/base.h>
+#include <alext.h>
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #    ifndef WIN32_LEAN_AND_MEAN
@@ -294,28 +304,40 @@ std::string formatALCErrorMessage(const char* operation, ALCdevice* device)
                        static_cast<int>(error));
 }
 
-/// @brief 消费当前 AL 错误，并在失败时输出操作诊断。
-/// @param operation 用于定位失败阶段的操作名。
-/// @param lastError 可选的控制侧错误存储；供数路径未传入该参数。
-/// @return 没有待处理 AL 错误时返回 true。
-/// @warning 每次排队后也会调用；成功路径不格式化，失败路径仍有分配和输出。
-/// 错误路径的执行时间受字符串分配及输出端影响，不满足无阻塞实时约束。
-bool checkALError(const char* operation, std::string* lastError = nullptr)
-{
-    // alGetError 消费错误状态；同一操作不应再依靠第二次查询恢复原错误。
-    const ALenum error = alGetError();
-    if ( error == AL_NO_ERROR ) {
-        return true;
-    }
+/// @brief 在后端锁内保存首个供数错误，操作名只引用静态字符串。
+struct ALPendingError {
+    /// @brief 失败阶段；空指针表示没有等待控制侧处理的诊断。
+    const char* m_operation{ nullptr };
+    /// @brief 首次失败的原始 AL 错误码；AL_NO_ERROR 表示入口失败但无 AL
+    /// 错误码。
+    ALenum m_code{ AL_NO_ERROR };
+};
 
-    const std::string message = fmt::format("OpenAL {} failed: {} (0x{:x}).",
-                                            operation,
-                                            getALErrorName(error),
-                                            static_cast<int>(error));
-    fmt::print("{}\n", message);
+/// @brief 消费 AL 错误，控制侧生成文本，供数侧只保存固定大小状态。
+/// @param operation 静态存储期的操作名称，延迟诊断不能借用临时字符串。
+/// @param lastError 控制侧文本存储；实时调用必须传入空指针。
+/// @param pending 受后端锁保护的延迟错误，空值表示无需延迟诊断。
+/// @return 无错误时返回 true，失败时返回 false 以结束当前操作。
+/// @warning 每块调用；供数失败分支不分配、不输出，也不额外加锁。
+/// @pre 传入 pending 时须持有对应后端的 alMutex，控制侧消费时使用同一锁。
+/// 延迟记录只保存静态名称和错误码，不延长设备、源或队列对象的生命周期。
+bool checkALError(const char* operation, std::string* lastError = nullptr,
+                  ALPendingError* pending = nullptr)
+{
+    // 查询会消费错误，必须在这里保存，不能到 stop 时重新读取 AL 状态。
+    const ALenum error = alGetError();
+    if ( error == AL_NO_ERROR ) return true;
+    if ( pending && !pending->m_operation ) {
+        // 保留根因，停止或退队中的次生错误不能覆盖首次失败。
+        pending->m_operation = operation;
+        pending->m_code      = error;
+    }
     if ( lastError ) {
-        // 只有显式提供存储的控制路径更新错误引用，避免供数直接写该成员。
-        *lastError = message;
+        // 只有控制路径立即格式化；日志记录由调用方读取诊断后决定。
+        *lastError = fmt::format("OpenAL {} failed: {} (0x{:x}).",
+                                 operation,
+                                 getALErrorName(error),
+                                 static_cast<int>(error));
     }
     return false;
 }
@@ -354,14 +376,22 @@ ALenum selectALFormat(uint16_t channels, bool useFloatFormat)
     return channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
 }
 
+/// @brief 将非有限样本视为静音，有限浮点样本保留动态范围。
+/// @warning 每样本调用，不分配、不记录日志，避免异常数据污染整个设备队列。
+float sanitizeSample(float sample)
+{
+    // NaN 无法可靠裁剪，正负无穷也不应转换成持续满幅输出。
+    return std::isfinite(sample) ? sample : 0.0f;
+}
+
 /// @brief 将浮点采样转换为 int16。
-/// @pre 输入为有限音频采样；此处不承担 NaN 等上游异常数据的修复。
+/// 非有限输入先静音，保证 lrint 仅接收有界有限值。
 /// 对称缩放使用正端最大值，负满幅对应 -32767 而非 -32768。
 /// @return 单个有符号采样；输出字节布局由上传处的整型数组提供。
 std::int16_t floatToInt16(float sample)
 {
     // 裁剪避免超过有符号 16 位范围；lrint 沿用当前浮点舍入模式。
-    const float clamped = std::clamp(sample, -1.0f, 1.0f);
+    const float clamped = std::clamp(sanitizeSample(sample), -1.0f, 1.0f);
     return static_cast<std::int16_t>(std::lrint(
         clamped *
         static_cast<float>(std::numeric_limits<std::int16_t>::max())));
@@ -373,14 +403,20 @@ std::int16_t floatToInt16(float sample)
 /// @return 按值返回三分量数组，不借用缓存或引入共享所有权。
 std::array<float, 3> normalizeDirection(float x, float y, float z)
 {
-    const float lengthSq = x * x + y * y + z * z;
+    // 有限 float 的平方和可能超出 float；先提升再相乘，double 可容纳整个范围。
+    const double lengthSq = static_cast<double>(x) * x +
+                            static_cast<double>(y) * y +
+                            static_cast<double>(z) * z;
     if ( lengthSq <= 0.000001f ) {
         // 默认朝向与监听者前方一致，零方向不会导致除零或任意偏转。
         return { 0.0f, 0.0f, -1.0f };
     }
 
-    const float invLength = 1.0f / std::sqrt(lengthSq);
-    return { x * invLength, y * invLength, z * invLength };
+    // 归一化结果有界；乘法仍在 double 中完成，避免巨大方向的倒数提前丢失精度。
+    const double invLength = 1.0 / std::sqrt(lengthSq);
+    return { static_cast<float>(x * invLength),
+             static_cast<float>(y * invLength),
+             static_cast<float>(z * invLength) };
 }
 }  // namespace
 
@@ -390,6 +426,10 @@ std::array<float, 3> normalizeDirection(float x, float y, float z)
 class ALBackend
 {
 public:
+    /// @brief 供数错误暂存，读写均在 alMutex 内，控制侧停止后转成文本。
+    /// 不用于发布其他资源，不增加供数路径原子操作或动态存储。
+    ALPendingError m_pendingError;
+
     /// @brief OpenAL 设备句柄。
     /// 在上下文创建失败的早期分支直接释放，成功后交由 close 回收。
     ALCdevice* device{ nullptr };
@@ -397,6 +437,11 @@ public:
     /// @brief OpenAL 上下文句柄。
     /// AL 对象在该上下文中创建，销毁时必须先释放源与缓冲。
     ALCcontext* context{ nullptr };
+
+    /// @brief 设备打开时解析的线程绑定入口，不修改进程级当前上下文。
+    PFNALCSETTHREADCONTEXTPROC setThreadContext{ nullptr };
+    /// @brief 查询调用线程原有绑定，供控制操作结束时恢复。
+    PFNALCGETTHREADCONTEXTPROC getThreadContext{ nullptr };
 
     /// @brief OpenAL 声源句柄。
     /// 一个源承载整个混音图，空间化作用于最终输出而非各图节点。
@@ -406,12 +451,28 @@ public:
     /// 句柄数组生命周期跨越多次 start/stop，不随每次退队重新创建。
     std::array<ALuint, kOpenALBufferCount> buffers{};
 
+    /// @brief 构造成功时确定的固定块长，不随上游对缓冲元数据的改写变化。
+    /// 为零表示初始缓冲未准备成功，此时不能启动供数。
+    size_t m_preparedFrames{ 0U };
+
+    /// @brief 控制侧启动前准备的浮点交错存储，运行期间由供数线程独占。
+    /// 停止后保留容量供重启复用，销毁后端前必须先回收供数线程。
+    std::vector<float> floatScratch;
+    /// @brief 与浮点路径同容量的整型备用存储，避免设备格式切换时临时分配。
+    /// 控制侧只在旧线程退出后调整，两个存储不随单块转换创建或释放。
+    std::vector<std::int16_t> int16Scratch;
+
     /// @brief buffer 句柄是否已创建。
     bool buffersReady{ false };
 
     /// @brief 是否支持 float32 buffer 扩展。
     /// open 时写入，供数期间只读；换设备必须先结束旧线程。
     bool floatFormatSupported{ false };
+
+    /// @brief 当前空队列开始填充时确定的空间输出布局。
+    /// 仅由供数线程读写，控制请求在清空队列后才更新，避免单批 mono/stereo
+    /// 混用。
+    bool queuedSpatialOutput{ false };
 
     /// @brief 空间化参数缓存。
     ALSpatialState spatialState;
@@ -420,6 +481,50 @@ public:
     /// @warning 供数循环逐块持锁；控制侧不得在锁内等待播放线程退出。
     /// 锁不覆盖完整 open 生命周期，外部仍须串行执行设备管理操作。
     std::mutex alMutex;
+};
+
+/// @brief 在当前线程临时绑定一个后端，作用域结束恢复此前线程绑定。
+/// 不改变进程级绑定，多个播放器的供数线程可独立执行 AL 操作。
+class ScopedALContext
+{
+public:
+    /// @brief 保存线程原绑定后选择本次操作的上下文。
+    /// @param backend 已解析线程扩展入口且仍存活的后端。
+    /// @param closing 即将销毁目标时，不恢复指向该目标自身的旧绑定。
+    /// @warning 控制操作或供数线程入口执行；不得在每个样本或每个槽反复构造。
+    explicit ScopedALContext(ALBackend& backend, bool closing = false)
+        : m_setContext(backend.setThreadContext)
+    {
+        // 只有扩展已就绪才读取旧绑定，失败对象不在析构时调用空入口。
+        if ( !m_setContext || !backend.getThreadContext ) return;
+        m_previous = backend.getThreadContext();
+        // close 可能在 open 的错误回滚内嵌套调用，不能重新绑定即将销毁的目标。
+        if ( closing && m_previous == backend.context ) m_previous = nullptr;
+        m_bound = m_setContext(backend.context) == ALC_TRUE;
+    }
+
+    /// @brief 在目标资源销毁前恢复本线程原上下文，不触碰其他线程绑定。
+    /// @warning 调用者保证原上下文在此作用域内存活，恢复不等待其他播放线程。
+    ~ScopedALContext()
+    {
+        if ( m_bound ) m_setContext(m_previous);
+    }
+
+    /// @brief 禁止复制绑定守卫，避免重复恢复同一线程状态。
+    ScopedALContext(const ScopedALContext&) = delete;
+    /// @brief 禁止赋值，绑定与词法作用域保持一一对应。
+    ScopedALContext& operator=(const ScopedALContext&) = delete;
+
+    /// @brief 返回目标是否已成功绑定；失败时不得执行 AL 对象操作。
+    explicit operator bool() const { return m_bound; }
+
+private:
+    /// @brief 借用扩展函数地址，其寿命覆盖所有后端实例。
+    PFNALCSETTHREADCONTEXTPROC m_setContext{ nullptr };
+    /// @brief 调用线程原有绑定，不拥有该上下文。
+    ALCcontext* m_previous{ nullptr };
+    /// @brief 只有成功绑定后析构才恢复，失败不改写原线程状态。
+    bool m_bound{ false };
 };
 
 /// @brief 全局初始化标志只记录控制流程，不代表任意设备已打开。
@@ -434,9 +539,21 @@ ALPlayer::ALPlayer(const AudioDataFormat& format)
     , m_backend(std::make_unique<ALBackend>())
 {
     // 分配放在构造阶段；块长由配置与下限共同决定，队列时长还乘以槽数。
-    m_buffer.resize(m_playFormat,
-                    std::max<uint32_t>(ICEConfig::default_buffer_size,
-                                       kOpenALMinBufferFrames));
+    const size_t frames = std::max<uint32_t>(ICEConfig::default_buffer_size,
+                                             kOpenALMinBufferFrames);
+    // AL 上传使用有符号字节长度，按最坏的双声道 float 输出提前限制帧数。
+    // 必须先拒绝再分配，避免异常配置触发巨额 PCM 申请或截断为负上传长度。
+    if ( format.channels == 0 || format.samplerate == 0 ||
+         format.samplerate >
+             static_cast<uint32_t>(std::numeric_limits<ALsizei>::max()) ||
+         format.samplerate >
+             static_cast<uint32_t>(std::numeric_limits<ALCint>::max()) ||
+         frames > static_cast<size_t>(std::numeric_limits<ALsizei>::max()) /
+                      (2U * sizeof(float)) )
+        return;
+    // 同时覆盖上下文频率与上传频率的转换，零值不借用后端默认频率掩盖无效格式。
+    if ( m_buffer.resize(m_playFormat, frames) )
+        m_backend->m_preparedFrames = m_buffer.frame_capacity();
 }
 
 /// @brief 在成员销毁前结束线程，防止后台继续访问 this 和缓冲区。
@@ -540,7 +657,7 @@ bool ALPlayer::open()
 }
 
 /// @brief 借用最近的控制侧诊断；调用方不得与设备管理并发访问。
-/// 排队失败只走即时输出，未必更新此字符串。
+/// 供数错误由 stop 回收线程后转入文本，运行期间查询不强制等待或格式化。
 /// @return 引用有效期受播放器生命周期约束，跨操作保留内容需自行复制。
 /// 查询不会清除错误，允许上层多次读取同一失败原因。
 const std::string& ALPlayer::getLastError() const
@@ -561,10 +678,23 @@ const std::string& ALPlayer::getOpenedDeviceName() const
 /// @return 资源全部准备就绪时为 true，此时还未启动供数线程。
 /// @warning 可能先 stop/join 旧线程并调用阻塞设备接口，不得用于热路径。
 /// 调用方须串行管理生命周期；内部局部锁不保护并发 open/close。
+/// 失败信息保存在
+/// getLastError，调用方决定日志目的地，后端不直接输出到标准输出。
+/// 默认设备回退可能多次调用本入口，中间失败不应形成重复且误导性的终端消息。
 bool ALPlayer::open(std::string_view deviceName)
 {
-    // 每次尝试独立记录结果；清日志只影响诊断，不重置全局初始化标记。
-    m_lastError.clear();
+    // C 接口会在首个空字符截断名称；无效请求必须在关闭旧设备之前拒绝。
+    // 空 string_view 仍表示默认设备，含空字符的非空名称不能等同于默认请求。
+    if ( deviceName.find('\0') != std::string_view::npos ) {
+        m_lastError = "OpenAL device name contains an embedded null character.";
+        return false;
+    }
+
+    // 输入可能借用本实例的设备名称或诊断文本，清理成员前必须保存独立副本。
+    // 同时提供 C 接口所需的末尾零字符，副本存活至设备打开及诊断结束。
+    const std::string deviceNameStorage(deviceName);
+
+    // 清日志只影响诊断，不重置全局初始化标记。
     m_openedDeviceName.clear();
     resetOpenALSoftLog();
     // 旧设备 close 仍可能产生库日志，因此捕获范围是本次切换而非纯打开调用。
@@ -574,8 +704,17 @@ bool ALPlayer::open(std::string_view deviceName)
         close();
     }
 
-    // string_view 不保证零结尾，复制后再传给 C 接口，并保持到调用完成。
-    std::string deviceNameStorage(deviceName);
+    // 旧后端回收可能生成错误，必须在回收结束后才开始新打开操作的诊断区间。
+    // 独立 close 仍保留关闭错误；重开成功不能携带上次退队失败的陈旧文本。
+    m_lastError.clear();
+
+    // 准备失败的实例没有合法块契约，不接触设备，也不依赖驱动偶然接受无效参数。
+    if ( m_backend->m_preparedFrames == 0 ) {
+        m_lastError = "OpenAL playback format or block size is invalid.";
+        return false;
+    }
+
+    // 这里只从已拥有的副本借用地址，旧设备清理不再影响输入名称。
     const char* openName =
         deviceNameStorage.empty() ? nullptr : deviceNameStorage.c_str();
 
@@ -586,7 +725,6 @@ bool ALPlayer::open(std::string_view deviceName)
             "OpenAL device open failed: {}.",
             deviceNameStorage.empty() ? "default device" : deviceNameStorage);
         appendOpenALSoftLogDetail(m_lastError);
-        fmt::print("{}\n", m_lastError);
         return false;
     }
 
@@ -600,7 +738,27 @@ bool ALPlayer::open(std::string_view deviceName)
             getALCErrorName(openError),
             static_cast<int>(openError));
         appendOpenALSoftLogDetail(m_lastError);
-        fmt::print("{}\n", m_lastError);
+        alcCloseDevice(m_backend->device);
+        m_backend->device = nullptr;
+        return false;
+    }
+
+    // 本后端需要线程局部绑定，不能回退到会影响其他播放器的进程级状态。
+    if ( alcIsExtensionPresent(m_backend->device,
+                               "ALC_EXT_thread_local_context") != ALC_TRUE ) {
+        m_lastError = "OpenAL thread-local context extension is required.";
+        alcCloseDevice(m_backend->device);
+        m_backend->device = nullptr;
+        return false;
+    }
+    m_backend->setThreadContext = reinterpret_cast<PFNALCSETTHREADCONTEXTPROC>(
+        alcGetProcAddress(m_backend->device, "alcSetThreadContext"));
+    m_backend->getThreadContext = reinterpret_cast<PFNALCGETTHREADCONTEXTPROC>(
+        alcGetProcAddress(m_backend->device, "alcGetThreadContext"));
+    // 扩展声明与入口地址都必须有效，拒绝不完整驱动实现。
+    if ( !m_backend->setThreadContext || !m_backend->getThreadContext ) {
+        m_lastError =
+            "OpenAL thread-local context entry points are unavailable.";
         alcCloseDevice(m_backend->device);
         m_backend->device = nullptr;
         return false;
@@ -622,18 +780,17 @@ bool ALPlayer::open(std::string_view deviceName)
         m_lastError =
             formatALCErrorMessage("context creation", m_backend->device);
         appendOpenALSoftLogDetail(m_lastError);
-        fmt::print("{}\n", m_lastError);
         alcCloseDevice(m_backend->device);
         m_backend->device = nullptr;
         return false;
     }
 
-    if ( alcMakeContextCurrent(m_backend->context) != ALC_TRUE ) {
+    ScopedALContext currentContext(*m_backend);
+    if ( !currentContext ) {
         // 尚未创建 AL 对象，先销毁上下文再关闭设备即可完成本阶段回滚。
         m_lastError =
             formatALCErrorMessage("make context current", m_backend->device);
         appendOpenALSoftLogDetail(m_lastError);
-        fmt::print("{}\n", m_lastError);
         alcDestroyContext(m_backend->context);
         alcCloseDevice(m_backend->device);
         m_backend->context = nullptr;
@@ -674,9 +831,8 @@ bool ALPlayer::open(std::string_view deviceName)
     alListenerfv(AL_ORIENTATION, orientation);
     // 不在此上传静音或预拉取图数据，实际队列由 start 后的线程准备。
     alDistanceModel(AL_INVERSE_DISTANCE_CLAMPED);
-    applySpatialState();
-
-    if ( !checkALError("open", &m_lastError) ) {
+    // 先检查监听者初始化，避免空间状态内部消费错误后把 open 误判为成功。
+    if ( !checkALError("open", &m_lastError) || !applySpatialState() ) {
         // 监听者或空间参数设置失败也使整个打开失败，避免返回半配置设备。
         appendOpenALSoftLogDetail(m_lastError);
         close();
@@ -700,46 +856,71 @@ void ALPlayer::close()
     // join 必须先于 alMutex：线程退出时还要持该锁停源和退队。
     stop();
 
-    std::scoped_lock lock(m_backend->alMutex);
+    std::unique_lock lock(m_backend->alMutex);
     if ( !m_backend->context ) {
         return;
     }
 
-    // 以下操作仍需要有效上下文；不得在停止线程前先销毁 context。
-    alcMakeContextCurrent(m_backend->context);
-    if ( m_backend->source != 0 ) {
-        alSourceStop(m_backend->source);
-        clearQueuedBuffers();
-        // 先退队再删除源，后续删除缓冲时不再有来自本源的队列引用。
-        alDeleteSources(1, &m_backend->source);
-        m_backend->source = 0;
-    }
+    {
+        // 以下操作仍需要有效上下文；不得在停止线程前先销毁 context。
+        ScopedALContext currentContext(*m_backend, true);
+        if ( currentContext ) {
+            if ( m_backend->source != 0 ) {
+                alSourceStop(m_backend->source);
+                clearQueuedBuffers();
+                // 先退队再删除源，后续删除缓冲时不再有来自本源的队列引用。
+                alDeleteSources(1, &m_backend->source);
+                m_backend->source = 0;
+            }
 
-    // 声源已解除缓冲引用，才能删除缓冲对象；数组随后恢复未创建状态。
-    if ( m_backend->buffersReady ) {
-        alDeleteBuffers(static_cast<ALsizei>(m_backend->buffers.size()),
-                        m_backend->buffers.data());
-        m_backend->buffersReady = false;
-        m_backend->buffers.fill(0);
+            // 声源已解除缓冲引用，才能删除缓冲对象；数组随后恢复未创建状态。
+            if ( m_backend->buffersReady ) {
+                alDeleteBuffers(static_cast<ALsizei>(m_backend->buffers.size()),
+                                m_backend->buffers.data());
+                m_backend->buffersReady = false;
+                m_backend->buffers.fill(0);
+            }
+        } else if ( !m_backend->m_pendingError.m_operation ) {
+            // 绑定失败不能继续调用依赖当前上下文的源与缓冲操作，保留明确阶段名。
+            // 后续仍回收上下文和设备，不让诊断失败阻断既有的关闭生命周期。
+            m_backend->m_pendingError = { "bind closing context", AL_NO_ERROR };
+        }
+        // 守卫先恢复线程绑定，随后才能销毁上下文。
     }
-
-    // 先解除当前上下文再销毁，设备必须活到其上下文释放以后。
-    alcMakeContextCurrent(nullptr);
     alcDestroyContext(m_backend->context);
     alcCloseDevice(m_backend->device);
-    m_backend->context = nullptr;
-    m_backend->device  = nullptr;
+    m_backend->context      = nullptr;
+    m_backend->device       = nullptr;
+    m_backend->source       = 0;
+    m_backend->buffersReady = false;
+    m_backend->buffers.fill(0);
     m_openedDeviceName.clear();
+    // 关闭期间的退队也可能记录错误，释放后端锁后再收集，避免递归锁与锁内格式化。
+    lock.unlock();
+    collectPendingError();
     // 空设备名表示已关闭；诊断保留使失败回滚后仍可向上层解释原因。
 }
+
+/// @brief 将 SDL 回调约定桥接到播放器的非静态供数循环。
+struct ALPlayer::WorkerEntry {
+    /// @brief 在线程生命周期内借用播放器，不转移对象所有权。
+    /// @warning 每次 start 成功后执行一次，循环返回后控制侧仍须回收句柄。
+    static int SDLCALL run(void* instance)
+    {
+        // start 已验证后端资源，close 先等待线程结束再释放借用对象。
+        static_cast<ALPlayer*>(instance)->audio_thread_loop();
+        return 0;
+    }
+};
 
 /// @brief 在资源就绪且尚未运行时创建供数线程。
 /// @return true 只代表线程已发起，不保证首批排队或实体播放成功。
 /// @pre 控制侧串行调用；原子运行标记不能替代线程对象的生命周期锁。
+/// @warning 故障后重启可能 join 旧供数线程，仅允许在低频控制侧调用。
 /// 未绑定图也允许启动，供数路径会提交静音，便于先建设备再启用图节点。
 bool ALPlayer::start()
 {
-    if ( m_running.load() ) {
+    if ( m_running.load(std::memory_order_relaxed) ) {
         // 不允许覆盖尚需 join 的线程对象；重复启动以返回值告知控制侧。
         m_lastError = "OpenAL playback thread is already running.";
         return false;
@@ -753,12 +934,60 @@ bool ALPlayer::start()
         return false;
     }
 
+    // 故障退出可能只发布停止状态，控制侧须先回收旧线程，才能覆盖线程对象。
+    if ( m_audioThread ) {
+        SDL_WaitThread(m_audioThread, nullptr);
+        m_audioThread = nullptr;
+    }
+    // 旧图可能破坏缓冲并触发停止；重启不能把残留短块或失效平面当作新契约。
+    // 固定块长来自初次准备，不能根据已被图改写的元数据重新推导。
+    const size_t frames = m_backend->m_preparedFrames;
+    if ( frames == 0 ) {
+        m_lastError = "OpenAL audio buffer was not prepared.";
+        return false;
+    }
+    bool validBuffer =
+        m_buffer.afmt == m_playFormat && m_buffer.num_frames() == frames &&
+        m_buffer.frame_capacity() == frames && m_buffer.raw_ptrs();
+    for ( uint16_t channel = 0; validBuffer && channel < m_playFormat.channels;
+          ++channel )
+        validBuffer = m_buffer.raw_ptrs()[channel] != nullptr;
+    if ( !validBuffer ) {
+        // 重新创建存储和地址表，不能依赖同尺寸 resize 的快速返回修复损坏表项。
+        // 仅在控制侧故障重启时分配，正常启停继续复用原块及交错容量。
+        AudioBuffer prepared;
+        if ( !prepared.resize(m_playFormat, frames) ) {
+            m_lastError = "OpenAL audio buffer restoration failed.";
+            return false;
+        }
+        m_buffer = std::move(prepared);
+    }
+    // 最坏输出为双声道，多声道输入也只会下混为单声道，无需按输入声道扩容。
+    // 两种格式在发布运行状态前准备，分配失败不会发生在供数线程中。
+    if ( frames > m_backend->floatScratch.max_size() / 2U ||
+         frames > m_backend->int16Scratch.max_size() / 2U ) {
+        m_lastError = "OpenAL scratch capacity exceeds supported size.";
+        return false;
+    }
+    m_backend->floatScratch.reserve(frames * 2U);
+    m_backend->int16Scratch.reserve(frames * 2U);
     // 重启丢弃上次暂停和队列重建请求，首批队列会按当前空间开关填充。
+    // 旧线程已回收，控制侧串行启动，新的运行独立记录首个失败。
+    {
+        std::scoped_lock lock(m_backend->alMutex);
+        m_backend->m_pendingError = {};
+    }
     m_lastError.clear();
-    m_running.store(true);
+    m_running.store(true, std::memory_order_relaxed);
     m_paused.store(false);
     m_rebuildQueuedBuffers.store(false);
-    m_audioThread = std::thread(&ALPlayer::audio_thread_loop, this);
+    m_audioThread = SDL_CreateThread(WorkerEntry::run, "ICE OpenAL", this);
+    if ( !m_audioThread ) {
+        // 没有后台线程会消费运行请求，必须回滚，允许控制侧重试或关闭设备。
+        m_running.store(false, std::memory_order_relaxed);
+        m_lastError = "OpenAL playback thread creation failed.";
+        return false;
+    }
     // 线程借用 this，调用方必须保持实例存在直到 stop 完成 join。
     return true;
 }
@@ -769,26 +998,54 @@ bool ALPlayer::start()
 /// @pre 不与另一次 start/stop 并发执行，不从音频图 process 中反向调用。
 void ALPlayer::stop()
 {
-    if ( !m_running.load() ) {
-        // 正常生命周期要求前一次 stop 已负责 join；这里不额外探测线程状态。
-        return;
-    }
-
+    // 故障线程可先清运行标志，仍须检查句柄并回收，不能据标志提前返回。
     // 退出请求由循环和回填内层读取；同时取消暂停，便于下次启动恢复初态。
-    m_running.store(false);
+    m_running.store(false, std::memory_order_relaxed);
     m_paused.store(false);
 
-    if ( m_audioThread.joinable() ) {
+    if ( m_audioThread ) {
         // 返回后后台不再触碰缓冲与句柄，close 才有安全回收的时机。
-        m_audioThread.join();
+        SDL_WaitThread(m_audioThread, nullptr);
+        // SDL 已释放线程对象，重复 stop 不能再次使用旧句柄。
+        m_audioThread = nullptr;
+    }
+    collectPendingError();
+}
+
+/// @brief 将待处理错误转为控制侧文本，保留更早的明确失败原因。
+/// @pre 供数线程已回收，且调用方未持有 alMutex；只在串行生命周期路径使用。
+/// @warning stop 和 close 低频调用，格式化可能分配，不能从供数线程调用。
+void ALPlayer::collectPendingError()
+{
+    // 记录只包含静态操作名和错误码，即使设备已关闭也无需再访问后端 API。
+    ALPendingError pending;
+    {
+        std::scoped_lock lock(m_backend->alMutex);
+        pending                   = m_backend->m_pendingError;
+        m_backend->m_pendingError = {};
+    }
+    // 保留先前控制命令的明确失败，不让随后的供数退出覆盖调用方正在诊断的原因。
+    // 暂存已清空，重复 stop 不重新格式化；文本保留至下一次启动的清理阶段。
+    if ( pending.m_operation && m_lastError.empty() ) {
+        // 格式化只发生在控制侧，不占用供数线程的错误退出时延。
+        // 绑定失败只提供失败状态，不应把 AL_NO_ERROR 展示为实际驱动错误。
+        if ( pending.m_code == AL_NO_ERROR ) {
+            m_lastError = fmt::format("OpenAL {} failed.", pending.m_operation);
+        } else {
+            m_lastError = fmt::format("OpenAL {} failed: {} (0x{:x}).",
+                                      pending.m_operation,
+                                      getALErrorName(pending.m_code),
+                                      static_cast<int>(pending.m_code));
+        }
     }
 }
 
 /// @brief 查询运行请求标记，不代表 OpenAL 当前源状态或可听输出。
-/// @warning 可高频读取控制侧写入的原子值；false 不代表 join 已完成。
+/// @warning 可高频读取控制侧或供数失败写入的 relaxed 原子值。
+/// 跨线程查询不能使用普通 bool；false 只表示退出请求，不代表等待回收已完成。
 bool ALPlayer::is_running() const
 {
-    return m_running.load();
+    return m_running.load(std::memory_order_relaxed);
 }
 
 /// @brief 发布暂停请求并暂停设备源，保留已排队的音频块。
@@ -796,7 +1053,7 @@ bool ALPlayer::is_running() const
 /// 暂停不撤回已提交到设备的数据，也不对图节点执行定位或状态复位。
 void ALPlayer::pause()
 {
-    if ( !m_running.load() || m_paused.load() ) {
+    if ( !m_running.load(std::memory_order_relaxed) || m_paused.load() ) {
         // 暂停请求仅对已运行且未暂停的实例有意义，不改变下一次启动策略。
         return;
     }
@@ -805,8 +1062,18 @@ void ALPlayer::pause()
     m_paused.store(true);
     std::scoped_lock lock(m_backend->alMutex);
     if ( m_backend->context && m_backend->source != 0 ) {
-        alcMakeContextCurrent(m_backend->context);
+        ScopedALContext currentContext(*m_backend);
+        if ( !currentContext ) {
+            m_lastError = "OpenAL thread context binding failed.";
+            // 控制命令未能提交，结束本次供数，避免请求状态与设备状态长期分离。
+            m_running.store(false, std::memory_order_relaxed);
+            return;
+        }
         alSourcePause(m_backend->source);
+        // 必须在本线程消费错误，不能留给供数线程或后续不相关命令诊断。
+        if ( !checkALError("pause playback", &m_lastError) ) {
+            m_running.store(false, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -815,17 +1082,31 @@ void ALPlayer::pause()
 /// 若暂停期间改变空间模式，恢复后的供数循环还需消费队列重建请求。
 void ALPlayer::resume()
 {
-    if ( !m_running.load() || !m_paused.load() ) {
+    if ( !m_running.load(std::memory_order_relaxed) || !m_paused.load() ) {
         // resume 不承担启动线程的职责，也不重新生成已经排队的数据。
         return;
     }
 
-    m_paused.store(false);
     std::scoped_lock lock(m_backend->alMutex);
+    // 等待锁期间供数线程可能已经失败，不应重新播放一个已结束的运行。
+    if ( !m_running.load(std::memory_order_relaxed) ) return;
     // 保留设备队列继续播放，供数循环随后回收已处理槽或执行积压重建。
     if ( m_backend->context && m_backend->source != 0 ) {
-        alcMakeContextCurrent(m_backend->context);
+        ScopedALContext currentContext(*m_backend);
+        if ( !currentContext ) {
+            m_lastError = "OpenAL thread context binding failed.";
+            // 控制命令未能提交，结束本次供数，避免请求状态与设备状态长期分离。
+            m_running.store(false, std::memory_order_relaxed);
+            return;
+        }
         alSourcePlay(m_backend->source);
+        if ( !checkALError("resume playback", &m_lastError) ) {
+            // 保留暂停请求并停止供数，错误后不允许后台自动重启声源。
+            m_running.store(false, std::memory_order_relaxed);
+            return;
+        }
+        // 成功提交后才允许供数继续；与自动播放检查共用 AL 锁。
+        m_paused.store(false);
     }
 }
 
@@ -853,7 +1134,7 @@ bool ALPlayer::is_spatial_output_enabled() const
 
 /// @brief 整组替换空间缓存，归约距离边界后应用到已打开的声源。
 /// 关闭设备时仍保存缓存，下一次 open 会应用这些参数。
-/// @pre 方向和距离输入有限；生命周期管理与本次控制操作串行。
+/// @pre 生命周期管理与本次控制操作串行；非有限输入整组拒绝并保留旧状态。
 /// @param directionX 相对监听者方向的 X 分量，允许使用未归一化向量。
 /// @param directionY 相对监听者方向的 Y 分量。
 /// @param directionZ 相对监听者方向的 Z 分量，默认前方为负 Z。
@@ -866,6 +1147,15 @@ void ALPlayer::set_spatial_parameters(float directionX, float directionY,
                                       float referenceDistance,
                                       float maxDistance, float rolloffFactor)
 {
+    // 整组先校验，不能让部分有限字段覆盖旧缓存后才发现其余字段不可用。
+    // 非有限方向会污染归一化结果，无穷距离也无法提供有效的设备空间坐标。
+    if ( !std::isfinite(directionX) || !std::isfinite(directionY) ||
+         !std::isfinite(directionZ) || !std::isfinite(distance) ||
+         !std::isfinite(referenceDistance) || !std::isfinite(maxDistance) ||
+         !std::isfinite(rolloffFactor) ) {
+        m_lastError = "OpenAL spatial parameters must be finite.";
+        return;
+    }
     {
         std::scoped_lock lock(m_backend->alMutex);
         m_backend->spatialState.directionX = directionX;
@@ -888,7 +1178,9 @@ void ALPlayer::set_spatial_parameters(float directionX, float directionY,
 
 /// @brief 以固定槽队列供数，退回已消费缓冲并在欠载后重新启动声源。
 /// @warning 播放期间持续轮询；控制线程写运行、暂停及模式原子标记，
-/// 本线程读取并消费重建请求，以跨线程传递状态，保留既有默认原子序。
+/// 本线程读取并消费请求；运行标记使用 relaxed，只决定是否继续供数。
+/// 线程创建发布准备状态，SDL_WaitThread 保证回收完成，运行标记不承担资源同步。
+/// 暂停及重建请求的内存序另行保留，不能从运行标记推断这些请求已被处理。
 /// @warning 现有循环含互斥锁与 1ms 音频供数休眠，并非无阻塞实时回调。
 /// 休眠只在本专用线程发生；禁止在此增加文件访问、逐块日志或额外等待。
 /// @pre 只能由 start 创建一次；设备资源须保持有效直到线程退出。
@@ -896,45 +1188,62 @@ void ALPlayer::audio_thread_loop()
 {
     configureOpenALThreadPriority();
 
-    std::vector<float>        floatScratch;
-    std::vector<std::int16_t> int16Scratch;
-    // 两种格式都预留最坏输出容量；后续 resize 在块长固定时复用这些存储。
-    // scratch 由线程独占，不把每块临时容器或数据指针交给控制线程持有。
-    floatScratch.reserve(m_buffer.num_frames() *
-                         std::max<uint16_t>(2, m_playFormat.channels));
-    int16Scratch.reserve(m_buffer.num_frames() *
-                         std::max<uint16_t>(2, m_playFormat.channels));
-    // 即使当前设备只用一种样本类型，两种容量也预先准备，循环中只选一条分支。
+    // 启动前已准备两种输出存储；线程只借用，不在入口分配或退出时回收容量。
+    // 块契约检查限制后续 resize 长度，停止并等待结束后控制侧才可再次准备。
+    auto& floatScratch = m_backend->floatScratch;
+    auto& int16Scratch = m_backend->int16Scratch;
 
-    {
-        std::scoped_lock lock(m_backend->alMutex);
-        alcMakeContextCurrent(m_backend->context);
+    ScopedALContext currentContext(*m_backend);
+    if ( !currentContext ) {
+        // 绑定失败时没有操作本实例 AL 对象，资源留给控制侧 close 回收。
+        {
+            std::scoped_lock lock(m_backend->alMutex);
+            // 此失败来自绑定入口返回值，不能调用依赖当前上下文的 AL 错误查询。
+            // 保存静态阶段名，由控制侧回收后格式化，线程入口不申请诊断字符串。
+            if ( !m_backend->m_pendingError.m_operation )
+                m_backend->m_pendingError = { "bind playback thread context",
+                                              AL_NO_ERROR };
+        }
+        m_running.store(false, std::memory_order_relaxed);
+        return;
     }
 
     // 初始上下文绑定不等于线程独占设备，控制侧仍会通过 AL 锁调整源。
-    // 上下文绑定没有实例间的全局锁，多播放器并发使用需另行保证上下文隔离。
+    // 当前绑定只属于本供数线程，其他播放器或控制线程不会切换它。
     /// @brief 为全部有效槽重新拉取音频，然后请求播放。
     /// @pre 调用方已确保队列为空；初始化及格式重建共同使用此流程。
-    // 当前流程未传播单槽失败，start 成功不能视为队列填充成功的证明。
+    // 单槽失败结束本次供数，统一出口负责停源退队；已经拉取的图进度不回滚。
     auto refillAllBuffers = [&]() {
+        // 队列已清空，整批只接收一次模式快照；中途新请求留给下一轮重建。
+        m_backend->queuedSpatialOutput = m_spatialOutputEnabled.load();
         for ( const auto bufferId : m_backend->buffers ) {
             // 缓冲数组保留零作为未创建哨兵，不能将其提交为合法设备对象。
             if ( bufferId != 0 ) {
-                queueAudioBuffer(bufferId, floatScratch, int16Scratch);
+                if ( !queueAudioBuffer(bufferId, floatScratch, int16Scratch) ) {
+                    m_running.store(false, std::memory_order_relaxed);
+                    return;
+                }
             }
         }
 
         std::scoped_lock lock(m_backend->alMutex);
-        if ( m_backend->source != 0 ) {
+        // 供数期间控制侧可能已暂停或停止，持同一 AL 锁复查后才允许播放。
+        if ( m_backend->source != 0 &&
+             m_running.load(std::memory_order_relaxed) && !m_paused.load() ) {
             // 请求播放不等待设备实际消耗首帧，队列延迟由后端和块容量决定。
             alSourcePlay(m_backend->source);
+            // 启动失败同样走统一退出，不保留一个无法播放却持续拉取的线程。
+            if ( !checkALError("start queued playback",
+                               nullptr,
+                               &m_backend->m_pendingError) )
+                m_running.store(false, std::memory_order_relaxed);
         }
     };
 
     // 先填满队列获得调度余量；这会让音频图游标领先实际设备播放位置。
     refillAllBuffers();
 
-    while ( m_running.load() ) {
+    while ( m_running.load(std::memory_order_relaxed) ) {
         if ( m_paused.load() ) {
             // 保留队列和重建请求，恢复后再处理；暂停不是上游音频图的重置。
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -952,6 +1261,8 @@ void ALPlayer::audio_thread_loop()
                     clearQueuedBuffers();
                 }
             }
+            // 清队列失败或控制侧停止后，不再向旧队列追加新模式缓冲。
+            if ( !m_running.load(std::memory_order_relaxed) ) break;
             refillAllBuffers();
             // 重建本身完成整组填充，本轮无需继续执行旧 processed 快照逻辑。
             continue;
@@ -965,10 +1276,17 @@ void ALPlayer::audio_thread_loop()
             if ( m_backend->source != 0 ) {
                 alGetSourcei(
                     m_backend->source, AL_BUFFERS_PROCESSED, &processed);
+                // 查询失败时默认的零值不是可信队列状态，立即停止而非继续轮询。
+                if ( !checkALError("query processed buffers",
+                                   nullptr,
+                                   &m_backend->m_pendingError) ) {
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
             }
         }
 
-        while ( processed > 0 && m_running.load() ) {
+        while ( processed > 0 && m_running.load(std::memory_order_relaxed) ) {
             // 每槽再次检查停止请求，避免退出时还无条件回填完整批次。
             ALuint bufferId = 0;
             // 退队拿到可重用 ID 后释放 AL 锁，再执行可能较重的图处理。
@@ -976,30 +1294,67 @@ void ALPlayer::audio_thread_loop()
                 std::scoped_lock lock(m_backend->alMutex);
                 if ( m_backend->source != 0 ) {
                     alSourceUnqueueBuffers(m_backend->source, 1, &bufferId);
+                    // 退队失败后不能复用可能无效的
+                    // ID，也不能继续按旧快照消耗槽数。
+                    if ( !checkALError("unqueue processed buffer",
+                                       nullptr,
+                                       &m_backend->m_pendingError) ) {
+                        m_running.store(false, std::memory_order_relaxed);
+                        break;
+                    }
                 }
             }
             // 无有效返回 ID 时跳过本槽，既有循环没有重试或替代缓冲创建逻辑。
 
             if ( bufferId != 0 ) {
                 // 图处理放在 AL 锁外，缩短控制侧调整声源时的互斥等待。
-                queueAudioBuffer(bufferId, floatScratch, int16Scratch);
+                if ( !queueAudioBuffer(bufferId, floatScratch, int16Scratch) ) {
+                    // 不丢失失败槽后继续假装运行，退出后允许控制侧显式重新启动。
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
             }
             --processed;
             // 每轮只消费先前查询到的数量，不在内层持续查询形成无限追赶。
         }
 
+        // 回填或退队已失败时直接进入清理，不再查询或操作故障源。
+        if ( !m_running.load(std::memory_order_relaxed) ) break;
         {
             std::scoped_lock lock(m_backend->alMutex);
             if ( m_backend->source != 0 ) {
                 ALint state  = AL_STOPPED;
                 ALint queued = 0;
                 alGetSourcei(m_backend->source, AL_SOURCE_STATE, &state);
+                if ( !checkALError("query source state",
+                                   nullptr,
+                                   &m_backend->m_pendingError) ) {
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
                 alGetSourcei(m_backend->source, AL_BUFFERS_QUEUED, &queued);
+                // 两个查询各自成功后才能用其结果判断是否需要自动恢复。
+                if ( !checkALError("query queued buffers",
+                                   nullptr,
+                                   &m_backend->m_pendingError) ) {
+                    m_running.store(false, std::memory_order_relaxed);
+                    break;
+                }
                 // 无排队数据时不反复启动空源；下一次成功填充才可能恢复播放。
-                if ( state != AL_PLAYING && queued > 0 ) {
+                if ( state != AL_PLAYING && queued > 0 &&
+                     m_running.load(std::memory_order_relaxed) &&
+                     !m_paused.load() ) {
                     // 调度欠载可能令源停播；有数据时恢复，而不是重建音频图。
-                    // 此分支未再次检查暂停请求，可能覆盖同轮控制侧的源暂停操作。
+                    // 暂停源和此处播放共用 AL
+                    // 锁，复查请求后不覆盖已完成的暂停。 stop
+                    // 也会清除暂停位，因此必须同时检查运行请求，避免退出前重播。
                     alSourcePlay(m_backend->source);
+                    if ( !checkALError("resume queued playback",
+                                       nullptr,
+                                       &m_backend->m_pendingError) ) {
+                        m_running.store(false, std::memory_order_relaxed);
+                        break;
+                    }
                 }
             }
         }
@@ -1016,7 +1371,6 @@ void ALPlayer::audio_thread_loop()
             alSourceStop(m_backend->source);
             clearQueuedBuffers();
         }
-        alcMakeContextCurrent(nullptr);
     }
 }
 
@@ -1024,33 +1378,52 @@ void ALPlayer::audio_thread_loop()
 /// @param bufferId 已从源退队或尚未排队的有效缓冲句柄。
 /// @param floatScratch 当前供数线程独占的浮点交错存储。
 /// @param int16Scratch 当前供数线程独占的整型交错存储。
-/// @return 源存在且上传、排队未报告 AL 错误时为 true。
-/// @warning 每个回收槽调用一次；读取控制侧模式原子值以选择提交格式。
-/// 既有图处理锁与 AL 锁可能等待，错误输出可能分配，不能承诺硬实时。
+/// @return 运行未结束、源存在且上传及排队未报告 AL 错误时为 true。
+/// @warning 每个回收槽调用一次；使用供数线程独占的队列模式快照选择提交格式。
+/// 图内部同步与 AL 锁仍可能等待，失败只暂存诊断，不能承诺硬实时。
+/// @warning 每块以 relaxed 检查控制侧或故障路径写入的运行请求，避免额外加锁。
+/// 原子仅消除标记的数据竞争，图绑定和设备生命周期仍由外部串行控制保证。
 /// @pre 上游保持构造时的格式和块容量，且只在停止拉取后替换 source。
 /// 转换不做采样率变换；需要重采样时应由上游音频图完成。
 bool ALPlayer::queueAudioBuffer(unsigned int               bufferId,
                                 std::vector<float>&        floatScratch,
                                 std::vector<std::int16_t>& int16Scratch)
 {
-    {
-        std::scoped_lock<std::mutex> lock(m_sourceMutex);
-        // 预先静音，空图或未写满的图处理不会泄漏上一个块的采样。
-        // 基类 set_source 不取此锁，因此它不能保证运行中替换图的安全。
-        m_buffer.clear();
-        // 无 source 不是 EOF：仍提交一整块静音，直到控制侧显式 stop。
-        if ( get_source() ) {
-            // 返回共享指针引用，连续检查与调用不额外复制共享所有权。
-            // 节点处理契约由图实现负责，本后端没有单独的失败码分支。
-            get_source()->process(m_buffer);
-        }
+    // 图只允许写入当前块样本，不能改变准备阶段确定的布局与长度。
+    const size_t expectedFrames   = m_buffer.num_frames();
+    const size_t expectedCapacity = m_buffer.frame_capacity();
+    // 唯一供数线程借用稳定图绑定，控制侧必须等 stop 返回后才能替换 source。
+    // 读端独自加锁无法同步基类的无锁写入，因此这里依靠既有生命周期契约。
+    if ( !m_running.load(std::memory_order_relaxed) ) return false;
+    // 预先静音，空图或未写满的图处理不会泄漏上一个块的采样。
+    m_buffer.clear();
+    // 无 source 不是 EOF：仍提交一整块静音，直到控制侧显式 stop。
+    if ( get_source() ) {
+        // 返回共享指针引用，不额外复制所有权；正在执行的图调用须自然返回。
+        get_source()->process(m_buffer);
     }
 
-    // 一次提交只读取一次模式，确保格式枚举、声道数和数据布局一致。
+    // 图处理期间控制命令可能失败或请求停止，丢弃本块而不继续转换和上传。
+    if ( !m_running.load(std::memory_order_relaxed) ) return false;
+
+    // 在索引声道或调整交错数组前拒绝图破坏的缓冲，不能上传错速或残缺块。
+    // 固定块长保证后续 resize 复用启动容量，不因上游改大长度而在此扩容。
+    if ( m_buffer.afmt != m_playFormat || expectedFrames == 0 ||
+         m_buffer.num_frames() != expectedFrames ||
+         m_buffer.frame_capacity() != expectedCapacity ||
+         expectedFrames > expectedCapacity )
+        return false;
+    const float* const* planarData = m_buffer.raw_ptrs();
+    if ( !planarData ) return false;
+    // 全部平面先验证，避免已转换部分声道后才访问空指针。
+    for ( uint16_t channel = 0; channel < m_playFormat.channels; ++channel )
+        if ( !planarData[channel] ) return false;
+
+    // 使用本队列固定模式，控制侧中途切换不能改变单个槽的声道布局。
     // 只有非空间化的双声道输入保留立体声，其余输入统一平均下混。
     const auto frames        = m_buffer.num_frames();
     const auto inputChannels = m_buffer.num_channels();
-    const bool spatialOutput = m_spatialOutputEnabled.load();
+    const bool spatialOutput = m_backend->queuedSpatialOutput;
     const bool monoOutput    = spatialOutput || inputChannels != 2;
     // 多声道输入也会归约为 mono，当前后端没有环绕声直接透传分支。
     const uint16_t outputChannels = monoOutput ? 1 : 2;
@@ -1059,33 +1432,38 @@ bool ALPlayer::queueAudioBuffer(unsigned int               bufferId,
         selectALFormat(outputChannels, m_backend->floatFormatSupported);
 
     // 图内使用每声道独立平面，OpenAL 接收逐帧交错数据，不能直接上传平面。
-    const float* const* planarData = m_buffer.raw_ptrs();
     if ( m_backend->floatFormatSupported ) {
         // reserve 已在启动时执行；前提是图处理未放大块长或改写缓冲格式。
         floatScratch.resize(frames * outputChannels);
         if ( monoOutput ) {
             // 平均而非直接相加，避免声道数增加时同步放大输出幅度。
+            // double 累加可容纳全部有限 float 声道之和，避免先溢出再求平均。
+            // 非有限声道按静音计入原声道数，保持其他声道的既有下混权重。
             // 空声道输入明确提交零，不对零做除法。
             for ( size_t i = 0; i < frames; ++i ) {
-                float sum = 0.0f;
+                double sum = 0.0;
                 for ( uint16_t ch = 0; ch < inputChannels; ++ch ) {
-                    sum += planarData[ch][i];
+                    sum +=
+                        static_cast<double>(sanitizeSample(planarData[ch][i]));
                 }
                 // 等权平均不包含声道布局权重，多声道内容的专门混音应由上游完成。
-                floatScratch[i] = inputChannels == 0
-                                      ? 0.0f
-                                      : sum / static_cast<float>(inputChannels);
+                floatScratch[i] =
+                    inputChannels == 0
+                        ? 0.0f
+                        : static_cast<float>(
+                              sum / static_cast<double>(inputChannels));
             }
         } else {
             // 保持左、右顺序逐帧交错；浮点路径不做整型量化或额外限幅。
             for ( size_t i = 0; i < frames; ++i ) {
-                floatScratch[i * 2 + 0] = planarData[0][i];
-                floatScratch[i * 2 + 1] = planarData[1][i];
+                floatScratch[i * 2 + 0] = sanitizeSample(planarData[0][i]);
+                floatScratch[i * 2 + 1] = sanitizeSample(planarData[1][i]);
             }
         }
 
         std::scoped_lock lock(m_backend->alMutex);
-        if ( m_backend->source == 0 ) {
+        if ( !m_running.load(std::memory_order_relaxed) ||
+             m_backend->source == 0 ) {
             // 没有可排队的源时终止提交，不将数据上传成功当成播放成功。
             return false;
         }
@@ -1096,26 +1474,34 @@ bool ALPlayer::queueAudioBuffer(unsigned int               bufferId,
                      floatScratch.data(),
                      static_cast<ALsizei>(floatScratch.size() * sizeof(float)),
                      static_cast<ALsizei>(m_playFormat.samplerate));
+        // 上传失败时不能把缓冲中的旧样本再次排队。
+        if ( !checkALError(
+                 "upload float buffer", nullptr, &m_backend->m_pendingError) )
+            return false;
         const ALuint alBufferId = static_cast<ALuint>(bufferId);
         // 复用已有 ID 入队而非创建新缓冲，固定队列避免每块对象分配。
         alSourceQueueBuffers(m_backend->source, 1, &alBufferId);
-        // 当前检查覆盖上传与入队的累计错误，不精确区分两次调用中的失败点。
-        return checkALError("queue float buffer");
+        // 上传已经独立检查，此处只确认本次入队是否成功。
+        return checkALError(
+            "queue float buffer", nullptr, &m_backend->m_pendingError);
     }
 
     // 不支持浮点扩展时仍使用同样的声道映射，只在最后转换采样表示。
+    // 先以 double 对净化样本求平均再量化，有限大数相消不能被中间溢出破坏。
     int16Scratch.resize(frames * outputChannels);
     if ( monoOutput ) {
         for ( size_t i = 0; i < frames; ++i ) {
-            float sum = 0.0f;
+            double sum = 0.0;
             for ( uint16_t ch = 0; ch < inputChannels; ++ch ) {
-                sum += planarData[ch][i];
+                sum += static_cast<double>(sanitizeSample(planarData[ch][i]));
             }
             // 先完成下混再裁剪量化，避免各声道提前限幅改变平均结果。
-            const float sample = inputChannels == 0
-                                     ? 0.0f
-                                     : sum / static_cast<float>(inputChannels);
-            int16Scratch[i]    = floatToInt16(sample);
+            const float sample =
+                inputChannels == 0
+                    ? 0.0f
+                    : static_cast<float>(sum /
+                                         static_cast<double>(inputChannels));
+            int16Scratch[i] = floatToInt16(sample);
         }
     } else {
         for ( size_t i = 0; i < frames; ++i ) {
@@ -1126,9 +1512,11 @@ bool ALPlayer::queueAudioBuffer(unsigned int               bufferId,
     }
 
     std::scoped_lock lock(m_backend->alMutex);
-    if ( m_backend->source == 0 ) {
+    if ( !m_running.load(std::memory_order_relaxed) ||
+         m_backend->source == 0 ) {
         return false;
     }
+    // 等待 AL 锁期间也可能收到停止；与浮点路径保持同一提交边界。
     // int16 与 float 路径都只在上传阶段持 AL 锁，不把采样转换包进锁区间。
     // 上传和入队放在同一 AL 锁区间，避免控制侧声源操作插入二者之间。
     alBufferData(
@@ -1137,31 +1525,34 @@ bool ALPlayer::queueAudioBuffer(unsigned int               bufferId,
         int16Scratch.data(),
         static_cast<ALsizei>(int16Scratch.size() * sizeof(std::int16_t)),
         static_cast<ALsizei>(m_playFormat.samplerate));
+    if ( !checkALError(
+             "upload int16 buffer", nullptr, &m_backend->m_pendingError) )
+        return false;
     const ALuint alBufferId = static_cast<ALuint>(bufferId);
     alSourceQueueBuffers(m_backend->source, 1, &alBufferId);
-    // 返回 false 不回滚已经推进的图游标，调用方目前也不会重放本块。
-    return checkALError("queue int16 buffer");
+    // 返回 false 结束当前播放，不回滚已经推进的图游标或自动重放本块。
+    return checkALError(
+        "queue int16 buffer", nullptr, &m_backend->m_pendingError);
 }
 
-/// @brief 退回源当前持有的所有队列槽，保留缓冲对象供重用或删除。
-/// @pre 调用方持有 alMutex，且已经停源，使全部排队缓冲可退队。
-/// @warning 用于退出、关闭或格式重建，有限遍历固定队列而非等待播放结束。
-/// 退队不调用图节点，不消耗新的音频帧，也不回退已预读的帧。
+/// @brief 解除源的整个队列引用，保留缓冲对象供重用或删除。
+/// @pre 调用方持有 alMutex，且已经请求停源；源处于初始或停止状态。
+/// @warning 用于退出、关闭或格式重建，不等待缓冲播放完成。
+/// 清队列不调用图节点，不消耗新的音频帧，也不回退已预读的帧。
 void ALPlayer::clearQueuedBuffers()
 {
     if ( m_backend->source == 0 ) {
         return;
     }
 
-    // 查询一次数量后逐个退队；此 helper 不自行停源或反复等待槽变为可用。
-    ALint queued = 0;
-    alGetSourcei(m_backend->source, AL_BUFFERS_QUEUED, &queued);
-    // 正常情况下数量至多为固定槽数；持锁保证本实例不会并发继续入队。
-    while ( queued > 0 ) {
-        // 退队 ID 不需要移出数组；数组一直保存这组缓冲的所有权登记。
-        ALuint bufferId = 0;
-        alSourceUnqueueBuffers(m_backend->source, 1, &bufferId);
-        --queued;
+    // 首批入队期间退出时源仍可能处于 AL_INITIAL，stop 不会把它变为已播放。
+    // 此时逐个 unqueue 会拒绝尚未处理的槽，必须直接解除整个队列。
+    // AL_BUFFER 置空在 AL_INITIAL 与 AL_STOPPED 均合法，并重置源的队列类型。
+    alSourcei(m_backend->source, AL_BUFFER, AL_NONE);
+    if ( !checkALError(
+             "clear source queue", nullptr, &m_backend->m_pendingError) ) {
+        // 格式重建失败时禁止继续入队；退出路径则仍由 close 释放源与上下文。
+        m_running.store(false, std::memory_order_relaxed);
     }
 }
 
@@ -1169,15 +1560,22 @@ void ALPlayer::clearQueuedBuffers()
 /// 只调整源属性；mono/stereo 数据格式变化由供数线程另行清队列完成。
 /// @warning 控制侧低频调用会获取 AL 锁，不得持有该锁重入本函数。
 /// @pre 不与 open/close 并发；无设备时允许仅保留尚待应用的配置。
-void ALPlayer::applySpatialState()
+/// @return 未打开设备或应用成功时为 true；失败保存诊断并结束本次供数。
+bool ALPlayer::applySpatialState()
 {
     std::scoped_lock lock(m_backend->alMutex);
     if ( !m_backend->context || m_backend->source == 0 ) {
         // 尚未打开设备时只保留先前写入的缓存，下一次 open 会重新应用。
-        return;
+        return true;
     }
 
-    alcMakeContextCurrent(m_backend->context);
+    ScopedALContext currentContext(*m_backend);
+    if ( !currentContext ) {
+        m_lastError = "OpenAL thread context binding failed.";
+        // 绑定失败不能依赖后续 AL 查询发现，直接向打开流程和运行状态传播。
+        m_running.store(false, std::memory_order_relaxed);
+        return false;
+    }
     const bool spatialOutput = m_spatialOutputEnabled.load();
     // 缓存和设备调用共用锁，避免读到一组参数的半次更新。
     // 归一化把朝向和距离解耦，方向向量自身的长度不参与位置缩放。
@@ -1224,6 +1622,13 @@ void ALPlayer::applySpatialState()
         alSourcef(m_backend->source, AL_ROLLOFF_FACTOR, 0.0f);
         // 禁用衰减而非覆盖图增益，因此音量包络等上游处理继续生效。
     }
+    // 控制线程必须就地消费整组设置的错误，不把它遗留给其他操作或供数线程。
+    if ( !checkALError("apply spatial state", &m_lastError) ) {
+        // 驱动可能只应用了部分属性；不承诺回滚，停止播放并保留请求供重开使用。
+        m_running.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace ice

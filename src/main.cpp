@@ -1,10 +1,14 @@
+#include <SDL3/SDL_init.h>
 #include <fmt/base.h>
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <ice/tool/AllocationTracker.hpp>
 #include <memory>
+#include <mutex>
 #include <numbers>
+#include <stop_token>
 #include <thread>
 
 #include "ice/core/MixBus.hpp"
@@ -22,11 +26,12 @@
 
 /// @brief 使用本机音频文件组装效果图并手动试听 SDL 输出。
 /// @details 这是依赖硬编码路径与实体设备的演示，不是自动化通过/失败测试。
+/// @return 已知加载或设备操作失败时为 false，不作为输出音质或排空证明。
 /// @warning 低频示例入口：执行文件访问、设备初始化和长时间
 /// sleep，不能用于音频回调。
-/// @warning 分离的诊断线程按引用捕获局部变量，固定延时不保证局部对象存活；
-/// 短音轨或提前退出时仍存在生命周期风险，本示例不能作为安全线程回收模板。
-void test()
+/// @warning 诊断线程在设备关闭前取消并回收，局部节点必须活过 join。
+/// 诊断等待可取消，但主播放等待仍不是可交互的停止控制接口。
+bool test()
 {
     // 线程池先于音轨池构造、后于其析构，使局部池清理期间仍有工作线程对象。
     ice::ThreadPool thread_pool(8);
@@ -51,10 +56,10 @@ void test()
         "/home/xiang/Documents/MusicMapRepo/osu/1134062 LeaF - "
         "Mopemope/audio.mp3";
 #endif
-    // 同一路径重复查询用于演示缓存复用，不是多份独立解码实例的创建入口。
+    // 相同路径按策略分别缓存；下面先请求默认策略，再显式取得流式音轨。
     ice::AudioPool audiopool;
     auto           track1Weak = audiopool.get_or_load(thread_pool, file1);
-    // 第一次默认 CACHY 命中后不会因第二次请求 STREAMING 就切换已有轨道策略。
+    // 默认 CACHY 与 STREAMING 对象独立保活；这里覆盖弱句柄，不改变旧对象策略。
     track1Weak = audiopool.get_or_load(
         thread_pool, file1, ice::CachingStrategy::STREAMING);
     // 从弱句柄取得强引用，使音源图创建前能检查轨道是否实际可用。
@@ -66,9 +71,9 @@ void test()
     auto track2 = track2Weak.lock();
 
     if ( !track1 || !track2 ) {
-        // 设备尚未初始化，失败可直接返回；main 目前仍返回成功退出码。
+        // 设备尚未初始化，直接把加载失败交给入口报告。
         fmt::print("failed to load audio tracks\n");
-        return;
+        return false;
     }
 
     // 打印文件元数据只供人工核对，不表示实际输出设备采用了相同采样格式。
@@ -91,7 +96,7 @@ void test()
     });
 
     // SDL 子系统初始化必须先于设备枚举与 player.open。
-    ice::SDLPlayer::init_backend();
+    if ( !ice::SDLPlayer::init_backend() ) return false;
 
     auto devices = ice::SDLPlayer::list_devices();
     std::ranges::for_each(devices, [](const auto& device) {
@@ -175,9 +180,13 @@ void test()
     // 在设备开始供数前绑定图根，运行中替换图需要另外遵守播放器同步约束。
     player.set_source(eq);
 
-    // 这里没有检查 open 返回状态，示例的退出码无法报告设备打开失败。
-    player.open();
-    player.start();
+    // 未打开或未启动时不进入按音轨时长等待的阶段。
+    if ( !player.open() || !player.start() ) {
+        // 即使打开成功但启动失败，也先关闭流再退出 SDL 子系统。
+        player.close();
+        ice::SDLPlayer::quit_backend();
+        return false;
+    }
 
     // 等待两轨时长最大值只是演示计时，不是设备排空或所有节点完成的同步信号。
     auto total_time = std::max(source->total_time(), source2->total_time());
@@ -226,39 +235,53 @@ void test()
         }
     };
 
-    /// @brief 延迟读取一次变速诊断值的示例线程，不参与音频供数。
-    /// @warning detach
-    /// 不延长按引用捕获对象的生命周期，当前没有完成确认或退出回收。
-    std::thread get_actual_play_ratio([&]() {
-        // 两个扫参 lambda 都未调用；当前线程只睡眠一次后读取诊断值。
-        // 500ms 不是预热或首块处理完成的保证，读数可能仍是初始化阶段的值。
-        std::this_thread::sleep_for(std::chrono::milliseconds(500ms));
+    /// @brief 延迟读取一次变速诊断值，不参与音频供数。
+    /// @warning 低频诊断线程借用局部节点，退出时先取消等待并 join 再关闭设备。
+    std::jthread get_actual_play_ratio([&](std::stop_token stop) {
+        // 延迟仅用于观察运行中读数，不是预热或首块处理完成的保证。
+        // 停止令牌使短音轨结束时无需继续等待整个诊断间隔。
+        // 等待锁只服务本线程的诊断定时，不持有图或设备的控制锁。
+        std::mutex                  waitMutex;
+        std::condition_variable_any wake;
+        std::unique_lock            lock(waitMutex);
+        wake.wait_for(lock, stop, 500ms, [] { return false; });
+        if ( stop.stop_requested() ) return;
         fmt::print("actual playback ratio:{}\n",
                    stretcher->get_actual_playback_ratio());
     });
-    get_actual_play_ratio.detach();
 
     // 主线程不监听停止事件，此阻塞不可用于产品内需要即时取消的播放控制流程。
     std::this_thread::sleep_for(total_time);
+
+    // 先回收借用图节点的诊断线程，防止设备关闭与诊断读取交错。
+    // 停止与超时可能同时发生，若读数已开始，仍须等它完成后再销毁资源。
+    // join 仅位于手动示例退出路径，不能搬到音频回调。
+    // jthread 的析构还负责提前退出时的回收，避免重新引入分离线程。
+    get_actual_play_ratio.request_stop();
+    get_actual_play_ratio.join();
 
     // 先结束供数再关闭设备，最后退出 SDL 子系统，避免后台继续访问已释放设备。
     player.stop();
     player.close();
     ice::SDLPlayer::quit_backend();
+    return true;
 }
 
 /// @brief 运行手工播放演示并输出分配计数。
 /// @param argc 当前不使用，不据命令行参数数量选择测试资源。
 /// @param argv 当前不解析，输入路径固定在 test 内。
-/// @return 固定返回 0；不表示音频加载、设备输出或实时安全测试通过。
+/// @return 已知加载或设备失败返回 1，正常完成演示返回 0。
+/// 零退出码不证明设备排空、音质或实时安全性。
 /// @warning 入口包含长时间等待和实体设备访问，不应作为无设备 CI 的回归用例。
 int main(int argc, char* argv[])
 {
-    // 统计范围覆盖示例调用；分离线程可能跨越返回边界，不能据此保证所有活动均已收尾。
+    // 统计范围覆盖示例调用，诊断线程由 test 在返回前回收。
     ice::reset_allocation_counters();
-    test();
+    const bool completed = test();
+    // 演示进程独占 SDL 生命周期；所有局部播放器销毁后由入口完成全局收尾。
+    SDL_Quit();
     // 输出计数没有实时路径专属断言，也没有按阈值决定进程退出状态。
     ice::print_allocation_stats();
-    // 加载失败同样走到此处；自动化验证应使用独立 CTest 而非本示例退出码。
-    return 0;
+    // 保留失败退出状态；自动化实时断言仍由独立 CTest 提供。
+    return completed ? 0 : 1;
 }

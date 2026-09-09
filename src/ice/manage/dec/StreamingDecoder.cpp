@@ -4,15 +4,20 @@
 #include "ice/manage/AudioFormat.hpp"
 #include "ice/manage/dec/IDecoderFactory.hpp"
 #include "ice/manage/dec/IDecoderInstance.hpp"
+#include <SDL3/SDL_thread.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <thread>
+#include <span>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ice
 {
@@ -42,6 +47,8 @@ struct StreamingDecoder::State {
     std::unique_ptr<IDecoderInstance> m_instance;
     /// @brief 供首块准备和后台读取复用的输出格式。
     AudioDataFormat m_format;
+    /// @brief 创建阶段准备的后台临时页，仅由工作线程使用并与缓存页交换存储。
+    AudioBuffer m_scratch;
     /// @brief 缓存页数量固定，回调遍历成本与音频长度无关。
     std::array<Page, PAGE_COUNT> m_pages;
     /// @brief 已分配页数，短文件不强行占用长音频的缓存预算。
@@ -60,9 +67,10 @@ struct StreamingDecoder::State {
     size_t m_victim{ 0 };
     /// @brief 当前后端的精确目标帧游标，仅工作线程修改。
     size_t m_cursor{ 0 };
-    /// @brief 工作线程发布真实 EOF，读取侧仅取快照以裁剪请求。
+    /// @brief 创建侧写入长度估算，工作线程短读时修正，读取侧据此裁剪请求。
     /// @warning 每块 relaxed
     /// 读取独立长度，不承担缓存页的发布；页内容由互斥量保护。
+    /// 短读也可能来自失败，不把此数值当成成功解码完整文件的证明。
     std::atomic<size_t> m_total{ 0 };
     /// @brief 通知版本由请求侧递增，工作线程等待版本变化。
     /// @warning 每批请求 release 发布，后台 acquire
@@ -71,9 +79,20 @@ struct StreamingDecoder::State {
     /// @brief 析构侧写入停止，后台在每次分块 IO 之间以 relaxed 检查。
     /// 停止只承载独立布尔值；进入等待前由 wake 的 release/acquire
     /// 保证不丢退出通知。
+    /// @warning 析构侧写入，预读线程在块间及等待前读取；不用于发布页内容。
     std::atomic<bool> m_stopping{ false };
     /// @brief 声明在状态末尾，并在析构中先停止，保证引用状态仍然有效。
-    std::thread m_worker;
+    SDL_Thread* m_worker{ nullptr };
+
+    /// @brief SDL 线程入口，只借用状态直至析构等待结束。
+    /// @param userdata 已完成首块和页表准备的状态地址。
+    /// @return 预读循环退出后返回零。
+    /// @warning 后台入口包含 IO 与等待，状态必须存活到 SDL_WaitThread 返回。
+    static int SDLCALL runWorker(void* userdata)
+    {
+        static_cast<State*>(userdata)->run();
+        return 0;
+    }
 
     /// @brief 在已持锁情况下检查页是否驻留。
     /// @param start 已按 PAGE_FRAMES 对齐的目标帧。
@@ -86,7 +105,8 @@ struct StreamingDecoder::State {
                 return page.m_start == start;
             });
     }
-    /// @brief 在已持锁情况下去重并排队；队列满时等待未来回调重新请求。
+    /// @brief 运行期间持锁去重并排队；队列满时依赖未来回调重新请求。
+    /// 创建阶段尚未启动工作线程，可在独占状态时调用，不要求虚设缓存锁。
     /// @param start 需要驻留的页起点，不接收任意字节偏移。
     /// @warning 每音频块调用，可更新唤醒计数但不得分配请求节点或等待。
     void request(size_t start)
@@ -113,9 +133,9 @@ struct StreamingDecoder::State {
     /// @warning 非实时线程允许 IO；倒退及远距离定位成本与跳过长度有关。
     void run()
     {
-        // 分配只发生一次，后续页发布交换 scratch 与被淘汰页的存储。
+        // 创建阶段已准备临时页，后台入口不再分配这块音频存储。
         // 后端可以在内部维护压缩包缓存，但不会得到整文件大小的输出请求。
-        AudioBuffer scratch(m_format, PAGE_FRAMES);
+        auto& scratch = m_scratch;
         while ( !m_stopping.load(std::memory_order_relaxed) ) {
             const auto version = m_wake.load(std::memory_order_acquire);
             size_t     target  = EMPTY;
@@ -149,7 +169,13 @@ struct StreamingDecoder::State {
                     !m_stopping.load(std::memory_order_relaxed) ) {
                 const size_t wanted = std::min(PAGE_FRAMES, target - m_cursor);
                 const size_t got = m_instance->read(scratch.raw_ptrs(), wanted);
+                // 后端返回值不能授权越过临时块；违约后停止消费并保留已知前缀。
+                if ( got > wanted ) {
+                    m_total.store(m_cursor, std::memory_order_relaxed);
+                    return;
+                }
                 // 累加实际输出帧而非请求帧，保证短读不会造成后续位置偏移。
+                // 本策略把任何短读作为末尾；后端临时短读或失败也会缩短长度。
                 m_cursor += got;
                 if ( got < wanted ) {
                     m_total.store(m_cursor, std::memory_order_relaxed);
@@ -160,8 +186,14 @@ struct StreamingDecoder::State {
             // 跳过阶段提前遇到 EOF 时不能把 scratch 的旧内容发布成目标页。
             // 停止请求也只在块间检查，避免后台继续遍历整段长音频。
             if ( m_cursor != target ) continue;
-            const size_t got =
-                m_instance->read(scratch.raw_ptrs(), PAGE_FRAMES);
+            // 最后一个可表示区间也受整数剩余范围限制，游标累加不能回绕。
+            const size_t wanted = std::min(PAGE_FRAMES, EMPTY - m_cursor);
+            const size_t got    = m_instance->read(scratch.raw_ptrs(), wanted);
+            if ( got > wanted ) {
+                // 不发布违约页的帧数，否则消费者可能按虚假长度读取未填充样本。
+                m_total.store(m_cursor, std::memory_order_relaxed);
+                return;
+            }
             m_cursor += got;
             if ( got < PAGE_FRAMES )
                 m_total.store(m_cursor, std::memory_order_relaxed);
@@ -188,17 +220,21 @@ StreamingDecoder::~StreamingDecoder()
     m_state->m_stopping.store(true, std::memory_order_relaxed);
     m_state->m_wake.fetch_add(1, std::memory_order_release);
     m_state->m_wake.notify_one();
-    if ( m_state->m_worker.joinable() ) m_state->m_worker.join();
+    // SDL 等待同时释放线程句柄；未启动或启动失败的空句柄无需等待。
+    if ( m_state->m_worker ) SDL_WaitThread(m_state->m_worker, nullptr);
 }
 
 /// @brief 在非实时侧验证格式、准备首块并建立长期预读服务。
-/// @return 不支持的格式、未知时长或空工厂返回空句柄。
+/// @return 无效路径、不支持的格式、未知时长或空工厂返回空句柄。
 /// 后端历史异常行为不在此包装成成功，调用方仍遵循工厂失败契约。
 /// @warning 此处允许同步读取首块，禁止从回调延迟创建实例。
 std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     std::string_view path, const AudioDataFormat& target_format, ThreadPool&,
     std::shared_ptr<IDecoderFactory> factory)
 {
+    // 工厂可能把路径交给 C 字符串接口，空字符不能导致实际打开路径被截断。
+    // 路径拒绝先于状态分配和媒体访问，保持与完整缓存入口一致的输入边界。
+    if ( path.empty() || path.find('\0') != std::string_view::npos ) return {};
     if ( !factory || target_format.channels == 0 ||
          target_format.samplerate == 0 )
         return {};
@@ -212,6 +248,7 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
          state.m_format.samplerate != target_format.samplerate )
         return {};
     // 元信息用于时间线长度；未知长度先拒绝，避免将零误报为可播放资源。
+    // 请求同时受此估算上界限制；估算偏小不保证通过后台读取自动恢复完整长度。
     state.m_total.store(state.m_instance->get_source_total_frames(),
                         std::memory_order_relaxed);
     if ( state.m_total.load(std::memory_order_relaxed) == 0 ) return {};
@@ -219,14 +256,18 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     // 对编码延迟采用不同处理，导致切换策略或倒退时 PCM 起点变化。
     if ( !state.m_instance->seek(0) ) return {};
     auto& first = state.m_pages[0];
-    first.m_pcm.resize(state.m_format, State::PAGE_FRAMES);
+    // 缓冲拒绝尺寸时不能把空指针表交给后端读取。
+    if ( !first.m_pcm.resize(state.m_format, State::PAGE_FRAMES) ) return {};
     first.m_start = 0;
     first.m_frames =
         state.m_instance->read(first.m_pcm.raw_ptrs(), State::PAGE_FRAMES);
+    // 首块同样不信任后端报告的长度，拒绝发布超出已分配页的范围。
+    if ( first.m_frames > State::PAGE_FRAMES ) return {};
     state.m_cursor = first.m_frames;
     state.m_victim = 1;
     if ( first.m_frames < State::PAGE_FRAMES ) {
-        // 短音频已经全部读完，无需创建永久线程或分配其余十五页。
+        // 首次短读按已结束处理，无需创建永久线程或分配其余十五页。
+        // 没有单独的 EOF 状态，不能区分空音频、解码失败或可继续读取的短读。
         // 保持同一流式接口语义，但资源占用只相当于一页。
         state.m_total.store(first.m_frames, std::memory_order_relaxed);
         return decoder;
@@ -236,13 +277,22 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     state.m_pageCount =
         std::clamp(estimatedPages, size_t(2), State::PAGE_COUNT);
     for ( size_t index = 1; index < state.m_pageCount; ++index ) {
-        state.m_pages[index].m_pcm.resize(state.m_format, State::PAGE_FRAMES);
+        // 只发布全部页存储准备成功的实例，失败由局部对象统一释放已分配页。
+        if ( !state.m_pages[index].m_pcm.resize(state.m_format,
+                                                State::PAGE_FRAMES) )
+            return {};
     }
+    // 短文件已提前返回，不为它额外分配后台临时页；长期预读必须在启动前就绪。
+    if ( !state.m_scratch.resize(state.m_format, State::PAGE_FRAMES) )
+        return {};
     // 首块准备后再发布实例，避免普通从头播放必然遇到缺页。
     // 线程启动建立状态初始化的可见性，无需为不变格式和页容量添加原子成员。
     // 后续读取不能改变输出格式，否则已分配平面的声道容量将失效。
     state.request(State::PAGE_FRAMES);
-    state.m_worker = std::thread([&state] { state.run(); });
+    state.m_worker =
+        SDL_CreateThread(State::runWorker, "ICE stream reader", &state);
+    // 创建失败没有工作线程借用状态，返回空值使局部对象统一释放后端和页缓存。
+    if ( !state.m_worker ) return {};
     return decoder;
 }
 
@@ -265,12 +315,15 @@ size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
     const auto total = num_frames();
     if ( !buffer || channels == 0 || frames == 0 || start >= total ) return 0;
     const auto wanted = std::min(frames, total - start);
-    // 先清零，缓存竞争和缺页都保持连续时间推进，不重复上一块音频。
-    for ( uint16_t channel = 0; channel < channels; ++channel ) {
+    // 先验证整张输出表，后续声道无效时也不能改写前面有效声道的样本。
+    for ( uint16_t channel = 0; channel < channels; ++channel )
         if ( !buffer[channel] ) return 0;
+    // 清零发生在验证之后，缓存竞争和缺页仍保持连续时间推进。
+    for ( uint16_t channel = 0; channel < channels; ++channel ) {
         std::fill_n(buffer[channel], wanted, 0.0F);
     }
     std::unique_lock lock(m_state->m_mutex, std::try_to_lock);
+    // 未取得锁也无法修改请求环；本次只推进静音，依赖后续调用再次请求。
     if ( !lock.owns_lock() ) return wanted;
     // 每次循环最多跨一页，单次请求可以覆盖任意多个页边界。
     // 在整个复制区间保留同一把锁，工作线程不能替换正在借读的页地址。

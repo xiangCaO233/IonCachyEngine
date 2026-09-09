@@ -1,5 +1,4 @@
-#ifndef ICE_CLIPPER_HPP
-#define ICE_CLIPPER_HPP
+#pragma once
 
 #include <ice/core/effect/IEffectNode.hpp>
 
@@ -23,5 +22,3 @@ protected:
 };
 
 }  // namespace ice
-
-#endif  // ICE_CLIPPER_HPP

@@ -113,6 +113,8 @@ struct TimeStretcher::ProcessingState {
         , generation(generation)
     {
         // 容量按最高播放倍率准备，输入小数进位额外预留一帧。
+        // 输入申请失败时保留失败候选，发布入口负责拒绝，不继续申请后端资源。
+        if ( inputBuffer.frame_capacity() != maxInputFrames ) return;
         // 旁路状态不创建算法后端，避免单位倍率也承担预热成本。
         if ( !bypass ) {
             stretcher = std::make_unique<RStretcher>(format,
@@ -160,7 +162,7 @@ struct TimeStretcher::ProcessingState {
     /// 提交与排空是两个阶段，已提交后禁止再次拉取上游。
     bool finalSubmitted{ false };
 
-    /// @brief 此状态是否已经完全 drain。
+    /// @brief 此状态的 final 输出预算是否已交付完，不表示后端队列为空。
     bool finalDrained{ false };
 
     /// @brief 是否正在跨 block drain discontinuity 前的旧段尾音。
@@ -683,6 +685,11 @@ bool TimeStretcher::publish_prepared_state(const AudioDataFormat& format,
                                                       playbackRatio,
                                                       pitchSemitones,
                                                       generation);
+    // 构造完成不等于工作区准备成功；失败候选在控制侧回收，保留现有邮箱。
+    if ( prepared->inputBuffer.frame_capacity() != prepared->maxInputFrames ||
+         (!prepared->bypass &&
+          (!prepared->stretcher || !prepared->stretcher->isValid())) )
+        return false;
     // 完整对象构造完才让出所有权；音频线程不会看到半初始化的后端。
     ProcessingState* published = prepared.release();
     // exchange 返回的旧 pending 从未被音频侧取得，可在控制线程立即销毁。
@@ -712,8 +719,8 @@ void TimeStretcher::apply_pending_state()
     const bool preserveTerminalState = m_currentState &&
                                        m_currentState->finalSubmitted &&
                                        m_currentState->finalDrained;
-    pending->finalSubmitted = preserveTerminalState;
-    pending->finalDrained   = preserveTerminalState;
+    pending->finalSubmitted          = preserveTerminalState;
+    pending->finalDrained            = preserveTerminalState;
 
     // 当前指针由唯一音频线程使用；先完成替换，再把旧实例明确标记为可回收。
     ProcessingState* previous = m_currentState;
@@ -884,7 +891,7 @@ TimeStretcher::InputSpan TimeStretcher::read_input_span(
 /// @brief 逐连续段复制上游 PCM，保留边界次序但不引入算法延迟。
 /// @return 向上游请求的总输入帧数，不包含静音或旧段尾音前缀。
 /// @warning 音频热路径使用预分配缓冲，不增加上游所有权或分配临时片段。
-/// 旁路近单位倍率使用一对一复制，调用方需保证输入预算适合输出剩余窗口。
+/// 旁路只接受精确单位倍率，输入预算与输出剩余窗口一一对应。
 /// @param output 接收直接复制结果的设备块，未覆盖区域已由调用方清零。
 /// @param inputNode 上游观察引用，处理期间不得由控制线程替换或销毁。
 /// @param inputFrames 本次计划消费的源帧总数，不含先前已消费区间。
@@ -924,6 +931,8 @@ std::size_t TimeStretcher::process_bypass_segments(
             pulledFrames += segmentFrames;
 
             // 旁路没有算法尾音，按实际分段次序拼接到输出，不跨边界混合采样。
+            // 旁路状态只允许精确单位倍率，因此累计输入不会超过输出剩余帧数。
+            // 非单位倍率必须经过后端，不能靠丢弃输入或越界复制近似其时钟。
             float**             outputChannels = output.raw_ptrs();
             const float* const* inputChannels  = inputBuffer.raw_ptrs();
             for ( std::uint16_t channel = 0U; channel < output.num_channels();
@@ -1150,15 +1159,16 @@ void TimeStretcher::publish_final_state(std::uint64_t finalGeneration)
                               std::memory_order_release);
 }
 
-/// @brief 判断参数是否落在单位速度、零音高的近似旁路区间。
+/// @brief 判断参数是否精确为单位速度、零音高，可直接一对一复制。
 /// @warning 状态准备时选择路径，不是每样本运行的滤波或插值操作。
 /// @param playbackRatio 已通过范围校验的期望输入/输出帧比。
 /// @param pitchSemitones 已通过范围校验的半音偏移，旁路要求同时接近零。
 bool TimeStretcher::should_bypass(double playbackRatio, double pitchSemitones)
 {
     // 两个条件必须同时满足；只变音高或只变速度都仍需要后端处理。
-    return std::abs(playbackRatio - 1.0) < 0.001 &&
-           std::abs(pitchSemitones) < 0.001;
+    // 容差旁路会让输入小数余量累积成额外帧，破坏一对一复制的容量不变量。
+    // 即使参数变化很小，也保留其时长和音高语义，交由预热后端处理。
+    return playbackRatio == 1.0 && pitchSemitones == 0.0;
 }
 
 }  // namespace ice

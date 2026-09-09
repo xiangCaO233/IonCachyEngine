@@ -1,12 +1,13 @@
-#ifndef ICE_IDECODERFACTORY_HPP
-#define ICE_IDECODERFACTORY_HPP
+#pragma once
 
-#include <ice/manage/AudioFormat.hpp>
 #include <memory>
 #include <string_view>
 
 namespace ice
 {
+/// @brief 仅借用音频格式，接口声明不需要其字段布局。
+struct AudioDataFormat;
+
 class IDecoderInstance;
 class MediaInfo;
 
@@ -40,5 +41,3 @@ public:
 };
 
 }  // namespace ice
-
-#endif  // ICE_IDECODERFACTORY_HPP

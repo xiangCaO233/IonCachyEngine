@@ -1,5 +1,4 @@
-#ifndef ICE_CONFIG_HPP
-#define ICE_CONFIG_HPP
+#pragma once
 
 #include <cstdint>
 
@@ -51,5 +50,3 @@ public:
 };
 
 }  // namespace ice
-
-#endif  // ICE_CONFIG_HPP

@@ -1,3 +1,6 @@
+#pragma once
+
+#include <cstddef>
 #include <ice/manage/AudioFormat.hpp>
 #include <ice/manage/dec/AlbumArt.hpp>
 #include <string>
@@ -16,12 +19,12 @@ struct MediaInfo {
     std::string album;
     /// @brief 文件探测到的音频格式，可能不同于解码器目标输出格式。
     AudioDataFormat format;
-    /// @brief 探测码率；无法从文件取得时由具体探测实现决定回退值。
-    /// 默认初始化本结构不会初始化此标量，必须在成功探测后读取。
-    size_t bitrate;
+    /// @brief 探测码率，默认零表示尚无有效码率信息。
+    /// 工厂未填写该字段时仍可安全复制元信息，零值不证明探测成功。
+    size_t bitrate{ 0 };
     /// @brief 媒体帧数估计，不能直接作为目标采样率下的输出容量。
-    /// 默认初始化不赋初值，失败探测后的值不能作为有效时长使用。
-    size_t frame_count;
+    /// 默认零表示未取得长度，调用方仍须检查探测结果。
+    size_t frame_count{ 0 };
     /// @brief 封面以值语义随媒体信息保存，不依赖探测上下文继续存活。
     AlbumArt cover;
 };

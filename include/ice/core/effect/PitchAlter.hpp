@@ -1,5 +1,4 @@
-#ifndef ICE_PITCHALTER_HPP
-#define ICE_PITCHALTER_HPP
+#pragma once
 
 #include <atomic>
 #include <cmath>
@@ -49,10 +48,11 @@ public:
     inline double scale() const { return pitch_scale.load(); }
 
     /// @brief 拉取上游并按音高倍率处理音频。
-    /// @warning 每块路径仍存在容量调整和共享指针复制，需要后续实时化。
+    /// @warning
+    /// 每块路径仍存在容量调整，需要后续实时化；禁止增加共享所有权复制。
     /// @warning process 每块读取控制侧倍率，apply_effect
-    /// 可能再次读取，当前默认顺序一致。 上游所有权复制沿用历史
-    /// getter；运行期间本应保持上游稳定，尚未迁移为观察访问。
+    /// 可能再次读取，当前默认顺序一致。
+    /// 上游由基类持有，处理仅借用观察指针；运行期间禁止替换或释放上游。
     void process(AudioBuffer& buffer) override;
 
 protected:
@@ -75,5 +75,3 @@ private:
     std::unique_ptr<RStretcher> stretcher;
 };
 }  // namespace ice
-
-#endif  // ICE_PITCHALTER_HPP

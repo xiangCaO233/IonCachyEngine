@@ -90,15 +90,18 @@ RStretcher::RStretcher(const AudioDataFormat& format,
 
     // padding 可分多次提交，不必为整段前补零分配同样大的缓冲。
     // delay 丢弃另用输出侧工作区，不能覆盖调用者已写入的样本。
-    m_paddingInput.resize(
-        m_format,
-        std::max<std::size_t>(
-            1U, std::min(m_preferredStartPad, m_maxProcessFrames)));
-    m_delayDiscardOutput.resize(m_format, m_maxOutputFrames);
+    // 工作区申请失败保持无效状态，不能以零容量进入补偿或排空循环。
+    if ( !m_paddingInput.resize(
+             m_format,
+             std::max<std::size_t>(
+                 1U, std::min(m_preferredStartPad, m_maxProcessFrames))) ||
+         !m_delayDiscardOutput.resize(m_format, m_maxOutputFrames) )
+        return;
     m_paddingInput.clear();
     m_delayDiscardOutput.clear();
 
     // 预热结束会再次 reset，构造后的实例仍可从真实流的第一帧开始。
+    m_isPrepared = true;
     prewarm(m_maxInputFrames, m_maxOutputFrames);
 }
 
@@ -111,6 +114,8 @@ RStretcher::~RStretcher() = default;
 /// @warning 可能触发后端重配置；不得与处理并发，实时切换应发布预热后的新实例。
 void RStretcher::set_stretch_ratio(double ratio)
 {
+    // 准备失败不可通过参数更新或 reset 恢复，调用方须重新创建实例。
+    if ( !m_isPrepared ) return;
     const double sanitized = sanitizeRatio(ratio);
     // 无实质变化时不触碰后端，避免重复设置导致内部状态扰动。
     if ( std::abs(sanitized - m_stretchRatio) <=
@@ -128,6 +133,8 @@ void RStretcher::set_stretch_ratio(double ratio)
 /// @warning 此接口不重建包装器缓存的 padding/delay，运行时应优先换用新实例。
 void RStretcher::set_pitch_ratio(double pitchRatio)
 {
+    // 准备失败不可通过参数更新或 reset 恢复，调用方须重新创建实例。
+    if ( !m_isPrepared ) return;
     const double sanitized = sanitizeRatio(pitchRatio);
     // 音高使用独立倍率缓存，不能以修改时长倍率来模拟音高设置。
     if ( std::abs(sanitized - m_pitchRatio) <=
@@ -156,6 +163,8 @@ double RStretcher::get_pitch_ratio() const
 /// @warning 音频热路径可能调用；不分配新的工作区，不销毁算法实例。
 void RStretcher::reset()
 {
+    // 准备失败不可通过参数更新或 reset 恢复，调用方须重新创建实例。
+    if ( !m_isPrepared ) return;
     // 后端 reset 不代表包装层也已恢复，结束标记与剩余 delay 必须一起重置。
     m_rubberBandStretcher->reset();
     m_finished            = false;
@@ -191,7 +200,8 @@ std::size_t RStretcher::process_into(AudioBuffer&       output,
 {
     // 对齐格式、指针数组与活动帧边界；拒绝后不推进后端状态。
     // m_finished 表示后端已终止，必须 reset 才能提交下一段真实输入。
-    if ( output.afmt != m_format || input.afmt != m_format ||
+    // 此处不检查约定容量或 final 是否已提交，调用方须限制积压并维护流协议。
+    if ( !m_isPrepared || output.afmt != m_format || input.afmt != m_format ||
          input.num_channels() != m_inputPointers.size() ||
          output.num_channels() != m_outputPointers.size() ||
          outputOffset > output.num_frames() || m_finished ) {
@@ -264,7 +274,7 @@ std::size_t RStretcher::drain_into(AudioBuffer& output,
                                    std::size_t  outputOffset)
 {
     // 提取接口也必须验证格式；它可能在上层没有本次输入时独立调用。
-    if ( output.afmt != m_format ||
+    if ( !m_isPrepared || output.afmt != m_format ||
          output.num_channels() != m_outputPointers.size() ||
          outputOffset > output.num_frames() ) {
         return 0U;
@@ -282,7 +292,8 @@ std::size_t RStretcher::drain_into(AudioBuffer& output,
 /// @warning 状态属于处理线程，不能用作其他线程等待处理完成的同步标志。
 bool RStretcher::is_finished() const
 {
-    return m_finished;
+    // 无效实例没有可继续排出的流，避免调用方在零产出上永久排尾。
+    return !m_isPrepared || m_finished;
 }
 
 /// @brief 借用构造时固定的音频格式，引用不延长对象生命周期。
@@ -377,7 +388,16 @@ void RStretcher::prewarm(std::size_t maxInputFrames,
 
     // 这些缓冲仅存在于构造阶段，不可移动到实时 process 内按次创建。
     AudioBuffer warmInput(m_format, warmInputFrames);
+    // 构造失败形成空缓冲，必须在激活单帧和任何后端调用之前识别。
+    if ( warmInput.frame_capacity() != warmInputFrames ) {
+        m_isPrepared = false;
+        return;
+    }
     AudioBuffer warmOutput(m_format, warmOutputFrames);
+    if ( warmOutput.frame_capacity() != warmOutputFrames ) {
+        m_isPrepared = false;
+        return;
+    }
     warmInput.clear();
     warmOutput.clear();
 

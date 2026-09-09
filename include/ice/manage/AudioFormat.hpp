@@ -1,5 +1,4 @@
-#ifndef ICE_AUDIOFORMAT_HPP
-#define ICE_AUDIOFORMAT_HPP
+#pragma once
 
 #include <cstdint>
 
@@ -20,5 +19,3 @@ struct AudioDataFormat {
     bool operator==(const AudioDataFormat& other) const = default;
 };
 }  // namespace ice
-
-#endif  // ICE_AUDIOFORMAT_HPP

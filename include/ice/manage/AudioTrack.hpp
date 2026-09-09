@@ -1,19 +1,20 @@
-#ifndef ICE_AUDIOTRACK_HPP
-#define ICE_AUDIOTRACK_HPP
+#pragma once
 
 #include <cstddef>
 #include <ice/config/config.hpp>
 #include <ice/manage/AudioFormat.hpp>
-#include <ice/manage/dec/IDecoder.hpp>
-#include <ice/manage/dec/IDecoderFactory.hpp>
 #include <ice/manage/dec/MediaInfo.hpp>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ice
 {
 class AudioBuffer;
+class IDecoder;
+class IDecoderFactory;
 
 /// @brief 创建音轨时选择的解码策略，既有音轨不随全局默认值变化而切换。
 enum class CachingStrategy {
@@ -28,7 +29,16 @@ class ThreadPool;
 class AudioTrack
 {
     /// @brief 仅静态工厂能够提供的构造凭证，保留统一探测入口。
-    struct CreationKey {};
+    class CreationKey
+    {
+        friend class AudioTrack;
+        /// @brief 私有且非聚合的构造阻止外部通过空花括号生成凭证。
+        CreationKey() {}
+
+    public:
+        /// @brief 标准库可转发工厂已创建的凭证，不能自行创建新凭证。
+        CreationKey(const CreationKey&) = default;
+    };
 
 public:
     /// @brief 由工厂探测后构造，公开仅供 make_shared 转发内部凭证。
@@ -48,6 +58,10 @@ public:
         std::shared_ptr<IDecoderFactory> decoder_factory,
         CachingStrategy strategy = ICEConfig::default_caching_strategy);
 
+    /// @brief 释放独占解码策略，所有借用视图随之失效。
+    /// @warning 资源销毁可能等待流式预读线程退出，不可在音频回调调用。
+    ~AudioTrack();
+
     /// @brief 禁止按值复制独占解码器，调用方通过共享音轨句柄复用资源。
     AudioTrack(const AudioTrack&) = delete;
     /// @brief 禁止按值赋值，以免隐式替换既有解码策略及其借用缓存。
@@ -56,69 +70,53 @@ public:
     /// @brief 返回探测阶段保存的元信息，而非实时读取进度。
     /// @return 音轨拥有的元信息引用，不可跨越音轨销毁。
     /// 源文件的格式信息不等同于内部输出格式，不能据此推断 read 的重采样结果。
-    inline const MediaInfo& get_media_info() const { return media_info; }
+    inline const MediaInfo& get_media_info() const { return m_mediaInfo; }
 
     /// @brief 借用创建时原样保存的路径，不承诺已经规范化或是绝对路径。
-    inline const std::string& path() const { return file_path; }
+    inline const std::string& path() const { return m_filePath; }
 
-    /// @brief 查询解码策略实际提供的帧数。
+    /// @brief 查询解码策略报告的帧数，完全缓存为实际长度，流式为可修正估算。
     /// @warning 完全缓存策略首次查询可能等待后台任务，须在播放前完成。
-    inline size_t num_frames() const
-    {
-        return decoder ? decoder->num_frames() : 0;
-    }
+    size_t num_frames() const;
 
     /// @brief 返回创建时确定的解码策略，便于上层选择 PCM 视图或分块读取。
     CachingStrategy cachingStrategy() const noexcept { return m_strategy; }
 
     /// @brief 将帧区间读取转发给音轨持有的解码策略。
     /// 不会调整缓冲格式或为调用方扩容。
-    /// 调用方须保证缓冲容量足够，并按返回值处理未写入尾部。
-    /// @param buffer 可写目标，活动帧数与容量不会由此接口验证或改变。
+    /// 超过缓冲容量的请求整次拒绝，调用方按返回值处理未写入尾部。
+    /// @param buffer 可写目标，验证容量但不改变活动帧数或分配存储。
     /// @param start_frame 每声道缓存起始帧，不修改音轨或调用方节点的播放游标。
-    /// @param frame_count 请求帧数，必须不超过目标可写容量。
+    /// @param frame_count 请求帧数，超出目标可写容量时返回零。
     /// @return 解码器报告的区间帧数；额外声道及尾部可能保持原内容。
+    /// 流式缺页返回值包含静音帧，不能据此断定对应 PCM 已从文件读取。
     /// @warning 音频逐块读取入口：须预先完成缓存准备，不允许新增
     /// IO、分配或阻塞。
-    inline auto read(AudioBuffer& buffer, size_t start_frame,
-                     size_t frame_count) const
-    {
-        // 此处不推进独立游标，因此多个节点可请求同一缓存的不同片段。
-        return decoder ? decoder->decode(buffer.raw_ptrs(),
-                                         buffer.afmt.channels,
-                                         start_frame,
-                                         frame_count)
-                       : 0;
-    }
+    size_t read(AudioBuffer& buffer, size_t start_frame,
+                size_t frame_count) const;
     /// @brief 向容器追加只读 PCM 视图，音轨须活过这些视图。
     /// 当前位置参数最终转换为解码器使用的整数帧索引。
     /// @param origin_data 接收借用视图的容器，原有元素不在此清理。
     /// @param start_frame 非负有限且可表示为 size_t 的起始帧，转换会截去小数。
     /// @param frame_count 非负有限且可表示为 size_t 的帧数，转换会截去小数。
-    /// @details
-    /// 不检查浮点转换范围，并丢弃解码器返回帧数；调用方不能仅凭正常返回判断成功。
+    /// @return 实际追加的每声道帧数；非法范围或无可用数据时返回零。
+    /// 流式策略不追加视图；离线分析需要另行加载完全缓存音轨。
     /// @warning 输出容器可扩容；该接口不适合作为实时处理的首次准备入口。
-    inline void origin(std::vector<std::span<const float>>& origin_data,
-                       double start_frame, double frame_count)
-    {
-        // 保留解码器的追加语义；复用容器时由调用方清理旧的借用切片。
-        if ( decoder ) decoder->origin(origin_data, start_frame, frame_count);
-    }
+    size_t origin(std::vector<std::span<const float>>& origin_data,
+                  double start_frame, double frame_count);
 
 private:
     /// @brief 探测时复制的源媒体信息，不随后台解码进度更新。
-    MediaInfo media_info;
+    MediaInfo m_mediaInfo;
 
     /// @brief 构造后不可变，多个播放节点可以安全查询。
     CachingStrategy m_strategy;
 
     /// @brief 创建参数的自有字符串副本，不借用调用方 string_view。
-    std::string file_path;
+    std::string m_filePath;
 
     /// @brief 音轨独占的策略对象，返回的 PCM 视图依赖其存储生命周期。
-    std::unique_ptr<IDecoder> decoder;
+    std::unique_ptr<IDecoder> m_decoder;
 };
 
 }  // namespace ice
-
-#endif  // ICE_AUDIOTRACK_HPP

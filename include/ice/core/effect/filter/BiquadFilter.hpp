@@ -1,5 +1,4 @@
-#ifndef ICE_BIQUADFILTER_HPP
-#define ICE_BIQUADFILTER_HPP
+#pragma once
 
 #include <cstddef>
 
@@ -52,5 +51,3 @@ private:
     double y2{ 0.0 };
 };
 }  // namespace ice
-
-#endif  // ICE_BIQUADFILTER_HPP

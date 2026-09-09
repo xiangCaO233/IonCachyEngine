@@ -669,7 +669,7 @@ int testRealtimeStateAndReset()
     return failures;
 }
 
-/// @brief 验证 final 请求只拉取最后一块并完整 drain。
+/// @brief 验证 final 请求只拉取最后一块并达到应用层预算完成状态。
 /// @details 验证终态和上游调用次数，不比较逐采样结果或尾音实际长度。
 /// 两百五十六块是测试失败上限，不是音频同步等待窗口，也不包含 sleep。
 /// @return 失败断言数量。
@@ -710,7 +710,7 @@ int testFinalDrain()
                    "final request is submitted");
     failures += expectTrue(stretcher.is_final_input_drained(),
                            "final output reaches drained state");
-    // “请求已消费”和“尾部已排空”分别断言，不能用其中一个代替另一个终态条件。
+    // 请求消费与输出预算完成分别断言，后者不证明后端队列物理为空。
     failures += expectTrue(source->callCount() == callsBefore + 1U,
                            "drain does not pull additional upstream blocks");
     failures += expectTrue(g_allocationCount == 0U,
@@ -722,6 +722,7 @@ int testFinalDrain()
 
 /// @brief 验证超过预备容量时安全静音且不临时扩容。
 /// @details 只覆盖同格式下超出一帧的容量保护，不覆盖格式变化和整数极值。
+/// 不检查合法输出块内部的输入预算或复制边界，不能替代旁路越界回归。
 /// @return 失败断言数量。
 int testCapacityGuard()
 {
@@ -1231,7 +1232,7 @@ int testStretchedLoopBoundary()
     return failures;
 }
 
-/// @brief 验证 provider Final 精确限制最后输入并完整 drain。
+/// @brief 验证 provider Final 限制最后输入并达到应用层预算完成状态。
 /// @details 上游请求严格限定为三十七帧；可闻输出只检查非零且不超过预算上界。
 /// 不要求所有预算帧均可闻，不能据此证明没有丢失低幅度尾音。
 /// 脚本耗尽后默认继续供数，因此终态失效会暴露多余上游请求。
@@ -1303,6 +1304,7 @@ int testProviderFinalBoundary()
 /// @details 默认倍率与音高形成旁路，两段样本及末尾静音按首声道逐帧检查。
 /// 忽略算法重置不等于忽略输入分段，上游请求仍必须停在每个边界。
 /// 不覆盖旁路与变速状态互相切换时已有尾音的处理。
+/// 只使用精确单位倍率，不覆盖近单位倍率累计输入多于输出窗口的容量缺陷。
 /// @return 失败断言数量。
 int testBypassBoundaryAndFinal()
 {
@@ -1376,6 +1378,282 @@ int testBypassBoundaryAndFinal()
         expectNoHeapDeallocation("bypass boundary callbacks do not free");
     return failures;
 }
+
+/// @brief 验证近单位速度按真实倍率取数，且不会覆盖输出活动区之外的样本。
+/// @details 两侧倍率跨多块累积小数余量，防止仅检查首块漏掉整数进位。
+/// 后缀保留在实际分配容量内，因此旧实现失败时也能安全读取进行诊断。
+/// AudioBuffer::clear
+/// 清零完整容量；检查后缀仍为零，区分合法清理与多余音频写入。
+/// 此测试不比较频谱或算法延迟，只检查输入时钟和输出写入边界。
+/// @return 失败断言数量。
+int testNearUnityOutputBounds()
+{
+    /// @brief 固定双声道格式，使左右平面的边界均参与验证。
+    constexpr ice::AudioDataFormat FORMAT{ .channels   = 2U,
+                                           .samplerate = 48000U };
+    constexpr std::size_t          BLOCK_FRAMES = 512U;
+    constexpr std::size_t          BLOCK_COUNT  = 32U;
+    constexpr std::size_t          GUARD_FRAMES = 8U;
+    /// @brief 非零初值用于区分入口全容量清理与未执行处理。
+    constexpr float SENTINEL = 0.9375F;
+    int             failures = 0;
+    // 两侧均不能被量化为单位速度；输入总数检查独立于输出后缀检查。
+    for ( const double ratio : { 0.9991, 1.0009 } ) {
+        // 每组重建源与处理器，不继承上一倍率的相位、分数帧或算法历史。
+        auto               source = std::make_shared<SignalNode>();
+        ice::TimeStretcher stretcher;
+        stretcher.set_inputnode(source);
+        // 参数在统计前发布，测量的是音频侧接管与连续处理，不计控制侧构造成本。
+        stretcher.set_playback_ratio(ratio);
+        // 准备容量只包含合法输出窗口；哨兵属于测试存储，不授权处理器写入。
+        failures += expectTrue(stretcher.prepare(FORMAT, BLOCK_FRAMES),
+                               "near unity state prepares");
+        ice::AudioBuffer output(FORMAT, BLOCK_FRAMES + GUARD_FRAMES);
+        // 缩短活动帧不改变存储跨度，后缀地址始终处于该声道已分配范围内。
+        output.set_active_frames(BLOCK_FRAMES);
+        // 失败按块累积，后续清零不能抹去之前已经观察到的越界证据。
+        bool guardPreserved = true;
+        // 两声道分别设防，既检查活动区越界，也避免声道间覆盖被相同波形掩盖。
+        // 入口合法清零会覆盖非零哨兵；信号源的首个多余采样非零，可识别随后越界复制。
+        beginHeapTracking();
+        for ( std::size_t block = 0U; block < BLOCK_COUNT; ++block ) {
+            for ( std::uint16_t channel = 0U; channel < FORMAT.channels;
+                  ++channel ) {
+                std::fill_n(output.raw_ptrs()[channel] + BLOCK_FRAMES,
+                            GUARD_FRAMES,
+                            SENTINEL);
+            }
+            stretcher.process(output);
+            for ( std::uint16_t channel = 0U; channel < FORMAT.channels;
+                  ++channel ) {
+                for ( std::size_t frame = BLOCK_FRAMES;
+                      frame < BLOCK_FRAMES + GUARD_FRAMES;
+                      ++frame ) {
+                    guardPreserved &= output.raw_ptrs()[channel][frame] == 0.0F;
+                }
+            }
+        }
+        // 退出统计后再诊断，避免失败文本的分配污染回调结果。
+        endHeapTracking();
+        // 独立按总时长取整，避免测试复制被测实现的逐块余量更新算法。
+        const auto expected = static_cast<std::uint64_t>(std::floor(
+            static_cast<double>(BLOCK_FRAMES * BLOCK_COUNT) * ratio));
+        // 累计请求断言可发现把旁路倍率强制设为一或丢弃多余输入的错误修补。
+        failures += expectTrue(source->processedFrames() == expected,
+                               "near unity preserves requested input ratio");
+        failures +=
+            expectTrue(guardPreserved, "near unity preserves output suffix");
+        // 修复不能依赖每块临时分配，也不能把合法倍率简单静音拒绝。
+        failures += expectTrue(stretcher.capacity_overflow_count() == 0U,
+                               "near unity accepts valid output blocks");
+        failures +=
+            expectNoHeapAllocation("near unity callback does not allocate");
+        failures +=
+            expectNoHeapDeallocation("near unity callback does not free");
+    }
+    return failures;
+}
+
+/// @brief 检查超界尺寸不会改变已有音频存储或进入分配器。
+/// @return 容量、状态及分配断言的失败数。
+/// 请求覆盖对齐加法、总元素数和字节容量边界，不实际申请巨量内存。
+/// 非 Linux 分支采用独立平面，仍须遵守总尺寸可表示与失败保留状态的契约。
+/// 这些请求均不依赖物理可用内存大小，拒绝依据是整数与容器边界。
+int testBufferResizeRange()
+{
+    /// @brief 旧格式用于验证拒绝请求时不提前覆盖元信息。
+    constexpr ice::AudioDataFormat FORMAT{ .channels   = 2U,
+                                           .samplerate = 48000U };
+    /// @brief 不同声道数和采样率使部分更新也能被断言发现。
+    constexpr ice::AudioDataFormat REQUEST{ .channels   = 3U,
+                                            .samplerate = 44100U };
+    ice::AudioBuffer               buffer(FORMAT, 8U);
+    buffer.raw_ptrs()[0][0] = 42.0F;
+    // 观察地址只用于等值比较，样本验证仍使用缓冲当前提供的指针表。
+    float*     original = buffer.raw_ptrs()[0];
+    int        failures = 0;
+    const auto maximum  = std::numeric_limits<std::size_t>::max();
+    // 不只测试加法溢出；较小请求仍会超过多声道总元素或字节容量。
+    for ( const auto frames : { maximum, maximum / 2U, maximum / 8U } ) {
+        // 验证必须先于容器扩容，失败请求不应释放原有块再重建。
+        beginHeapTracking();
+        const bool resized = buffer.resize(REQUEST, frames);
+        endHeapTracking();
+        failures +=
+            expectTrue(!resized, "oversized buffer request is rejected");
+        // 同时比较格式、逻辑长度、容量和首平面地址，不能只凭返回值判断安全。
+        failures +=
+            expectTrue(buffer.afmt == FORMAT && buffer.num_frames() == 8U &&
+                           buffer.frame_capacity() == 8U &&
+                           buffer.raw_ptrs()[0] == original,
+                       "rejected resize preserves buffer state");
+        failures += expectTrue(buffer.raw_ptrs()[0][0] == 42.0F,
+                               "rejected resize preserves samples");
+        failures += expectNoHeapAllocation("rejected resize does not allocate");
+        failures += expectNoHeapDeallocation("rejected resize does not free");
+    }
+    // 后续成功扩容可能释放旧地址，此后不再使用原始观察指针。
+    // 拒绝不是永久故障，随后有效请求仍能更新格式和容量。
+    failures +=
+        expectTrue(buffer.resize(REQUEST, 16U) && buffer.afmt == REQUEST &&
+                       buffer.num_frames() == 16U,
+                   "valid resize after rejection succeeds");
+    return failures;
+}
+
+/// @brief 验证混音只修改活动前缀，并允许缓冲自身累加。
+/// @return 值比较、写边界及实时分配检查的失败数。
+/// 对齐尾部仍属于分配空间，但不是本次音频块，不能贡献样本或被改写。
+/// 用精确可表示的常量消除浮点舍入因素，独立构造每个帧位置的期望值。
+/// 此用例同时适用于标量与 Linux 向量实现，活动长度的外部契约应保持一致。
+/// 不兼容输入必须整体拒绝；不覆盖分配失败或其他指令集运行时派发。
+/// 尾部处于合法分配内，地址检查工具未必能发现这种逻辑写越界。
+int testMixActiveBounds()
+{
+    /// @brief 双声道夹具同时检查固定平面跨度，防止只覆盖首个声道。
+    constexpr ice::AudioDataFormat FORMAT{ .channels   = 2U,
+                                           .samplerate = 48000U };
+    int                            failures = 0;
+    // 覆盖向量宽度两侧以及零帧，自身累加也使用相同活动长度。
+    for ( const std::size_t frames : { 0U, 1U, 7U, 8U, 9U, 15U, 16U } ) {
+        // 分配容量始终大于活动长度，尾部的非零哨兵必须完整保留。
+        // 容量为完整向量倍数，使尾部比较不依赖分配器提供的额外填充字节。
+        ice::AudioBuffer target(FORMAT, 32U);
+        ice::AudioBuffer source(FORMAT, 32U);
+        for ( std::uint16_t channel = 0; channel < FORMAT.channels;
+              ++channel ) {
+            std::fill_n(target.raw_ptrs()[channel], 32U, 42.0F);
+            std::fill_n(target.raw_ptrs()[channel], frames, 2.0F);
+            // 源尾部也使用非零值，错误地参与加法时会让目标哨兵产生可见变化。
+            std::fill_n(source.raw_ptrs()[channel], 32U, 1.0F);
+        }
+        // 缩短活动长度不重建声道表，后续仍可合法检查原有容量内的所有样本。
+        target.set_active_frames(frames);
+        source.set_active_frames(frames);
+        // 只有被测混音进入实时统计，夹具构造与断言不参与计数。
+        beginHeapTracking();
+        const bool mixed = (target += source);
+        endHeapTracking();
+        failures += expectTrue(mixed, "compatible mix succeeds");
+        // 按位置直接比较整段容量，既检测越过短尾，也检测第二声道地址偏移。
+        bool matches = true;
+        for ( std::uint16_t channel = 0; channel < FORMAT.channels;
+              ++channel ) {
+            for ( std::size_t frame = 0; frame < 32U; ++frame ) {
+                matches &= target.raw_ptrs()[channel][frame] ==
+                           (frame < frames ? 3.0F : 42.0F);
+            }
+        }
+        // 先验证独立源，再验证别名，避免后一次运算掩盖首次写越界。
+        failures += expectTrue(matches, "mix preserves inactive suffix");
+        failures += expectNoHeapAllocation("mix does not allocate");
+        failures += expectNoHeapDeallocation("mix does not free");
+        // 自身累加没有资源转移，结果必须为活动样本的两倍。
+        // 别名调用不是两份相等数据：源和目标必须是同一缓冲所有者。
+        // 实现应避免不重叠承诺，不能仅依赖某个优化级别碰巧产生预期值。
+        target += target;
+        matches = true;
+        for ( std::uint16_t channel = 0; channel < FORMAT.channels;
+              ++channel ) {
+            for ( std::size_t frame = 0; frame < 32U; ++frame ) {
+                matches &= target.raw_ptrs()[channel][frame] ==
+                           (frame < frames ? 6.0F : 42.0F);
+            }
+        }
+        // 后缀也参与自身累加验证，防止对齐尾部再次翻倍而活动样本仍然正确。
+        failures += expectTrue(matches, "self mix doubles only active samples");
+    }
+    // 分别破坏声道数、采样率和活动长度，不让某一种差异掩盖另一种检查。
+    // 源、目标都已有实际样本，拒绝后逐声道检查整个容量而非只看返回值。
+    // 采样率差异不改变平面尺寸，仍必须拒绝，避免按错误时基叠加。
+    // 声道数差异会影响地址表长度，应在读取第二个声道指针前返回。
+    // 长度差异使用更短源缓冲，以检验实现没有按目标长度盲读。
+    for ( int mismatch = 0; mismatch < 3; ++mismatch ) {
+        auto sourceFormat = FORMAT;
+        if ( mismatch == 0 ) sourceFormat.channels = 1U;
+        if ( mismatch == 1 ) sourceFormat.samplerate = 44100U;
+        ice::AudioBuffer target(FORMAT, 16U);
+        ice::AudioBuffer source(sourceFormat, mismatch == 2 ? 8U : 16U);
+        for ( std::uint16_t ch = 0; ch < FORMAT.channels; ++ch )
+            std::fill_n(target.raw_ptrs()[ch], 16U, 42.0F);
+        // 源使用非零样本，误执行加法不能因默认静音而通过目标不变断言。
+        for ( std::uint16_t ch = 0; ch < sourceFormat.channels; ++ch )
+            std::fill_n(source.raw_ptrs()[ch], source.num_frames(), 1.0F);
+        // 只统计拒绝路径，错误处理不能在实时线程分配错误消息或释放存储。
+        beginHeapTracking();
+        const bool mixed = (target += source);
+        endHeapTracking();
+        // 返回值是实时调用方可消费的失败信号，不依赖异常捕获。
+        // 保留目标已有内容，使调用方可以舍弃单个不兼容输入而保留其他声部。
+        // 成功路径已在上面的向量边界用例中检查，不能以总是拒绝满足契约。
+        failures += expectTrue(!mixed, "incompatible mix is rejected");
+        failures += expectNoHeapAllocation("rejected mix does not allocate");
+        failures += expectNoHeapDeallocation("rejected mix does not free");
+        // 两个平面都必须原样保留，不能在发现差异前写入部分输出。
+        bool unchanged = true;
+        for ( std::uint16_t ch = 0; ch < FORMAT.channels; ++ch )
+            for ( std::size_t frame = 0; frame < 16U; ++frame )
+                unchanged &= target.raw_ptrs()[ch][frame] == 42.0F;
+        failures += expectTrue(unchanged, "rejected mix preserves samples");
+    }
+    return failures;
+}
+
+#ifdef __linux__
+/// @brief 检查 Linux 双声道解交错的帧边界、声道顺序和目标后缀。
+/// 测试样本均可由 float 精确表示，转换不含算术变换，因此使用精确相等。
+/// 当前输入最大十七帧，不覆盖大容量吞吐或所有 CPU 目标的指令派发。
+/// @details 长度覆盖向量边界两侧，源只提供有效帧，不授权读取对齐填充。
+/// 目标额外空间用于检测误写，不改变调用时的活动帧数。
+/// @return 失败断言数量。
+int testStereoDeinterleaveBounds()
+{
+    /// @brief 两平面采用不同符号，防止交换或复制同一声道仍被误判正确。
+    constexpr ice::AudioDataFormat FORMAT{ .channels   = 2U,
+                                           .samplerate = 48000U };
+    int                            failures = 0;
+    // 零帧、短尾、整组以及跨组长度分别经过不同循环边界。
+    for ( const std::size_t frames : { 0U, 1U, 3U, 4U, 5U, 7U, 8U, 9U, 17U } ) {
+        // 固定数组不承诺向量对齐，入口必须支持普通交错 PCM 指针。
+        // 数组覆盖最大测试长度；本用例检查输出值和写边界，不是越界读取检测器。
+        std::array<float, 34U> input{};
+        for ( std::size_t frame = 0U; frame < frames; ++frame ) {
+            input[frame * 2U]      = static_cast<float>(frame + 1U);
+            input[frame * 2U + 1U] = -static_cast<float>(frame + 1U);
+        }
+        // 后缀先写非零；转换只覆盖有效帧，不应触碰其余容量。
+        ice::AudioBuffer output(FORMAT, frames + 16U);
+        for ( std::uint16_t channel = 0U; channel < FORMAT.channels;
+              ++channel ) {
+            std::fill_n(output.raw_ptrs()[channel], frames + 16U, 42.0F);
+        }
+        // 激活长度不缩减已分配容量，使全部后缀比较都在有效存储内。
+        output.set_active_frames(frames);
+        // 统计窗口仅包含转换，夹具分配和失败诊断均在窗口外。
+        beginHeapTracking();
+        output.write_interleaved_stereo(input.data());
+        // 输出比较放在计数之外，不将夹具观测成本归到转换入口。
+        endHeapTracking();
+        // 聚合全部帧结果，任何一次覆盖都不能被后续正确帧抵消。
+        bool samplesMatch = true;
+        for ( std::size_t frame = 0U; frame < frames + 16U; ++frame ) {
+            // 独立按帧构造期望值，不复用被测重排掩码或转换助手。
+            const float left =
+                frame < frames ? static_cast<float>(frame + 1U) : 42.0F;
+            const float right =
+                frame < frames ? -static_cast<float>(frame + 1U) : 42.0F;
+            samplesMatch &= output.raw_ptrs()[0][frame] == left;
+            samplesMatch &= output.raw_ptrs()[1][frame] == right;
+        }
+        // 样本顺序与未写区使用同一范围核对，避免仅检查首个向量。
+        failures += expectTrue(samplesMatch,
+                               "stereo split preserves samples and suffix");
+        failures += expectNoHeapAllocation("stereo split does not allocate");
+        failures += expectNoHeapDeallocation("stereo split does not free");
+    }
+    return failures;
+}
+#endif
 
 /// @brief 验证控制线程持续发布状态时退役回收与音频回调可安全并发。
 /// @details 依赖操作系统调度形成竞争，没有强制每次发布均与音频读取重叠。
@@ -1633,6 +1911,13 @@ int main()
     failures += testStretchedLoopBoundary();
     failures += testProviderFinalBoundary();
     failures += testBypassBoundaryAndFinal();
+    failures += testNearUnityOutputBounds();
+    failures += testMixActiveBounds();
+    failures += testBufferResizeRange();
+#ifdef __linux__
+    // 专用入口只在 Linux 连续平面实现提供，其他平台不伪造通过结果。
+    failures += testStereoDeinterleaveBounds();
+#endif
     // 并发用例自行 join 收尾；其 TLS 统计不会继承此前主线程的计数窗口。
     failures += testConcurrentStatePublication();
     return failures == 0 ? 0 : 1;

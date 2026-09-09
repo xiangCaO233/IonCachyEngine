@@ -1,5 +1,4 @@
-#ifndef ICE_COMPRESSER_HPP
-#define ICE_COMPRESSER_HPP
+#pragma once
 
 #include <atomic>
 
@@ -97,5 +96,3 @@ private:
     bool needs_update = true;
 };
 }  // namespace ice
-
-#endif  // ICE_COMPRESSER_HPP

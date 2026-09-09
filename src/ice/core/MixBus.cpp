@@ -50,8 +50,9 @@ void MixBus::prepare(const AudioDataFormat& format, std::size_t maxFrames)
 
     if ( m_isPrepared ) {
         // 分配发生在这里；process 只能调整活动帧数，不能扩大容量。
-        m_tempBuffer.resize(format, maxFrames);
-        m_tempBuffer.clear();
+        // 参数有效不代表存储已准备；失败时禁止后续短块沿用旧缓冲拉取上游。
+        m_isPrepared = m_tempBuffer.resize(format, maxFrames);
+        if ( m_isPrepared ) m_tempBuffer.clear();
     } else {
         // 清除活动帧数，避免无效格式继续暴露上一次处理的数据。
         m_tempBuffer.resize(format, 0U);

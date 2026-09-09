@@ -1,5 +1,4 @@
-#ifndef ICE_IEFFECTNODE_HPP
-#define ICE_IEFFECTNODE_HPP
+#pragma once
 
 #include <cstddef>
 #include <memory>
@@ -97,5 +96,3 @@ private:
     bool m_isPrepared{ false };
 };
 }  // namespace ice
-
-#endif  // ICE_IEFFECTNODE_HPP

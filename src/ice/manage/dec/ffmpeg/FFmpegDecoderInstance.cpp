@@ -1,16 +1,5 @@
-#include <fmt/base.h>
-#include <fmt/format.h>
-
-#include <ice/manage/dec/ffmpeg/FFmpegDecoderFactory.hpp>
 #include <ice/manage/dec/ffmpeg/FFmpegDecoderInstance.hpp>
 
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
-#include <memory>
-#include <string>
-
-#include "ice/execptions/load_error.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 #include "ice/manage/AudioFormat.hpp"
 
@@ -24,42 +13,19 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <string>
+#include <string_view>
+
 namespace ice
 {
 namespace
 {
-
-/// @brief 将 FFmpeg 错误码转换为可读文本。
-/// @param code FFmpeg 返回的错误码。
-/// @return 错误信息字符串。
-std::string ffmpeg_error_string(int code)
-{
-    char errbuf[AV_ERROR_MAX_STRING_SIZE] = { 0 };
-    av_strerror(code, errbuf, sizeof(errbuf));
-    return std::string(errbuf);
-}
-
-/// @brief 检查 FFmpeg 调用返回值，失败时抛出项目既有 load_error。
-/// @param ret FFmpeg 调用返回值。
-/// @warning 构造路径沿用历史异常机制，失败不会自动释放未构造完成对象的裸句柄。
-void check_av_call(int ret)
-{
-    if ( ret < 0 ) {
-        throw ice::load_error(ffmpeg_error_string(ret));
-    }
-}
-
-/// @brief 检查 FFmpeg 调用返回值，失败时打印错误并返回 false。
-/// @param ret FFmpeg 调用返回值。
-/// @return 成功时返回 true。
-bool check_av_call_ret_bool(int ret)
-{
-    if ( ret < 0 ) {
-        fmt::print("averr: {}", ffmpeg_error_string(ret));
-        return false;
-    }
-    return true;
-}
 
 /// @brief 判断解码错误是否可以按播放器容错策略跳过。
 /// @param ret FFmpeg 返回的错误码。
@@ -128,7 +94,9 @@ int resolve_source_sample_rate(const AVCodecContext*       codec_ctx,
 std::int64_t durationToFrameCount(std::int64_t duration, AVRational timeBase,
                                   int sampleRate)
 {
-    if ( duration <= 0 || sampleRate <= 0 ) {
+    // 音频时间基必须为正有理数，缺失或异常字段不能参与整数时间换算。
+    if ( duration <= 0 || sampleRate <= 0 || timeBase.num <= 0 ||
+         timeBase.den <= 0 ) {
         return 0;
     }
     return av_rescale_q(duration, timeBase, { 1, sampleRate });
@@ -185,35 +153,75 @@ int make_source_channel_layout(AVChannelLayout*            output,
     return output->nb_channels > 0 ? 0 : AVERROR(EINVAL);
 }
 
-// 构造失败和运行期失败沿用不同通道，宏均只求值一次以保留原错误码。
-#define AVCALL_CHECK(func) check_av_call((func));
-#define AVCALL_CHECKRETB(func)               \
-    if ( !check_av_call_ret_bool((func)) ) { \
-        return false;                        \
+// 初始化和运行期失败均以返回值传播，宏只求值一次以保留原错误码。
+#define AVCALL_CHECKRETB(func)         \
+    if ( !checkSetupResult((func)) ) { \
+        return false;                  \
     }
 
 }  // namespace
 
 /// @brief 独占一个媒体输入、解码器和重采样器，并缓存尚未交付的目标 PCM。
 /// 所有方法由调用方串行使用，内部没有保护 seek/read 的锁。
-/// @warning 文件解码可能分配、阻塞或走历史异常路径，不属于音频设备实时回调。
+/// @warning 文件解码可能分配或阻塞，不属于音频设备实时回调。
 class FFmpegDecoder
 {
 public:
     /// @brief 选择首个音频流并准备平面浮点目标格式。
     /// @param file_path 媒体路径视图，构造期间复制为零结尾字符串。
     /// @param target_format 输出格式，采样率与声道数须有效且保持稳定。
-    /// @warning 构造中部分失败仍依靠异常退出，已取得的裸资源缺少局部回滚保护。
+    /// @warning 初始化失败保留无效状态，已取得句柄由析构统一释放。
     explicit FFmpegDecoder(std::string_view            file_path,
                            const ice::AudioDataFormat& target_format)
     {
+        // 对象完成构造后仍可查询失败状态，工厂据此丢弃实例并执行统一清理。
+        m_ready = initialize(file_path, target_format);
+    }
+
+    /// @brief 查询解码资源是否可用，初始化或重启失败的实例不得参与解码。
+    bool isValid() const { return m_ready; }
+
+    /// @brief 查询最近一次已记录的准备或定位错误，不分配诊断字符串。
+    int getLastSetupErrorCode() const { return m_lastSetupErrorCode; }
+
+private:
+    /// @brief 将准备及定位检查点的 FFmpeg 失败保存为可查询的错误码。
+    /// @param result 被检查调用的原始返回值，非负值均视为成功。
+    /// @return 失败时返回 false；成功不清除此前的诊断。
+    /// 只记录现有准备及定位检查点，不代表所有失败分支都提供了错误码。
+    bool checkSetupResult(int result)
+    {
+        // 错误路径只复制整数，诊断文本的生成与输出由非实时调用方决定。
+        if ( result < 0 ) {
+            m_lastSetupErrorCode = result;
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief 按依赖顺序准备资源，任一 C 接口失败立即返回。
+    /// @pre 仅在构造期间调用一次，所有句柄初始为空。
+    /// @return 全部资源可用时为 true，部分资源仍由实例拥有。
+    bool initialize(std::string_view            file_path,
+                    const ice::AudioDataFormat& target_format)
+    {
+        // 直接构造也必须验证完整路径，不能仅依赖上层音频池的检查。
+        if ( file_path.empty() ||
+             file_path.find('\0') != std::string_view::npos )
+            return false;
+        ice_format = target_format;
+        // FFmpeg 的采样率及时间基分母使用 int，不能让无符号高位变成负值。
+        if ( target_format.channels == 0 || target_format.samplerate == 0 ||
+             target_format.samplerate >
+                 static_cast<uint32_t>(std::numeric_limits<int>::max()) )
+            return false;
         const std::string path_str(file_path);
         // C 接口需要零结尾，局部字符串至少存活到输入打开完成。
-        AVCALL_CHECK(
+        AVCALL_CHECKRETB(
             avformat_open_input(&avfmt_ctx, path_str.c_str(), nullptr, nullptr))
 
         // 探测补全流参数与时长，不能只依赖容器初始头部信息。
-        AVCALL_CHECK(avformat_find_stream_info(avfmt_ctx, nullptr))
+        AVCALL_CHECKRETB(avformat_find_stream_info(avfmt_ctx, nullptr))
 
         // 保持容器顺序选择第一个音频流，不按语言或默认 disposition 重排。
         for ( unsigned int i = 0; i < avfmt_ctx->nb_streams; i++ ) {
@@ -226,14 +234,18 @@ public:
         }
         if ( stream_index == -1 ) {
             // 缺少音频流属于打开失败，不能创建仅报告零时长的可用解码实例。
-            fmt::print("there\'s no audio stream");
-            ice_format.channels = 0;
-            throw ice::load_error("find stream failed");
+            m_lastSetupErrorCode = AVERROR_STREAM_NOT_FOUND;
+            ice_format.channels  = 0;
+            return false;
         }
 
         // 获取音频流的参数
         auto& audio_stream = avfmt_ctx->streams[stream_index];
         auto& codec_params = audio_stream->codecpar;
+        // 后续寻道和坏包时长估计依赖同一时间基；拒绝无效值而不是猜测单位。
+        if ( audio_stream->time_base.num <= 0 ||
+             audio_stream->time_base.den <= 0 )
+            return false;
 
         ice_format = target_format;
 
@@ -244,7 +256,7 @@ public:
         if ( bestFrameCount > 0 ) {
             total_frames = static_cast<size_t>(bestFrameCount);
         } else {
-            fmt::print("file {} duration unknown", file_path);
+            // 未知时长继续由零帧数表达，不在库内部向终端输出文件路径。
             // 零是未知长度哨兵，不表示 read 一定没有可读音频。
             total_frames = 0;
         }
@@ -252,39 +264,48 @@ public:
         // 查找编解码器
         avcodec = avcodec_find_decoder(codec_params->codec_id);
         if ( !avcodec ) {
-            throw ice::load_error("no decoder find.");
+            return false;
         }
 
         // 分配编解码器
         avcodec_ctx = avcodec_alloc_context3(avcodec);
         if ( !avcodec_ctx ) {
-            throw ice::load_error("decoder_context_alloc failed.");
+            return false;
         }
 
         // 将流的参数拷贝到解码器上下文中
         // 它告诉解码器要处理的数据的采样率,声道,格式等信息
-        AVCALL_CHECK(avcodec_parameters_to_context(avcodec_ctx, codec_params))
+        AVCALL_CHECKRETB(
+            avcodec_parameters_to_context(avcodec_ctx, codec_params))
 
         avcodec_ctx->err_recognition |= AV_EF_IGNORE_ERR;
         // 请求尽量产出可恢复的帧；真正返回 INVALIDDATA 时另行补静音。
         avcodec_ctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
 
         // 打开解码器
-        AVCALL_CHECK(avcodec_open2(avcodec_ctx, avcodec, nullptr))
+        AVCALL_CHECKRETB(avcodec_open2(avcodec_ctx, avcodec, nullptr))
 
         m_sourceSampleRate =
             resolve_source_sample_rate(avcodec_ctx, codec_params, ice_format);
+        // 包与帧分配失败同样由返回值传播，后续不允许向库传入空容器。
+        avpacket = av_packet_alloc();
+        // 包申请失败时立即停止准备，避免内存紧张时再申请无法使用的帧容器。
+        if ( !avpacket ) return false;
+        avframe = av_frame_alloc();
+        // 已取得的包仍归实例所有，帧申请失败由统一析构路径回收它。
+        if ( !avframe ) return false;
+
         AVChannelLayout sourceLayout{};
-        AVCALL_CHECK(make_source_channel_layout(
-            &sourceLayout, avcodec_ctx, codec_params, ice_format))
+        const int       layoutResult = make_source_channel_layout(
+            &sourceLayout, avcodec_ctx, codec_params, ice_format);
+        if ( layoutResult < 0 ) {
+            // 自定义布局可能含动态映射，失败路径也必须释放临时存储。
+            av_channel_layout_uninit(&sourceLayout);
+            return false;
+        }
         m_duplicateMonoToTargetChannels =
             sourceLayout.nb_channels == 1 && ice_format.channels > 1;
         // 单声道经重采样后复制首通道，使全部目标声道保持一致的居中内容。
-        // 用于存放从文件中读取的压缩数据包
-        avpacket = av_packet_alloc();
-        // 用于存放解码后的原始 PCM 数据帧
-        avframe = av_frame_alloc();
-        // 这两个历史分配调用未逐一检查空值，不能据构造路径宣称内存失败完备。
 
         // 两个临时布局只用于配置重采样器，配置调用后必须各自释放内部存储。
         AVChannelLayout tgtch_layout{};
@@ -304,22 +325,26 @@ public:
         );
         av_channel_layout_uninit(&tgtch_layout);
         av_channel_layout_uninit(&sourceLayout);
-        // 先释放临时布局再传播配置错误，避免本阶段的布局存储随异常遗留。
-        AVCALL_CHECK(swrAllocRet)
+        // 先释放临时布局再传播配置错误，避免提前返回遗留布局存储。
+        AVCALL_CHECKRETB(swrAllocRet)
 
         if ( !swr_ctx ) {
-            throw ice::load_error("swr_alloc_set_opts failed.");
+            return false;
         }
 
         // 初始化重采样器上下文
-        AVCALL_CHECK(swr_init(swr_ctx))
+        AVCALL_CHECKRETB(swr_init(swr_ctx))
         // 分配和初始化是两个阶段；非空上下文不代表重采样配置已可执行。
 
         // 初始容量只是常见帧长，实际解码帧与重采样延迟可能触发后续扩容。
         const size_t max_frames_per_avframe = 2048;
-        conversion_buffer.resize(ice_format, max_frames_per_avframe);
+        if ( !conversion_buffer.resize(ice_format, max_frames_per_avframe) )
+            return false;
+        return true;
     }
-    /// @brief 释放已完整构造实例持有的媒体资源，不输出或补齐剩余 PCM。
+
+public:
+    /// @brief 释放初始化成功或部分失败实例持有的媒体资源，不补齐剩余 PCM。
     /// @warning 析构涉及库资源回收，须在停止所有读取后于非实时侧调用。
     ~FFmpegDecoder()
     {
@@ -344,6 +369,12 @@ public:
     /// @warning 低频解码工作线程操作，可能进行文件 IO、重建或错误输出。
     bool seek_to_frame(size_t frame_offset)
     {
+        // 直接构造的失败实例与工厂空返回保持一致，不访问未初始化句柄。
+        if ( !m_ready ) return false;
+        // 时间换算接受有符号 64 位帧数，超范围请求不能截断成负时间戳。
+        if ( frame_offset >
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) )
+            return false;
         // 从头重放要求恢复完整初始状态；仅 flush 不保证重置 AAC 等解码器的
         // 噪声合成历史。先准备候选上下文，失败时不破坏仍可用的旧实例。
         // 释放函数只管理候选上下文，不捕获当前实例；失败返回也能完整回收。
@@ -358,16 +389,18 @@ public:
         if ( frame_offset == 0 ) {
             freshContext.reset(avcodec_alloc_context3(avcodec));
             if ( !freshContext ||
-                 avcodec_parameters_to_context(
+                 !checkSetupResult(avcodec_parameters_to_context(
                      freshContext.get(),
-                     avfmt_ctx->streams[stream_index]->codecpar) < 0 ) {
+                     avfmt_ctx->streams[stream_index]->codecpar)) ) {
                 return false;
             }
             // 保留原有损坏包容错策略，避免重放后使用不同的错误处理配置。
             // 后端专有初始状态由 avcodec_open2 重建，不能复制已运行的内部状态。
             freshContext->err_recognition = avcodec_ctx->err_recognition;
             freshContext->flags           = avcodec_ctx->flags;
-            if ( avcodec_open2(freshContext.get(), avcodec, nullptr) < 0 ) {
+            // 候选失败只记录诊断，不清空仍属于旧解码位置的 PCM 余量。
+            if ( !checkSetupResult(
+                     avcodec_open2(freshContext.get(), avcodec, nullptr)) ) {
                 return false;
             }
         }
@@ -376,6 +409,9 @@ public:
             av_rescale_q(frame_offset,
                          { 1, static_cast<int>(ice_format.samplerate) },
                          avfmt_ctx->streams[stream_index]->time_base);
+        // 输入帧非负，合法换算结果也必须非负；溢出哨兵不能当作媒体时间使用。
+        // 此时尚未改变解码位置或缓存，拒绝请求后原实例仍可继续使用。
+        if ( timestamp < 0 ) return false;
 
         // 执行寻道操作
         // AVSEEK_FLAG_BACKWARD 保证我们能seek到请求的关键帧或其之前最近的关键帧
@@ -394,10 +430,14 @@ public:
         conversion_buffer_remains   = 0;
         conversion_buffer_offset    = 0;
         m_pendingPacketTargetFrames = 0;
+        m_recoveredSilenceFrames    = 0;
         if ( swr_ctx ) {
-            // 清除滤波延迟；重启失败时输入位置已经改变，调用方应处理 false。
+            // 输入位置已改变，关闭重采样器后不再有可继续读取的旧状态。
+            // 先标记失效，重启失败保持失效，要求调用方重新创建实例。
+            m_ready = false;
             swr_close(swr_ctx);
             AVCALL_CHECKRETB(swr_init(swr_ctx))
+            m_ready = true;
         }
         return true;
     }
@@ -412,9 +452,26 @@ public:
     /// 工作线程按需调用，包含文件读取、缓存扩容和错误恢复，不可搬入设备回调。
     size_t decode(float** buffer, size_t chunksize)
     {
+        // 初始化或寻道重启失败时不触碰输出，也不隐式重试不可用的资源。
+        if ( !m_ready || !buffer || chunksize == 0 ) return 0;
+        // 验证先于读取压缩包和消耗余量，空声道不会推进位置或部分改写输出。
+        for ( uint16_t channel = 0; channel < ice_format.channels; ++channel )
+            if ( !buffer[channel] ) return 0;
         size_t frames_decoded_total = 0;
 
         while ( frames_decoded_total < chunksize ) {
+            // 静音只记录剩余时长，按调用方本次请求直接写入，不按包时长分配。
+            // 巨大损坏包也只消耗当前输出块的工作量，后续 read 继续交付余量。
+            if ( m_recoveredSilenceFrames > 0 ) {
+                const size_t frames = std::min(chunksize - frames_decoded_total,
+                                               m_recoveredSilenceFrames);
+                for ( uint16_t ch = 0; ch < ice_format.channels; ++ch )
+                    std::fill_n(
+                        buffer[ch] + frames_decoded_total, frames, 0.0F);
+                m_recoveredSilenceFrames -= frames;
+                frames_decoded_total += frames;
+                continue;
+            }
             // 先交付转换余量，后续 receive 不得覆盖尚未消费的内部 PCM。
             if ( conversion_buffer_remains > 0 ) {
                 size_t frames_to_copy =
@@ -448,14 +505,27 @@ public:
                 // 容量按当前输入加重采样延迟估算，不能把原生帧数直接当输出上限。
                 const int output_capacity =
                     ensure_conversion_buffer_capacity(avframe->nb_samples);
+                if ( output_capacity <= 0 ) {
+                    av_frame_unref(avframe);
+                    break;
+                }
+                // 平面音频可能超过 data 的固定槽数，扩展指针表覆盖全部声道。
+                // 普通交错格式也通过同一字段提供输入，不依赖固定数组容量。
                 int converted_count =
                     swr_convert(swr_ctx,
                                 (uint8_t**)conversion_buffer.raw_ptrs(),
                                 output_capacity,
-                                (const uint8_t**)avframe->data,
+                                (const uint8_t**)avframe->extended_data,
                                 avframe->nb_samples);
 
-                // 零输出可能只是滤波器积累输入；当前负值也被跳过而未单独报告。
+                // 负值是真正失败，不能跳过此帧后把后续 PCM 拼到同一请求中。
+                if ( converted_count < 0 ) {
+                    av_frame_unref(avframe);
+                    // 转换失败不属于坏包补静音策略，释放帧并返回此前已交付的前缀。
+                    m_pendingPacketTargetFrames = 0;
+                    break;
+                }
+                // 零输出可能只是滤波器积累输入，仍须继续解码以取得后续输出。
                 if ( converted_count > 0 ) {
                     duplicateMonoChannelToTargetChannels(
                         static_cast<size_t>(converted_count));
@@ -504,6 +574,7 @@ public:
                 // read。
                 const int output_capacity =
                     ensure_conversion_buffer_capacity(0);
+                if ( output_capacity <= 0 ) break;
                 const int flushed_count =
                     swr_convert(swr_ctx,
                                 (uint8_t**)conversion_buffer.raw_ptrs(),
@@ -531,7 +602,7 @@ public:
     inline const AudioDataFormat& iceformat() const { return ice_format; }
 
     /// @brief 返回初始化时的时长估计，未知为零，不累计实际 read 返回值。
-    inline size_t frames() const { return total_frames; }
+    inline size_t frames() const { return m_ready ? total_frames : 0; }
 
 private:
     /// @brief 估算当前 packet 在目标采样率下占用的帧数。
@@ -569,7 +640,7 @@ private:
         queueRecoveredSilence(m_pendingPacketTargetFrames);
         m_pendingPacketTargetFrames = 0;
         av_frame_unref(avframe);
-        // 损坏帧引用不带入下一次 receive，已生成的补偿 PCM 独立保存在转换缓冲。
+        // 损坏帧引用不带入下一次 receive，补偿余量由独立计数保存。
         avcodec_flush_buffers(avcodec_ctx);
         // 这里不重启 swr，错误前的重采样延迟仍可能在后续输出中出现。
         return true;
@@ -577,51 +648,40 @@ private:
 
     /// @brief 将损坏 packet 的时长补成静音，保持时间轴尽量不漂移。
     /// @param frame_count 需要补偿的目标帧数。
-    /// @pre 旧 conversion_buffer 余量已耗尽，本次写入将替换整段待交付内容。
+    /// @pre 旧 PCM 和静音余量已耗尽，调用后先交付本次补偿再读取新包。
     void queueRecoveredSilence(size_t frame_count)
     {
-        if ( frame_count == 0 || ice_format.channels == 0 ) {
-            // 无可靠包时长时不猜测缺口长度，继续读取而非凭空拉长时间轴。
-            return;
-        }
-
-        if ( frame_count > conversion_buffer.num_frames() ) {
-            // 较长损坏包也需完整补偿，扩容发生在解码侧而非实时播放侧。
-            conversion_buffer.resize(ice_format, frame_count);
-        }
-
-        for ( uint16_t ch = 0; ch < ice_format.channels; ++ch ) {
-            std::fill_n(conversion_buffer.raw_ptrs()[ch], frame_count, 0.0F);
-        }
-
-        conversion_buffer_offset  = 0;
-        conversion_buffer_remains = frame_count;
-        // 与普通重采样结果共用余量协议，使静音也能按任意 chunksize 分次读出。
+        // 无可靠包时长时不猜测缺口，不因元信息申请整段静音存储。
+        m_recoveredSilenceFrames = ice_format.channels == 0 ? 0 : frame_count;
     }
 
     /// @brief 确保重采样输出缓冲能容纳当前输入可能产生的所有帧。
     /// @param input_sample_count 即将送入 swr_convert 的输入采样帧数。
-    /// @return 可传给 swr_convert 的输出容量。
+    /// @return 可传给 swr_convert 的正容量，输入或估计失败时为零。
     /// @warning
     /// 每个解码帧及排尾调用，容量不足时允许分配，不能用于无分配热路径。
     int ensure_conversion_buffer_capacity(int input_sample_count)
     {
-        int required =
-            swr_ctx ? swr_get_out_samples(swr_ctx, input_sample_count) : 0;
-        if ( required <= 0 ) {
-            // 容量估计失败时沿用现有正容量，让 swr_convert 的结果决定后续输出。
-            required = static_cast<int>(conversion_buffer.num_frames());
-        }
-        if ( required <= 0 ) {
-            required = 1;
-        }
+        // 无有效上下文或负输入帧数时不能向重采样器提交请求。
+        if ( !swr_ctx || input_sample_count < 0 ) return 0;
+        const int estimate = swr_get_out_samples(swr_ctx, input_sample_count);
+        // 负值是 API 错误，不是零输出；沿用旧容量会掩盖重采样状态失败。
+        if ( estimate < 0 ) return 0;
+        // 零上界仍保留至少一个输出槽，正常排尾由 swr_convert 返回零结束。
+        const int required = std::max(estimate, 1);
         // 保留已有更大容量，避免不同包长导致反复收缩与扩容。
 
         const auto required_frames = static_cast<size_t>(required);
         if ( required_frames > conversion_buffer.num_frames() ) {
-            conversion_buffer.resize(ice_format, required_frames);
+            // 返回零容量使读取结束，不把旧容量伪装成本次扩容成功。
+            if ( !conversion_buffer.resize(ice_format, required_frames) )
+                return 0;
         }
-        return static_cast<int>(conversion_buffer.num_frames());
+        // 内部容量使用 size_t，只向外部 API 暴露 int 可表达的有效前缀。
+        // 先在 size_t 域内截断，禁止窄化后才检查符号或上下界。
+        return static_cast<int>(
+            std::min(conversion_buffer.num_frames(),
+                     static_cast<size_t>(std::numeric_limits<int>::max())));
     }
 
     /// @brief 将单声道转换结果复制到所有目标声道，保证 mono
@@ -645,6 +705,12 @@ private:
         }
     }
 
+    /// @brief 初始化成功后置位，寻道重启失败清零，阻止访问不可用的资源。
+    bool m_ready{ false };
+    /// @brief 最近一次准备或定位诊断点的负错误码；零仅表示尚未记录诊断。
+    /// 与 seek/read 一样由调用方串行访问，不用于跨线程发布状态。
+    int m_lastSetupErrorCode{ 0 };
+
     /// @brief 拥有媒体输入，音频流及 codecpar 均借用其内部存储。
     AVFormatContext* avfmt_ctx{ nullptr };
     /// @brief 独占解码状态，seek 与损坏包恢复会清除延迟帧。
@@ -665,6 +731,8 @@ private:
     bool m_duplicateMonoToTargetChannels{ false };
     /// @brief 最近送入解码器的 packet 在目标采样率下的估算帧数。
     size_t m_pendingPacketTargetFrames{ 0 };
+    /// @brief 待交付静音帧数，仅为逻辑时长，不拥有 PCM；寻道成功后清零。
+    size_t m_recoveredSilenceFrames{ 0 };
     /// @brief 尚未交付的有效帧数，为零后才允许覆盖转换缓冲。
     size_t conversion_buffer_remains = 0;
     /// @brief 下一段拷贝的帧偏移，与 remains 共同描述有效余量。
@@ -679,7 +747,7 @@ private:
 };
 
 /// @brief 在公开包装内部建立独占后端，不对外暴露 FFmpeg 资源类型。
-/// @warning 失败可能传播既有 load_error，调用方必须在非实时加载流程处理。
+/// @warning 仅在非实时加载流程构造；C 接口失败可通过 isValid 查询。
 FFmpegDecoderInstance::FFmpegDecoderInstance(
     std::string_view file_path, const ice::AudioDataFormat& target_format)
 {
@@ -688,6 +756,18 @@ FFmpegDecoderInstance::FFmpegDecoderInstance(
 }
 /// @brief 在后端完整定义可见处释放唯一所有权，确保资源析构可实例化。
 FFmpegDecoderInstance::~FFmpegDecoderInstance() = default;
+
+/// @brief 将后端初始化结果暴露给工厂，不以零时长替代成功状态。
+bool FFmpegDecoderInstance::isValid() const
+{
+    return ffimpl->isValid();
+}
+
+/// @brief 返回后端保留的准备或定位诊断，不触发格式化、日志或状态清理。
+int FFmpegDecoderInstance::getLastSetupErrorCode() const
+{
+    return ffimpl->getLastSetupErrorCode();
+}
 
 /// @brief 将目标帧寻道交给后端，保留其非精确定位和失败语义。
 bool FFmpegDecoderInstance::seek(size_t pos)

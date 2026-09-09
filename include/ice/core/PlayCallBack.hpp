@@ -1,5 +1,4 @@
-#ifndef ICE_PLAYCALLBACK_HPP
-#define ICE_PLAYCALLBACK_HPP
+#pragma once
 
 #include <chrono>
 #include <cstddef>
@@ -37,5 +36,3 @@ public:
     virtual void timeplaypos_updated(std::chrono::nanoseconds time_pos) = 0;
 };
 }  // namespace ice
-
-#endif  // ICE_PLAYCALLBACK_HPP

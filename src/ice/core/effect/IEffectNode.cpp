@@ -27,9 +27,10 @@ void IEffectNode::prepare(const AudioDataFormat& format, std::size_t maxFrames)
 
     // 无效参数使节点进入拒绝处理状态，而不是在回调中自动猜测格式。
     if ( m_isPrepared ) {
-        inputBuffer.resize(format, maxFrames);
+        // 参数有效不代表存储已准备；失败时禁止后续短块沿用旧缓冲拉取上游。
+        m_isPrepared = inputBuffer.resize(format, maxFrames);
         // 清除新准备的空间，防止第一次拉取包含未初始化或旧音频。
-        inputBuffer.clear();
+        if ( m_isPrepared ) inputBuffer.clear();
     } else {
         // 无效准备仅保留零有效长度，不向上游请求数据。
         inputBuffer.resize(format, 0U);

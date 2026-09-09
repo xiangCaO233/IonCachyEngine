@@ -1,9 +1,9 @@
-#ifndef ICE_DECODER_HPP
-#define ICE_DECODER_HPP
+#pragma once
 
 #include <cstddef>
-#include <ice/manage/AudioBuffer.hpp>
+#include <cstdint>
 #include <span>
+#include <vector>
 
 namespace ice
 {
@@ -51,5 +51,3 @@ public:
 };
 
 }  // namespace ice
-
-#endif  // ICE_DECODER_HPP
