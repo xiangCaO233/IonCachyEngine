@@ -53,7 +53,7 @@ protected:
     /// @warning
     /// 阈值与比率每块读取，时间参数在更新分支读取，补偿增益逐样本读取； setter
     /// 是写入者，音频处理是读取者，当前均使用默认顺序一致原子操作。
-    /// 这些历史原子未消除脏标记竞争，也未证明不可替代，本批不改变同步策略。
+    /// 参数原子不保护非原子脏标记；控制侧必须在音频处理停止后更新参数。
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:

@@ -26,11 +26,10 @@
 
 /// @brief 使用本机音频文件组装效果图并手动试听 SDL 输出。
 /// @details 这是依赖硬编码路径与实体设备的演示，不是自动化通过/失败测试。
-/// @return 已知加载或设备操作失败时为 false，不作为输出音质或排空证明。
+/// @return 加载或设备操作失败时为 false。
 /// @warning 低频示例入口：执行文件访问、设备初始化和长时间
 /// sleep，不能用于音频回调。
 /// @warning 诊断线程在设备关闭前取消并回收，局部节点必须活过 join。
-/// 诊断等待可取消，但主播放等待仍不是可交互的停止控制接口。
 bool test()
 {
     // 线程池先于音轨池构造、后于其析构，使局部池清理期间仍有工作线程对象。
@@ -66,7 +65,7 @@ bool test()
     auto track1 = track1Weak.lock();
 
     auto track2Weak = audiopool.get_or_load(thread_pool, file2);
-    // 第二轨也重复查询；这里只验证返回对象可用，没有断言两次句柄是否指向同一对象。
+    // 重复请求同一路径，演示音轨池的缓存查询入口。
     track2Weak  = audiopool.get_or_load(thread_pool, file2);
     auto track2 = track2Weak.lock();
 
@@ -90,7 +89,6 @@ bool test()
     // OpenAL 只用于枚举演示，本次真正输出选择 SDL，不创建 ALPlayer 播放实例。
     ice::ALPlayer::init_backend();
     auto ds = ice::ALPlayer::list_devices();
-    // 枚举结果可以为空，这里只遍历已有项，不访问不存在的首设备。
     std::ranges::for_each(ds, [](const ice::ALAudioDeviceInfo& device) {
         fmt::print("al devicename:{}\n", device.name);
     });
@@ -150,7 +148,7 @@ bool test()
     eq->set_band_q_factor(1, q / 2.0);
     eq->set_band_q_factor(2, q / 2.0);
 
-    // 低频三段同时提升；没有配套削峰验证，不能把这些参数当作通用安全预设。
+    // 三个低频段同时提升，试听时需为叠加增益预留输出余量。
     eq->set_band_gain_db(0, 9);
     eq->set_band_gain_db(1, 9);
     eq->set_band_gain_db(2, 9);
@@ -168,10 +166,10 @@ bool test()
     // 压缩比与补偿增益独立配置，设置前者不会自动调整后者。
     compressor->set_ratio(4.f);
 
-    // 启动时间固定 50ms，未进行瞬态测试，不能据此声称能抑制所有爆破峰值。
+    // 较慢的包络上升保留起音瞬态，压缩器不会立即钳制峰值。
     compressor->set_attack_ms(50.0f);
 
-    // 释放时间固定 150ms，没有读取 BPM，不是按当前音乐节拍计算的时值。
+    // 包络回落采用毫秒时值，与音轨速度独立。
     compressor->set_release_ms(150.0f);
 
     // 补偿值仅作接口示范；当前压缩器未连接，不能解释为实际输出已增加 6dB。
@@ -227,7 +225,7 @@ bool test()
     auto pitch_controll = [&]() {
         int count = 0;
         while ( count < 16 ) {
-            // 步进而非连续插值，不用于验证无爆音的实时音高自动化。
+            // 离散改变音高，每次更新对应一个新的处理参数。
             std::this_thread::sleep_for(std::chrono::milliseconds(7500ms));
             pitchalter->set_pitch_shift(count * 1.5);
             fmt::print("pitch alt:{}semitones\n", count * 1.5);
