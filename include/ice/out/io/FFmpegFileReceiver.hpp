@@ -1,5 +1,8 @@
 #pragma once
 
+// 扩展编码参数的公开 ABI 标识；消费方只有在头文件与同版二进制配套时启用。
+#define ICE_FFMPEG_FILE_RECEIVER_ADVANCED_OPTIONS 1
+
 #include <ice/config/config.hpp>
 #include <ice/manage/AudioBuffer.hpp>
 #include <ice/manage/AudioFormat.hpp>
@@ -52,6 +55,18 @@ public:
     /// @details 运行期间忽略修改，不使音源处理中的缓冲失效。
     /// @warning 配置路径：可能重新分配内存，不能与编码或图拉取并发。
     void set_block_frames(std::size_t frame_count);
+
+    /// @brief 请求编码器输出采样率，零值恢复按输入时钟自动协商。
+    /// @return 参数可表示且当前没有编码时为 true；编码器实际支持性在 open
+    /// 检查。
+    /// @warning 离线配置路径：不能与 start 或 open 并发调用。
+    bool set_output_sample_rate(std::uint32_t sample_rate);
+
+    /// @brief 请求有损编码总码率，零值恢复格式默认值。
+    /// @return 数值可表示且当前没有编码时为 true；无损格式在 open
+    /// 拒绝非零码率。
+    /// @warning 离线配置路径：不能与 start 或 open 并发调用。
+    bool set_bitrate(std::uint64_t bits_per_second);
 
     /// @brief 设置在 start 调用线程同步执行的输入进度回调。
     /// @param callback 参数为已送入编码链路的输入帧数，不保证已经写入文件。
@@ -226,6 +241,13 @@ private:
     /// @details
     /// 只在写尾成功后置位，用于防止重复正常收尾，不表示文件已完成磁盘持久化。
     bool m_trailerWritten{ false };
+
+    /// @brief 用户请求的输出采样率，零表示跟随输入时钟协商。
+    /// @note 新字段置于旧对象布局末尾，以便迁移预编译包时保持既有偏移。
+    std::uint32_t m_outputSampleRate{ 0 };
+
+    /// @brief 用户请求的有损码率，零表示沿用编码器默认策略。
+    std::uint64_t m_requestedBitrate{ 0 };
 };
 
 }  // namespace ice

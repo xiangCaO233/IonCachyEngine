@@ -419,6 +419,34 @@ void FFmpegFileReceiver::set_block_frames(std::size_t frame_count)
     if ( m_buffer.resize(m_format, frame_count) ) m_blockFrames = frame_count;
 }
 
+/// @brief 保存用户要求的编码采样时钟，实际能力在 open 时检查。
+/// @param sample_rate 目标 Hz；零表示恢复自动选择。
+/// @return 无效或运行期间拒绝，成功保存时为 true。
+bool FFmpegFileReceiver::set_output_sample_rate(std::uint32_t sample_rate)
+{
+    if ( m_running.load(std::memory_order_relaxed) || m_opened ||
+         sample_rate >
+             static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ) {
+        return false;
+    }
+    m_outputSampleRate = sample_rate;
+    return true;
+}
+
+/// @brief 保存用户要求的有损编码码率。
+/// @param bits_per_second 目标 bit/s；零表示格式默认值。
+/// @return 非法范围或已开始编码时为 false。
+bool FFmpegFileReceiver::set_bitrate(std::uint64_t bits_per_second)
+{
+    if ( m_running.load(std::memory_order_relaxed) || m_opened ||
+         bits_per_second > static_cast<std::uint64_t>(
+                               std::numeric_limits<std::int64_t>::max()) ) {
+        return false;
+    }
+    m_requestedBitrate = bits_per_second;
+    return true;
+}
+
 /// @brief 替换在离线编码线程同步执行的进度回调。
 /// @param callback 接收已送入编码链路的累计输入帧数，空回调表示不通知。
 /// @details 运行期间忽略替换请求，保持当前回调对象存活直至调用返回。
@@ -708,10 +736,18 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
     // 成功值与错误分离，避免用零时钟或格式结束标记编码失败原因。
-    const auto sampleRate = select_sample_rate(codec, m_format.samplerate);
+    const auto sampleRate = select_sample_rate(
+        codec,
+        m_outputSampleRate == 0 ? m_format.samplerate : m_outputSampleRate);
     if ( !sampleRate ) {
         set_ffmpeg_error("Failed to select encoder sample rate",
                          sampleRate.error());
+        return false;
+    }
+    // 显式采样率必须精确满足，不能把编码器能力表回退伪装为用户所选值。
+    if ( m_outputSampleRate != 0 &&
+         *sampleRate != static_cast<int>(m_outputSampleRate) ) {
+        set_error("Encoder does not support requested output sample rate");
         return false;
     }
     AVChannelLayout outputLayout{};
@@ -732,9 +768,17 @@ bool FFmpegFileReceiver::open_encoder()
     m_codecContext->time_base   = AVRational{ 1, m_codecContext->sample_rate };
     // 显式允许实验性编码器，不把成功打开解释为所有格式均具有相同成熟度。
     m_codecContext->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+    if ( m_requestedBitrate != 0 && !should_set_default_bitrate(codecId) ) {
+        // 无损/PCM 编码没有可控的目标码率，不能静默忽略用户设置。
+        set_error("Output codec does not support adjustable bitrate");
+        return false;
+    }
     if ( should_set_default_bitrate(codecId) ) {
-        // 有损格式统一给默认总码率，当前没有依据声道数或用户质量偏好调整。
-        m_codecContext->bit_rate = 192000;
+        // 有损格式使用显式总码率，未设置时保持历史默认值。
+        m_codecContext->bit_rate =
+            m_requestedBitrate == 0
+                ? 192000
+                : static_cast<std::int64_t>(m_requestedBitrate);
     }
 
     ret = av_channel_layout_copy(&m_codecContext->ch_layout, &outputLayout);
