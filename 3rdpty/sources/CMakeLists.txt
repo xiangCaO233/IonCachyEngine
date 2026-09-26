@@ -8,6 +8,12 @@ include(arch-probe)
 # 压缩与 MP3 编码目标必须先于 FFmpeg 建立，供其配置和最终链接闭包引用。
 include(Buildzlib)
 include(Buildlame)
+# 三个平台使用同一组 Xiph 静态编码依赖，避免预编译消费与源码构建能力分叉。
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   OR WIN32
+   OR APPLE)
+  include(Buildxiphcodecs)
+endif()
 include(Buildffmpeg)
 # Rubber Band 依赖 FFTW 和采样率转换，前两者的目标须先完成配置。
 include(Buildfftw)

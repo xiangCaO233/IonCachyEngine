@@ -61,17 +61,61 @@ foreach(_ffmpeg_component avformat avcodec swscale swresample avutil)
   endif()
 endforeach()
 
+# 静态 avcodec 引用外部 Vorbis、Ogg 和 Opus 实现，按相同配置导入归档。
+if(ICE_LINKAGE STREQUAL "static")
+  foreach(_xiph_component vorbisenc vorbis ogg opus)
+    if(NOT TARGET Xiph::${_xiph_component})
+      add_library(Xiph::${_xiph_component} UNKNOWN IMPORTED GLOBAL)
+      ice_prebuilt_target_configs(_xiph_configs)
+      # 清空每个组件的通用位置，避免 Vorbis 和 Opus 指向同一个归档。
+      set(_xiph_default_library "")
+      # 多配置属性必须只包含本组件已经找到的构建类型。
+      set(_xiph_imported_configs "")
+      foreach(_xiph_config IN LISTS _xiph_configs)
+        # 属性名采用大写配置，磁盘上的配置映射由 helper 统一处理。
+        string(TOUPPER "${_xiph_config}" _xiph_config_upper)
+        # 缺少任一配置的归档时尽早失败，不能用系统库静默填补。
+        ice_prebuilt_find_library(_xiph_library xiph "${_xiph_config}"
+                                  ${_xiph_component} lib${_xiph_component})
+        set_target_properties(
+          Xiph::${_xiph_component}
+          PROPERTIES "IMPORTED_LOCATION_${_xiph_config_upper}"
+                     "${_xiph_library}")
+        # 真实路径设置后才宣告该配置可用。
+        list(APPEND _xiph_imported_configs "${_xiph_config_upper}")
+        if(_xiph_default_library STREQUAL "")
+          set(_xiph_default_library "${_xiph_library}")
+        endif()
+      endforeach()
+      set_target_properties(
+        Xiph::${_xiph_component}
+        PROPERTIES IMPORTED_CONFIGURATIONS "${_xiph_imported_configs}"
+                   IMPORTED_LOCATION "${_xiph_default_library}")
+    endif()
+  endforeach()
+endif()
+
 if(NOT TARGET 3rd_ffmpeg)
   # 聚合目标只转发链接依赖，不重新编译或合并 FFmpeg 二进制。 所有业务模块只消费该稳定入口，不需要知道来源是预编译还是源码构建。
   # 这里只提供列出的五个组件，不表示 avdevice 或 avfilter 也已导入。
   add_library(3rd_ffmpeg INTERFACE)
   target_link_libraries(
     3rd_ffmpeg
-    INTERFACE FFmpeg::avformat
+    INTERFACE # 文件容器入口先于实际编解码归档。
+              FFmpeg::avformat
               # 编解码和像素转换也用于封面与视频处理，不能只留下音频重采样组件。
-              FFmpeg::avcodec FFmpeg::swscale FFmpeg::swresample FFmpeg::avutil)
+              FFmpeg::avcodec
+              # 视频与封面路径保留像素格式转换能力。
+              FFmpeg::swscale
+              # 音频导出路径保留采样率与样本格式转换能力。
+              FFmpeg::swresample
+              # 公共工具库必须在引用它的组件之后解析。
+              FFmpeg::avutil)
   # 保持依赖库排在使用它们的 FFmpeg 组件之后，静态归档解析顺序才可闭合。
   if(ICE_LINKAGE STREQUAL "static")
+    # 三个平台的静态 FFmpeg 归档均传播相同的 Xiph 链接闭包。
+    target_link_libraries(3rd_ffmpeg INTERFACE Xiph::vorbisenc Xiph::vorbis
+                                               Xiph::ogg Xiph::opus)
     # 依赖库排在使用它们的 FFmpeg 组件之后，静态链接时保留引用方向。
     target_link_libraries(3rd_ffmpeg INTERFACE 3rd_lame 3rd_zlib)
   endif()
@@ -81,20 +125,24 @@ if(NOT TARGET 3rd_ffmpeg)
     target_link_libraries(
       3rd_ffmpeg
       INTERFACE bcrypt
-                # 窗口与 COM 类型库入口来自平台多媒体和设备模块。
+                # 窗口与 COM 类型库入口来自平台多媒体和设备模块。 bcrypt 由系统密码 API 提供，不能改为第三方包路径。 窗口与
+                # COM 类型库入口来自平台多媒体和设备模块。
                 user32
                 ole32
+                # DirectShow 类型标识符由平台 SDK 归档提供。
                 strmiids
                 uuid
-                # 网络及安全接口支持所启用的协议和系统证书相关实现。
+                # Winsock 对应 FFmpeg 配置启用的网络协议。 网络及安全接口支持所启用的协议和系统证书相关实现。
                 ws2_32
                 # 系统安全依赖匹配已有预编译功能，不在配置阶段启用新的协议。
                 secur32
+                # 证书与加密路径由系统库提供最终符号。
                 ncrypt
                 crypt32
                 advapi32
                 shell32
-                # 平台视频和媒体 GUID 依赖需与预编译包启用的后端保持一致。
+                # 视频设备 API 与 Media Foundation 的 GUID 分属不同库。 平台视频和媒体 GUID
+                # 依赖需与预编译包启用的后端保持一致。
                 vfw32
                 # 媒体 GUID 定义由系统库提供，本模块不执行设备探测或媒体处理。
                 mfuuid)
@@ -103,12 +151,14 @@ if(NOT TARGET 3rd_ffmpeg)
     target_link_libraries(
       3rd_ffmpeg
       INTERFACE "-framework CoreFoundation"
+                # 视频帧缓冲由 CoreVideo 定义，媒体时间由 CoreMedia 定义。
                 "-framework CoreVideo"
                 "-framework CoreMedia"
+                # 音频输出与视频硬件加速使用各自的平台框架。
                 "-framework AudioToolbox"
                 "-framework VideoToolbox"
                 "-framework Security"
-                # 压缩、数学与字符编码库是此平台归档仍需解析的非框架依赖。
+                # 压缩与字符集转换仍需明确传给最终链接器。 压缩、数学与字符编码库是此平台归档仍需解析的非框架依赖。
                 bz2
                 m
                 iconv)

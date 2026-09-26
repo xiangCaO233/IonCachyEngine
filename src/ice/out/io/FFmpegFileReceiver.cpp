@@ -60,7 +60,7 @@ struct OutputFormatSelection {
     /// @brief 显式指定的编码器；AV_CODEC_ID_NONE 表示使用 muxer 默认值。
     AVCodecID codecOverride{ AV_CODEC_ID_NONE };
 
-    /// @brief 优先尝试的编码器名称；不可用时再按 codec ID 查找。
+    /// @brief 请求码率时必须采用的实现；默认导出可回退到同 codec 的原生实现。
     const char* preferredCodecName{ nullptr };
 };
 
@@ -108,7 +108,7 @@ OutputFormatSelection select_output_format(
     }
     if ( extension == ".opus" ) {
         // Opus 编码放入 OGG 封装，文件名本身不要求使用同名 muxer。
-        return OutputFormatSelection{ "ogg", AV_CODEC_ID_OPUS };
+        return OutputFormatSelection{ "ogg", AV_CODEC_ID_OPUS, "libopus" };
     }
     if ( extension == ".ogg" ) {
         // Ogg muxer 在缺少 libvorbis 的构建中会默认选 FLAC；显式选 Vorbis
@@ -116,7 +116,7 @@ OutputFormatSelection select_output_format(
         return OutputFormatSelection{ "ogg", AV_CODEC_ID_VORBIS, "libvorbis" };
     }
     if ( extension == ".mp3" ) {
-        // 优先使用外部 LAME 实现，同时保留 MP3 ID 作为缺少命名编码器时的后备。
+        // MP3 使用 LAME，缺失时返回错误以免无意选择其他实现。
         return OutputFormatSelection{ nullptr, AV_CODEC_ID_MP3, "libmp3lame" };
     }
     // 其余扩展名交回 muxer 推断，不在此提前宣称容器或编码器一定可用。
@@ -128,15 +128,16 @@ OutputFormatSelection select_output_format(
 /// @param codecId 显式覆盖或 muxer 默认指定的编码 ID。
 /// @return 可用编码器的非拥有指针，均未找到时返回 nullptr。
 const AVCodec* find_output_encoder(const OutputFormatSelection& outputSelection,
-                                   AVCodecID                    codecId)
+                                   AVCodecID                    codecId,
+                                   std::uint64_t requestedBitrate)
 {
     if ( outputSelection.preferredCodecName ) {
-        // 名称优先只影响首次选择，没有匹配时仍允许使用当前构建中的其他同类实现。
-        const AVCodec* preferred =
-            avcodec_find_encoder_by_name(outputSelection.preferredCodecName);
-        if ( preferred ) {
+        // 指定码率时不可退回会忽略该参数的原生 Vorbis；默认导出兼容旧预编译包。
+        if ( const auto* preferred = avcodec_find_encoder_by_name(
+                 outputSelection.preferredCodecName) ) {
             return preferred;
         }
+        if ( requestedBitrate != 0 ) return nullptr;
     }
     // 找到描述符不代表后续格式协商或编码器初始化会成功。
     return avcodec_find_encoder(codecId);
@@ -709,7 +710,8 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
-    const AVCodec* codec = find_output_encoder(outputSelection, codecId);
+    const AVCodec* codec =
+        find_output_encoder(outputSelection, codecId, m_requestedBitrate);
     if ( !codec ) {
         // 当前 FFmpeg 构建可能裁剪掉所需
         // encoder，不自动更换用户选择的输出格式。

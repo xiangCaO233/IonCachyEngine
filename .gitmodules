@@ -30,3 +30,12 @@
 	path = 3rdpty/sources/lame
 	url = https://github.com/lameproject/lame.git
 	branch = master
+[submodule "3rdpty/sources/ogg"]
+	path = 3rdpty/sources/ogg
+	url = https://github.com/xiph/ogg.git
+[submodule "3rdpty/sources/vorbis"]
+	path = 3rdpty/sources/vorbis
+	url = https://github.com/xiph/vorbis.git
+[submodule "3rdpty/sources/opus"]
+	path = 3rdpty/sources/opus
+	url = https://github.com/xiph/opus.git

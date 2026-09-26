@@ -1,6 +1,6 @@
 # * FFmpeg 源码构建适配与依赖接口。
 # * 仅由 SOURCES_BUILD=ON 入口加载，不作为预编译模式缺包的隐式回退。
-# * 调用入口须先建立 zlib_project、lame_project，并提供架构探测变量。
+# * 调用入口须先建立 zlib_project、lame_project 和 Xiph 编码项目。
 # * 此文件维护构建适配与目标接口，不修改 FFmpeg 上游源码。
 include(ExternalProject)
 
@@ -40,8 +40,39 @@ string(STRIP "${ICE_FFMPEG_TOOLCHAIN_FLAGS}" ICE_FFMPEG_TOOLCHAIN_FLAGS)
 # * 只提供已配置的 zlib 元数据目录；LAME 通过显式头与库参数参加探测。
 # * 配置命令会同时设置 PKG_CONFIG_PATH 和 PKG_CONFIG_LIBDIR，收窄默认搜索范围。
 set(ICE_FFMPEG_PKG_CONFIG_PATH "${ICE_ZLIB_PKGCONFIG_DIR}")
-# * PATH 在 CMake 配置时取快照，不会自动跟随后续终端的环境修改。
-# * 分隔符依据宿主平台选择，与目标是否 Windows 是两件不同的事。
+set(ICE_FFMPEG_XIPH_ENABLED FALSE)
+# 未启用 Xiph 时不向编译器传空的 -I 参数，否则会吞掉随后的选项。
+set(ICE_FFMPEG_XIPH_INCLUDE_FLAG "")
+# 链接搜索路径与头搜索路径须同步开关，避免误用宿主版本。
+set(ICE_FFMPEG_XIPH_LIBRARY_FLAG "")
+# 外部项目依赖只在目标实际建立后加入，保留其他平台原有源码构建。
+set(ICE_FFMPEG_XIPH_PROJECT_DEPENDENCIES "")
+# 链接闭包不能引用未编译的归档，源模式和预编译模式使用相同边界。
+set(ICE_FFMPEG_STATIC_XIPH_LIBRARIES "")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   OR WIN32
+   OR APPLE)
+  # 三个平台的静态 FFmpeg 均使用同一套外部 Vorbis 和 Opus 编码器。 macOS 的 SDK
+  # 与部署下限由顶层构建环境传给外部项目，归档仍从私有前缀链接。
+  set(ICE_FFMPEG_XIPH_ENABLED TRUE)
+  # 与 zlib 共用受限的 pkg-config 搜索范围，不开放宿主默认路径。
+  string(APPEND ICE_FFMPEG_PKG_CONFIG_PATH ":${ICE_XIPH_PKGCONFIG_DIR}")
+  set(ICE_FFMPEG_XIPH_INCLUDE_FLAG "-I${ICE_XIPH_INCLUDE_DIR}")
+  if(MSVC)
+    # clang-cl 的 FFmpeg 包装器使用 MSVC 风格库搜索路径。
+    set(ICE_FFMPEG_XIPH_LIBRARY_FLAG "-libpath:${ICE_XIPH_LIBRARY_DIR}")
+  else()
+    # MinGW、Linux 与 macOS 均通过 -L 搜索本次构建的 Xiph 安装根。
+    set(ICE_FFMPEG_XIPH_LIBRARY_FLAG "-L${ICE_XIPH_LIBRARY_DIR}")
+  endif()
+  # Opus 项目串行地依赖 Vorbis 和 Ogg，因此单一目标即可覆盖完整构建链。
+  set(ICE_FFMPEG_XIPH_PROJECT_DEPENDENCIES opus_project)
+  set(ICE_FFMPEG_STATIC_XIPH_LIBRARIES
+      ${ICE_VORBISENC_STATIC_LIBRARY} ${ICE_VORBIS_STATIC_LIBRARY}
+      ${ICE_OGG_STATIC_LIBRARY} ${ICE_OPUS_STATIC_LIBRARY})
+endif()
+# Vorbis 的 pkg-config 私有依赖必须来自同一个 Xiph 安装根。 * PATH 在 CMake
+# 配置时取快照，不会自动跟随后续终端的环境修改。 * 分隔符依据宿主平台选择，与目标是否 Windows 是两件不同的事。
 set(ICE_FFMPEG_TOOL_PATH "$ENV{PATH}")
 set(ICE_FFMPEG_LIST_SEPARATOR "__ICE_FFMPEG_LIST_SEPARATOR__")
 include("${PROJECT_SOURCE_DIR}/cmake/ICEMsvcExternalEnvironment.cmake")
@@ -84,26 +115,39 @@ if(MSVC)
   # * MSVC 的依赖头来自本次私有安装，不以系统头补齐缺包。
   # * 这里重建参数串，不直接继承父级通用或配置型 C/C++ flags。
   set(ICE_FFMPEG_CFLAGS
-      "-I${ICE_ZLIB_INCLUDE_DIR} -I${ICE_LAME_INCLUDE_DIR} ${ICE_FFMPEG_MSVC_FLAGS} -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00"
+      "-I${ICE_ZLIB_INCLUDE_DIR} -I${ICE_LAME_INCLUDE_DIR} ${ICE_FFMPEG_XIPH_INCLUDE_FLAG} ${ICE_FFMPEG_MSVC_FLAGS} -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00"
   )
   set(ICE_FFMPEG_LDFLAGS
-      "-libpath:${ICE_ZLIB_LIBRARY_DIR} -libpath:${ICE_LAME_LIBRARY_DIR}")
+      "-libpath:${ICE_ZLIB_LIBRARY_DIR} -libpath:${ICE_LAME_LIBRARY_DIR} ${ICE_FFMPEG_XIPH_LIBRARY_FLAG}"
+  )
   # * 这些名字用于 configure 链接探针，需要前置依赖提供对应兼容归档名。
   set(ICE_FFMPEG_EXTRA_LIBS "mp3lame.lib libz.lib")
+  if(ICE_FFMPEG_XIPH_ENABLED)
+    # Windows 静态链接探针使用 COFF .lib 名，顺序与 pkg-config 依赖相符。
+    set(ICE_FFMPEG_EXTRA_LIBS
+        "vorbisenc.lib vorbis.lib ogg.lib opus.lib ${ICE_FFMPEG_EXTRA_LIBS}")
+  endif()
 else()
   # * 非 MSVC 显式请求 PIC，以便静态 FFmpeg 日后被链接进共享产物。
   # * 编译参数没有直接拼入父级 C flags，调试与优化主要由 configure 开关控制。
   set(ICE_FFMPEG_CFLAGS
-      "${ICE_FFMPEG_TOOLCHAIN_FLAGS} -I${ICE_ZLIB_INCLUDE_DIR} -I${ICE_LAME_INCLUDE_DIR} -fPIC"
+      "${ICE_FFMPEG_TOOLCHAIN_FLAGS} -I${ICE_ZLIB_INCLUDE_DIR} -I${ICE_LAME_INCLUDE_DIR} ${ICE_FFMPEG_XIPH_INCLUDE_FLAG} -fPIC"
   )
   # * 通用 EXE 链接 flags 仍被继承，父级不得在其中混入业务 PGO 插桩。
   # * 配置专属的 EXE 链接 flags 没有单独拼入，不能假定完全继承父配置。
   set(ICE_FFMPEG_LDFLAGS
-      "${ICE_FFMPEG_TOOLCHAIN_FLAGS} -L${ICE_ZLIB_LIBRARY_DIR} -L${ICE_LAME_LIBRARY_DIR} -fPIC ${CMAKE_EXE_LINKER_FLAGS}"
+      "${ICE_FFMPEG_TOOLCHAIN_FLAGS} -L${ICE_ZLIB_LIBRARY_DIR} -L${ICE_LAME_LIBRARY_DIR} ${ICE_FFMPEG_XIPH_LIBRARY_FLAG} -fPIC ${CMAKE_EXE_LINKER_FLAGS}"
   )
   string(STRIP "${ICE_FFMPEG_CFLAGS}" ICE_FFMPEG_CFLAGS)
   string(STRIP "${ICE_FFMPEG_LDFLAGS}" ICE_FFMPEG_LDFLAGS)
   set(ICE_FFMPEG_EXTRA_LIBS "-lmp3lame -lz")
+  if(ICE_FFMPEG_XIPH_ENABLED)
+    # libvorbis 的 pkg-config 文件未列出 libm；静态探针必须把它放在归档后。 MinGW 也需要最后的数学库，不能仅在原生
+    # Linux 下追加。
+    set(ICE_FFMPEG_EXTRA_LIBS
+        "-lvorbisenc -lvorbis -logg -lopus ${ICE_FFMPEG_EXTRA_LIBS} -lm")
+  endif()
+  # 构建探针的归档顺序应与 3rd_ffmpeg 最终链接闭包保持一致。
 endif()
 
 # * 音频白名单覆盖当前播放器可解码类型，并补齐可用的原生编码器。
@@ -132,6 +176,11 @@ set(ICE_FFMPEG_AUDIO_ENCODERS
 
 # * MP3 编码使用外部 LAME；既要登记 encoder，也要在 configure 启用该依赖。
 list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libmp3lame)
+if(ICE_FFMPEG_XIPH_ENABLED)
+  # 只有 FFmpeg 配置中启用库探测，列出 encoder 才会产生真实编码入口。
+  list(APPEND ICE_FFMPEG_AUDIO_ENCODERS libvorbis libopus)
+endif()
+# 外部编码器同时要求 configure 的 enable-lib* 选项，单列名称不足以启用。
 
 # * 常见 BG 视频格式与嵌入式 GIF 动画：优先编译原生解码器；编码器只启用无外部依赖项。
 # * 该包同时服务背景视频和图像读取，不是仅含音频的最小 avcodec 构建。
@@ -293,6 +342,9 @@ set(FFMPEG_CONF_LIST
     "--extra-ldflags=${ICE_FFMPEG_LDFLAGS}" # LDFLAGS 也需要 PIC
     "--extra-libs=${ICE_FFMPEG_EXTRA_LIBS}")
 list(APPEND FFMPEG_CONF_LIST --enable-libmp3lame)
+if(ICE_FFMPEG_XIPH_ENABLED)
+  list(APPEND FFMPEG_CONF_LIST --enable-libvorbis --enable-libopus)
+endif()
 # * 前置架构脚本可提供 --toolchain=msvc 等参数，无值时不追加空选项。
 if(FFMPEG_ADDITIONAL_CONF)
   list(APPEND FFMPEG_CONF_LIST ${FFMPEG_ADDITIONAL_CONF})
@@ -396,7 +448,7 @@ ExternalProject_Add(
   # * 每轮进入自定义缓存检查，不等于无条件重新编译所有第三方源码。
   BUILD_ALWAYS TRUE
   # * 前置依赖必须先安装，configure 才能使用真实头文件、元数据和探针链接库。
-  DEPENDS zlib_project lame_project
+  DEPENDS zlib_project lame_project ${ICE_FFMPEG_XIPH_PROJECT_DEPENDENCIES}
   CONFIGURE_COMMAND
     sh -c
     "${FFMPEG_SOURCE_READY_TEST} || (rm -rf '${FFMPEG_INSTALL_DIR}' && ${FFMPEG_CONFIGURE_CMD_STR})"
@@ -422,8 +474,9 @@ file(MAKE_DIRECTORY ${FFMPEG_INCLUDE_DIR})
 # --- 封装接口库 ---
 set(FFMPEG_LIBS ${FFMPEG_BYPRODUCTS}) # 直接利用上面定义的产物列表
 # * 静态 FFmpeg 不封装依赖 DLL，最终消费者还需链接明确的 LAME 与 zlib 归档。
-set(FFMPEG_EXTERNAL_LIBRARIES ${ICE_LAME_STATIC_LIBRARY}
-                              ${ICE_ZLIB_STATIC_LIBRARY})
+set(FFMPEG_EXTERNAL_LIBRARIES
+    ${ICE_FFMPEG_STATIC_XIPH_LIBRARIES} ${ICE_LAME_STATIC_LIBRARY}
+    ${ICE_ZLIB_STATIC_LIBRARY})
 
 # * 系统链接项依据目标平台选择，与前面决定 shell 的宿主平台条件不同。
 # * 套接字、COM、安全库属于静态链接集合，不自动扩大 configure 的协议或设备功能。
