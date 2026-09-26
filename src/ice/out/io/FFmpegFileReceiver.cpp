@@ -110,6 +110,11 @@ OutputFormatSelection select_output_format(
         // Opus 编码放入 OGG 封装，文件名本身不要求使用同名 muxer。
         return OutputFormatSelection{ "ogg", AV_CODEC_ID_OPUS };
     }
+    if ( extension == ".ogg" ) {
+        // Ogg muxer 在缺少 libvorbis 的构建中会默认选 FLAC；显式选 Vorbis
+        // 才能让界面的有损目标码率在不同平台保持同一编码语义。
+        return OutputFormatSelection{ "ogg", AV_CODEC_ID_VORBIS, "libvorbis" };
+    }
     if ( extension == ".mp3" ) {
         // 优先使用外部 LAME 实现，同时保留 MP3 ID 作为缺少命名编码器时的后备。
         return OutputFormatSelection{ nullptr, AV_CODEC_ID_MP3, "libmp3lame" };
