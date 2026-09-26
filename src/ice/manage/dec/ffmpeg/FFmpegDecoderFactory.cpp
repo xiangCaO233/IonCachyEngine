@@ -95,6 +95,24 @@ std::int64_t probeBestFrameCount(const AVFormatContext* fmtCtx,
     return std::max(streamFrames, formatFrames);
 }
 
+/// @brief 优先读取所选音频流标签，再读取容器标签作为后备。
+/// @param audioMetadata 首个可播放音频流的标签字典。
+/// @param formatMetadata 容器级标签字典。
+/// @param key 需要读取的精确标签键；FFmpeg 默认忽略键名大小写。
+/// @return 找到的非空标签副本，两级均缺失时返回空字符串。
+std::string probeMetadataTag(const AVDictionary* audioMetadata,
+                             const AVDictionary* formatMetadata,
+                             const char*         key)
+{
+    // Ogg/Vorbis 常把标题和艺术家存于流级；不能只查看容器字典。
+    const AVDictionaryEntry* tag = av_dict_get(audioMetadata, key, nullptr, 0);
+    if ( tag && tag->value[0] != '\0' ) return tag->value;
+    // 空流标签不应遮住容器提供的有效值。
+    tag = av_dict_get(formatMetadata, key, nullptr, 0);
+    return tag && tag->value[0] != '\0' ? std::string(tag->value)
+                                        : std::string{};
+}
+
 }  // namespace
 
 /// @brief 探测首个音频流以及容器标签、封面和时长估算。
@@ -180,30 +198,13 @@ bool FFmpegDecoderFactory::probe(std::string_view file_path,
                                   static_cast<uint64_t>(fmt_ctx->bit_rate),
                                   std::numeric_limits<size_t>::max()))
                             : 0;
-    // 只读取实际存在的字典项，缺失标签保持候选的空值。
-    const AVDictionaryEntry* tag = nullptr;
-
-    // 字符串深拷贝必须在容器关闭前完成，不保留字典条目的 char 指针。
-    // 获取艺术家
-    tag = av_dict_get(
-        fmt_ctx->metadata, "artist", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag ) {
-        candidate.artist = std::string(tag->value);
-    }
-
-    // 获取专辑
-    tag =
-        av_dict_get(fmt_ctx->metadata, "album", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag ) {
-        candidate.album = std::string(tag->value);
-    }
-
-    // 获取标题
-    tag =
-        av_dict_get(fmt_ctx->metadata, "title", nullptr, AV_DICT_IGNORE_SUFFIX);
-    if ( tag ) {
-        candidate.title = std::string(tag->value);
-    }
+    // 字符串在容器关闭前复制到候选；缺失标签保持空值，由上层决定回退文案。
+    candidate.artist =
+        probeMetadataTag(audio_stream->metadata, fmt_ctx->metadata, "artist");
+    candidate.album =
+        probeMetadataTag(audio_stream->metadata, fmt_ctx->metadata, "album");
+    candidate.title =
+        probeMetadataTag(audio_stream->metadata, fmt_ctx->metadata, "title");
 
     // 只提取嵌入的压缩封面包，不在音频探测阶段解码图像像素。
     // 查找并提取专辑封面
