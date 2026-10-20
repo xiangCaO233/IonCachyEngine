@@ -1,3 +1,9 @@
+# Android 需要窗口与 JNI 支持，不能复用桌面的纯音频裁剪配置。
+if(ANDROID)
+  include("${CMAKE_CURRENT_LIST_DIR}/BuildAndroidSDL.cmake")
+  return()
+endif()
+
 # * 此入口为 ICE 的音频输出裁剪 SDL3，不提供通用桌面 UI 所需的完整 SDL 构建。
 # * 仅由 SOURCES_BUILD=ON 加载，不能作为预编译模式缺包时的隐式回退。
 # * 所有上游缓存强制写入以保持构建可重复；共享缓存的其他消费者不能假定保留自己的 SDL 选项。

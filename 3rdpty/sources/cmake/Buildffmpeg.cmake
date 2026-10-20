@@ -507,6 +507,10 @@ elseif(APPLE)
       # 系统数学和字符转换项保留链接名称，实际查找交由目标 SDK 与链接器完成。
       m
       iconv)
+elseif(ANDROID)
+  # Android 的线程实现属于 libc，不能链接桌面独立的 pthread 归档。 autodetect 已禁用，未启用的 lzma 与 bz2
+  # 不应进入目标链接闭包。
+  set(FFMPEG_PLATFORM_LIBRARIES m dl)
 else()
   # * 其他系统统一采用这组 Unix 库名，新增目标平台必须验证，不能视作通用兼容保证。
   set(FFMPEG_PLATFORM_LIBRARIES m pthread lzma bz2 dl)

@@ -144,6 +144,9 @@ if(MSVC AND CMAKE_CROSSCOMPILING)
   # 使用 MSVC triplet 避免 Autotools 注入 MinGW 兼容代码；目标对象仍由 clang-cl 生成。
   list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=x86_64-pc-windows")
   # 上述 host 固定 x86_64，不能据此认定此分支支持任意 MSVC 目标架构。
+elseif(ANDROID)
+  # Autotools 不能在宿主执行 Android 程序，必须显式声明交叉 host。
+  list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=${CMAKE_C_COMPILER_TARGET}")
 elseif(CMAKE_CROSSCOMPILING AND MINGW_TOOLCHAIN_PREFIX)
   # autotools 无法只靠 CC 判断交叉目标；显式传入 --host，避免 configure 尝试运行 Windows 测试程序。
   list(APPEND ICE_LAME_CONFIGURE_COMMAND "--host=${MINGW_TOOLCHAIN_PREFIX}")

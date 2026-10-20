@@ -2,6 +2,9 @@
 
 #include <ice/manage/AudioFormat.hpp>
 
+// SIMD 由目标 CPU 决定；Android ARM64 复用现有通用存储，不能因 Linux 宏启用
+// AVX。
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +15,8 @@
 #include <utility>
 #include <vector>
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__) && \
+    (defined(__x86_64__) || defined(__i386__))
 // 系统头必须位于全局作用域，避免其声明随业务头的包含顺序进入 ice。
 // SIMD 实现依赖编译目标的 AVX 能力，不在本头做运行时 CPU 派发。
 #    include <immintrin.h>
@@ -21,8 +25,10 @@
 
 namespace ice
 {
-#ifndef __linux__
-/// @brief 非 Linux 的平面浮点 PCM 缓冲，每声道独立持有连续数组。
+#if !defined(__linux__) || defined(__ANDROID__) || \
+    (!defined(__x86_64__) && !defined(__i386__))
+/// @brief 非 Linux 或非 x86 平台的通用平面浮点 PCM
+/// 缓冲，每声道独立持有连续数组。
 /// 格式和容量只允许在控制阶段改变，消费方借用指针不拥有样本。
 class AudioBuffer
 {
@@ -533,5 +539,5 @@ private:
         }
     }
 };
-#endif  // __linux__ 平台存储分支
+#endif  // x86 Linux SIMD 与通用平台存储分支
 }  // namespace ice
