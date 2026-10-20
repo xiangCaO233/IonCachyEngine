@@ -7,7 +7,8 @@
 
 namespace ice
 {
-#if !defined(__linux__) || (!defined(__x86_64__) && !defined(__i386__))
+#if !defined(__linux__) || defined(__ANDROID__) || \
+    (!defined(__x86_64__) && !defined(__i386__))
 /// @brief 在控制阶段为每声道建立独立存储。
 /// @warning resize 会分配，不能从音频回调首次创建该缓冲。
 AudioBuffer::AudioBuffer(const AudioDataFormat& format, size_t num_frames)
