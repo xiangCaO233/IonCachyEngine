@@ -11,7 +11,10 @@ else()
 endif()
 
 # 输出目标 OS 字符串供后续 configure 参数使用，不在此运行编译探测程序。
-if(APPLE)
+if(ANDROID)
+  # Android 使用 Bionic 与 NDK sysroot，不能按宿主 Linux 探测 C 库。
+  set(FFMPEG_TARGET_OS "android")
+elseif(APPLE)
   set(FFMPEG_TARGET_OS "darwin")
 elseif(WIN32)
   # Windows 下 FFmpeg 通常区分 mingw32 或 win32/win64 (msvc)

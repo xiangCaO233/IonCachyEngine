@@ -129,7 +129,8 @@ ExternalProject_Add(
     # 只生成依赖所需产物，不把上游测试加入主工程；安装供 FFmpeg 后续探测。
     -DZLIB_BUILD_TESTING=OFF
     -DZLIB_INSTALL=ON
-  # 检查只关注源码时间，不验证已安装库是否被删除或编译参数是否已变化。
+    # 检查只关注源码时间，不验证已安装库是否被删除或编译参数是否已变化。 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+    ${ICE_ANDROID_CMAKE_ARGS}
   BUILD_COMMAND sh -c
                 "${ICE_ZLIB_SOURCE_READY_TEST} || '${CMAKE_COMMAND}' --build ."
   # 外层 Ninja 的并行任务数不会显式附加到这里的子 cmake --build 命令。 编译成功后才安装；安装、复制和 touch

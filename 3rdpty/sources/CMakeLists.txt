@@ -1,3 +1,19 @@
+# Android 外部 CMake 工程必须继承完整 NDK、ABI、API 和 STL，不能只传系统名。
+set(ICE_ANDROID_CMAKE_ARGS "")
+# 外部工程不会自动继承父项目缓存，只传编译器路径可能退回 NDK 默认 ARMv7。
+# 显式列表与桌面公共参数分离，避免污染 Windows SDK 与 macOS 部署设置。
+# 列表只包含平台属性，不传播业务 PGO 或链接时优化。
+if(ANDROID)
+  list(
+    APPEND
+    ICE_ANDROID_CMAKE_ARGS
+    "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+    "-DANDROID_ABI=${ANDROID_ABI}"
+    "-DANDROID_PLATFORM=${ANDROID_PLATFORM}"
+    "-DANDROID_STL=${ANDROID_STL}"
+    "-DCMAKE_SYSTEM_VERSION=${CMAKE_SYSTEM_VERSION}")
+endif()
+
 # 3rdpty/sources/CMakeLists.txt
 
 # 仅由上层 SOURCES_BUILD=ON 分支进入；预编译模式不会用缺包作为进入此处的理由。

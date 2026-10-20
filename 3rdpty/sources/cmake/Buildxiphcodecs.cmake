@@ -96,8 +96,12 @@ ExternalProject_Add(
   # 固定源码路径，防止 ExternalProject 尝试重新下载上游版本。
   SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../ogg"
   BINARY_DIR "${CMAKE_BINARY_DIR}/3rdpty/ogg_bld"
+  # 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+  ${ICE_ANDROID_CMAKE_ARGS}
   UPDATE_COMMAND ""
   CMAKE_ARGS ${ICE_XIPH_CMAKE_ARGS} -DINSTALL_DOCS=OFF
+             # 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+             ${ICE_ANDROID_CMAKE_ARGS}
   BUILD_BYPRODUCTS "${ICE_OGG_STATIC_LIBRARY}")
 # Vorbis 的编码入口在 vorbisenc，解码和公用算法在 vorbis，两个归档都要保留。 CMAKE_PREFIX_PATH 指向 Ogg
 # 安装根，避免不慎链接宿主机另一版本的 Ogg。
@@ -109,6 +113,8 @@ ExternalProject_Add(
   # Vorbis 配置依赖 Ogg 安装完毕，不只是编译顺序依赖。
   DEPENDS ogg_project
   CMAKE_ARGS ${ICE_XIPH_CMAKE_ARGS} -DCMAKE_PREFIX_PATH=${ICE_XIPH_INSTALL_DIR}
+             # 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+             ${ICE_ANDROID_CMAKE_ARGS}
   BUILD_BYPRODUCTS "${ICE_VORBIS_STATIC_LIBRARY}"
                    "${ICE_VORBISENC_STATIC_LIBRARY}")
 # Opus 不依赖 Vorbis 符号；这里串行化是为了保护共享安装前缀。 关闭上游演示程序和测试，预编译包只发布 FFmpeg 所需的静态库。
@@ -119,7 +125,11 @@ ExternalProject_Add(
   UPDATE_COMMAND ""
   # 单安装根中的头和 pkg-config 元数据不能被并发 install 覆盖。
   DEPENDS vorbis_project
-  CMAKE_ARGS ${ICE_XIPH_CMAKE_ARGS} -DOPUS_BUILD_TESTING=OFF
-             -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_STATIC_RUNTIME=ON
+  CMAKE_ARGS ${ICE_XIPH_CMAKE_ARGS}
+             -DOPUS_BUILD_TESTING=OFF
+             -DOPUS_BUILD_PROGRAMS=OFF
+             -DOPUS_STATIC_RUNTIME=ON
              ${ICE_XIPH_OPUS_FLAGS}
+             # 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+             ${ICE_ANDROID_CMAKE_ARGS}
   BUILD_BYPRODUCTS "${ICE_OPUS_STATIC_LIBRARY}")

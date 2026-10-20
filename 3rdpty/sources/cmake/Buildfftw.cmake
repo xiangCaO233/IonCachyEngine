@@ -130,7 +130,8 @@ ExternalProject_Add(
              # 静态归档也启用 PIC，允许后续进入共享库；不会改变 BUILD_SHARED_LIBS。
              -DCMAKE_POSITION_INDEPENDENT_CODE=ON
              -DCMAKE_INSTALL_MESSAGE=NEVER
-  # 外层并行度没有显式传入这条子构建命令；源码戳有效时整个命令被短路。
+             # 外层并行度没有显式传入这条子构建命令；源码戳有效时整个命令被短路。 外部配置最后覆盖为当前 NDK 目标，桌面构建时此列表为空。
+             ${ICE_ANDROID_CMAKE_ARGS}
   BUILD_COMMAND sh -c
                 "${FFTW_SOURCE_READY_TEST} || '${CMAKE_COMMAND}' --build ."
   INSTALL_COMMAND

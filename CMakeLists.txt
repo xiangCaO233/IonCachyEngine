@@ -2,11 +2,13 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-# 同时启用 C 是为源码依赖提供编译器信息；引擎业务实现使用 C++。
+# 同时启用 C 是为源码依赖提供编译器信息；引擎业务实现使用 C++。 Android 工具链仍由调用方提供，独立引擎构建不探测上层应用工程。
+# 原生归档与共享库必须使用同一套 NDK 和标准库 ABI。
 project(IonCachyEngine LANGUAGES CXX C)
 
 # 独立项目入口统一语言标准和编译命令导出，供引擎源码及自测目标共用。 作为宿主子项目时也保留引擎自己的标准选择，不要求业务 API 使用 C++26。
-if(APPLE
+if(ANDROID
+   OR APPLE
    OR MSVC
    OR (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
   # MinGW GCC 16 的 gnu++26 与静态 libstdc++ 链接会重复定义 stdexcept 符号。 引擎当前 API 不依赖

@@ -7,7 +7,7 @@
 
 namespace ice
 {
-#ifndef __linux__
+#if !defined(__linux__) || (!defined(__x86_64__) && !defined(__i386__))
 /// @brief 在控制阶段为每声道建立独立存储。
 /// @warning resize 会分配，不能从音频回调首次创建该缓冲。
 AudioBuffer::AudioBuffer(const AudioDataFormat& format, size_t num_frames)
@@ -16,7 +16,7 @@ AudioBuffer::AudioBuffer(const AudioDataFormat& format, size_t num_frames)
     // 与默认构造不同，此入口立即建立指定格式和逻辑帧数。
     resize(format, num_frames);
 }
-/// @brief 接管非 Linux 声道数组及其地址表，不复制 PCM。
+/// @brief 接管通用平台声道数组及其地址表，不复制 PCM。
 /// 已移动的 vector 保留原存储地址，因此指针表可一起转移。
 AudioBuffer::AudioBuffer(AudioBuffer&& other) noexcept
     : afmt(other.afmt)
@@ -112,7 +112,7 @@ void AudioBuffer::sync_pointers()
         channel_pointers_[i] = _data[i].data();
     }
 }
-// 与上方非 Linux 实现保持相同的逻辑帧数与所有权语义。
+// 与上方通用实现保持相同的逻辑帧数与所有权语义。
 #else
 /// @brief 在 Linux 上建立按 SIMD 对齐跨度排列的连续声道存储。
 /// @warning 控制路径分配；对齐容量可能大于调用方请求的逻辑帧数。
@@ -173,5 +173,5 @@ AudioBuffer& AudioBuffer::operator=(AudioBuffer&& other) noexcept
     }
     return *this;
 }
-#endif  // __linux__ 平台存储分支
+#endif  // x86 Linux SIMD 与通用平台存储分支
 }  // namespace ice
