@@ -442,8 +442,16 @@ if(MSVC)
   # * 非 MSVC 分支使用 shell 环境字符串和源码戳，与上方直接命令执行分支语义不同。
 else()
   # * 构造 Meson 配置参数 非 MSVC 参数列表独立维护，调整功能开关时需同步核对上方 MSVC 分支。
+  set(RUBBERBAND_MESON_PREFIX "${RUBBERBAND_INSTALL_DIR}")
+  set(RUBBERBAND_MESON_INSTALL_ARGS "")
+  if(CMAKE_HOST_WIN32 AND ANDROID)
+    # Android 的逻辑安装前缀必须是 POSIX 绝对路径，不能使用 Windows 盘符。 DESTDIR
+    # 只在安装阶段定位宿主私有前缀，不改变目标 ABI 或输出库名称。
+    set(RUBBERBAND_MESON_PREFIX "/")
+    set(RUBBERBAND_MESON_INSTALL_ARGS "--destdir '${RUBBERBAND_INSTALL_DIR}'")
+  endif()
   set(MESON_SETUP_ARGS
-      --prefix=${RUBBERBAND_INSTALL_DIR}
+      --prefix=${RUBBERBAND_MESON_PREFIX}
       --libdir=lib
       --buildtype=${RB_BUILD_TYPE}
       -Ddefault_library=${RUBBERBAND_LIBRARY_KIND}
@@ -561,7 +569,7 @@ else()
     INSTALL_COMMAND
       sh -c
       # * 安装成功才更新戳；--no-rebuild 假定前一步编译确已产生需要安装的产物。
-      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} '${RUBBERBAND_MESON_EXE}' install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild && '${CMAKE_COMMAND}' -E touch '${RUBBERBAND_SOURCE_STAMP}')"
+      "${RUBBERBAND_SOURCE_READY_TEST} || (${MESON_TOOLCHAIN_ENV} '${RUBBERBAND_MESON_EXE}' install -C '${RUBBERBAND_BUILD_DIR}' --no-rebuild ${RUBBERBAND_MESON_INSTALL_ARGS} && '${CMAKE_COMMAND}' -E touch '${RUBBERBAND_SOURCE_STAMP}')"
     # * 失败时保留诊断产物但不写成功戳，脚本没有自动清理或回滚已部分安装的内容。 * 这里登记链接库和戳，不登记非 MSVC 的运行时
     # * DLL或符号文件，不能代表完整发布包。
     BUILD_BYPRODUCTS "${RUBBERBAND_LIBRARY}" "${RUBBERBAND_SOURCE_STAMP}")

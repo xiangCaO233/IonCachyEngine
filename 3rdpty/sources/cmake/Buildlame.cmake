@@ -99,15 +99,24 @@ if(MSVC AND CMAKE_CROSSCOMPILING)
 endif()
 
 # 以命令列表传递环境赋值，工具和 flags 只影响本次 configure，不改宿主环境。
+set(ICE_LAME_CPP_ENV "")
+if(ANDROID)
+  # Autotools 的预处理探针不读取 CFLAGS，必须单独保留目标 triple 与 sysroot。 Windows NDK
+  # 默认预处理目标是宿主，漏传会把标准 C 头误判为不存在。
+  set(ICE_LAME_CPP_ENV
+      "CPPFLAGS=--target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}")
+endif()
 set(ICE_LAME_CONFIGURE_COMMAND
-    ${CMAKE_COMMAND} -E env ${ICE_LAME_ENV} "CC=${ICE_LAME_CC}"
-    "AR=${ICE_LAME_AR}"
+    ${CMAKE_COMMAND} -E env ${ICE_LAME_ENV} ${ICE_LAME_CPP_ENV}
+    "CC=${ICE_LAME_CC}" "AR=${ICE_LAME_AR}"
     # 工具路径只作为环境输入传递；提供 STRIP 不等于执行安装后符号剥离。
     "RANLIB=${CMAKE_RANLIB}" "NM=${CMAKE_NM}" "STRIP=${CMAKE_STRIP}"
     "CFLAGS=${ICE_LAME_C_FLAGS}" "LDFLAGS=${ICE_LAME_LINK_FLAGS}")
 
-if(WIN32)
-  # 配置脚本需 shell 执行；这里只检查可执行程序存在，不验证 make、find 等配套工具。
+if(WIN32 OR CMAKE_HOST_WIN32)
+  # Android 目标不会定义 WIN32，但 Windows 宿主仍不能直接执行 POSIX configure。 保留原 Windows
+  # 目标分支，并补上 Windows 到 Android 的宿主 shell 入口。 配置脚本需 shell 执行；这里只检查可执行程序存在，不验证
+  # make、find 等配套工具。
   find_program(ICE_LAME_SH_EXECUTABLE NAMES sh.exe sh bash.exe bash)
   if(NOT ICE_LAME_SH_EXECUTABLE)
     # 缺 shell 在配置期明确失败，不回退下载工具或改用系统 LAME。

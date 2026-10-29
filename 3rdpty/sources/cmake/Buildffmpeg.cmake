@@ -353,6 +353,15 @@ if(CMAKE_CROSSCOMPILING)
   # FFmpeg 的 configure 需要显式确认交叉构建，否则会把无法运行目标 exe 误判为编译器不可用。
   list(APPEND FFMPEG_CONF_LIST --enable-cross-compile)
 endif()
+if(CMAKE_HOST_WIN32 AND ANDROID)
+  # FFmpeg 的宿主辅助程序必须用可运行的 Windows 编译器，不继承 NDK 目标驱动。 显式优先 cc/clang，避免 PATH 中旧 gcc
+  # 包装器依赖已卸载的 LLVM DLL。
+  find_program(
+    ICE_FFMPEG_HOST_CC
+    NAMES cc clang gcc
+    NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+  list(APPEND FFMPEG_CONF_LIST "--host-cc=${ICE_FFMPEG_HOST_CC}")
+endif()
 
 # * 配置名按精确字符串比较，自定义配置不自动获得含符号发布的保留策略。
 # * Debug 与 RelWithDebInfo 禁止剥离；普通发布允许剥离，不能混作含符号包验收。 调试标志 (直接 append 到 list)
