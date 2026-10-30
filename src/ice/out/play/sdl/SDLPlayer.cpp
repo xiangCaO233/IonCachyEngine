@@ -8,17 +8,15 @@
 #include <SDL3/SDL_audio.h>
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_stdinc.h>
-#include <SDL3/SDL_thread.h>
 
+#include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <memory>
-#include <thread>
 #include <vector>
 
 namespace ice
@@ -84,7 +82,7 @@ std::vector<SDLAudioDeviceInfo> SDLPlayer::list_devices()
     return devices;
 }
 
-/// @brief 分配固定格式的图输出块，设备和线程仍处于未打开状态。
+/// @brief 分配固定格式的图输出块，设备和回调仍处于未打开状态。
 /// @param format 有效的目标浮点音频格式，播放期间不得改变块容量与声道数。
 SDLPlayer::SDLPlayer(const AudioDataFormat& format)
     : IReceiver(format), m_playFormat(format)
@@ -95,22 +93,24 @@ SDLPlayer::SDLPlayer(const AudioDataFormat& format)
         return;
     }
     const auto frames = ICEConfig::default_buffer_size;
-    // 在分配前约束三个块的队列阈值，连同单块提交字节数都必须能装入 int。
+    // 单块提交字节数必须能装入 SDL 接口使用的 int，不再预留多块队列阈值。
     // 逐项除法避免先乘声道和帧数产生溢出；零帧也不能形成有效供数块。
     if ( frames == 0 || frames > std::numeric_limits<int>::max() /
-                                     sizeof(float) / 3 /
-                                     m_playFormat.channels ) {
+                                     sizeof(float) / m_playFormat.channels ) {
         return;
     }
     // 仅在缓冲准备成功后记录原始契约，后续启动不能信任节点修改后的元数据。
-    if ( m_buffer.resize(m_playFormat, frames) ) m_blockFrames = frames;
+    if ( m_buffer.resize(m_playFormat, frames) ) {
+        m_blockFrames        = frames;
+        m_pendingFrameOffset = frames;
+    }
 }
 
 /// @brief 在成员及基类音频源仍有效时完成实例资源回收。
-/// @warning 控制侧低频析构会等待供数线程退出，SDL 后端必须仍有效。
+/// @warning 控制侧低频析构会等待在途供数回调，SDL 后端必须仍有效。
 SDLPlayer::~SDLPlayer()
 {
-    // 先 join 再释放流，避免线程访问随后销毁的缓冲与音频源。
+    // 先禁用并等待回调，再释放流、缓冲与音频源。
     // close 可重复调用，因此显式提前关闭与析构兜底可共存。
     close();
 }
@@ -122,15 +122,15 @@ bool SDLPlayer::open()
 }
 
 /// @brief 关闭旧流后以指定设备建立浮点输入流。
-/// @return 流非空时为 true，此时尚未创建供数线程。
-/// @warning 低频控制侧操作，可能停止旧线程并阻塞等待设备打开。
+/// @return 流非空时为 true，此时设备暂停且尚未注册供数回调。
+/// @warning 低频控制侧操作，可能等待旧回调及设备打开，不得在音频回调调用。
 bool SDLPlayer::open(SDL_AudioDeviceID deviceid)
 {
-    // 关闭旧线程前只能查询不可变的构造结果，不能读取供数节点可修改的缓冲。
+    // 禁用旧回调前只能查询不可变的构造结果，不能读取节点可修改的缓冲。
     // 设备重开与缓冲校验分离；损坏的活动块仍由 start 拒绝。
     if ( m_blockFrames == 0 ) return false;
     if ( m_audioStream ) {
-        // 如果已打开，先关闭
+        // 切换设备前解除旧回调对实例的借用。
         close();
     }
 
@@ -153,11 +153,11 @@ bool SDLPlayer::open(SDL_AudioDeviceID deviceid)
     return true;
 }
 
-/// @brief 等待供数退出后销毁音频流，解除设备绑定。
-/// @warning 包含 join 与设备资源回收，不能在供数线程自身或每帧路径调用。
+/// @brief 等待供数回调退出后销毁音频流，解除设备绑定。
+/// @warning 包含回调屏障与设备回收，不能在音频回调自身或每帧路径调用。
 void SDLPlayer::close()
 {
-    // 先 join 防止后台线程继续读取即将销毁的 m_audioStream。
+    // 禁用回调会等待在途处理，返回后才可销毁其借用的流与实例成员。
     stop();
 
     // 对于由 SDL_OpenAudioDeviceStream 创建的流，
@@ -166,34 +166,24 @@ void SDLPlayer::close()
         SDL_DestroyAudioStream(m_audioStream);
         m_audioStream = nullptr;
     }
-    // 确保设备 ID 被重置
-    m_currentDevice = 0;
+    // 新流不能接收旧设备的块尾；普通 stop/start 则保留同一流的样本顺序。
+    m_pendingFrameOffset = m_blockFrames;
+    m_currentDevice      = 0;
 }
 
-/// @brief 恢复设备并创建供数线程，使用已打开流的现有队列。
-/// @return 设备恢复且线程发起成功时为 true，不反映后续提交的错误。
-/// @pre 生命周期串行，上一轮线程已 join；源绑定在停止状态完成。
+/// @brief 预备交错存储并注册按需回调，随后恢复设备。
+/// @return 注册和设备恢复成功时为 true，不反映后续图处理或提交的错误。
+/// @pre 生命周期串行，源绑定在 stop 返回之后、start 之前完成。
 bool SDLPlayer::start()
 {
-    if ( m_running.load(std::memory_order_relaxed) ||
-         m_audioThread != nullptr || !m_audioStream ) {
-        // 故障退出也可能留下待 join 的线程，必须先 stop 回收再重新启动。
+    if ( m_running.load(std::memory_order_relaxed) || m_callbackAttached ||
+         !m_audioStream ) {
+        // 故障只清除运行状态，须先 stop 完成回调屏障再检查和复用缓冲。
         return false;
     }
-    // 上轮源节点可能破坏块契约；先拒绝异常状态，不能将其用于新线程的分配。
-    if ( m_blockFrames == 0 || m_buffer.afmt != m_playFormat ||
-         m_buffer.num_frames() != m_blockFrames ||
-         m_buffer.frame_capacity() < m_blockFrames ) {
-        return false;
-    }
-    // 上轮节点可能破坏声道观察指针；先拒绝，不能让下一轮 clear
-    // 或读取访问空平面。
-    auto planes = m_buffer.raw_ptrs();
-    if ( !planes ) return false;
-    for ( uint16_t ch = 0; ch < m_playFormat.channels; ++ch ) {
-        if ( !planes[ch] ) return false;
-    }
-    // 必须在线程创建和设备恢复前分配，避免后台容器分配失败越过返回值契约。
+    // 失败节点可能破坏格式、活动帧数或平面指针，不能把损坏缓冲交给回调。
+    if ( !hasValidBuffer() ) return false;
+    // 必须在注册回调和恢复设备前分配，回调仅复用已有存储。
     // 构造时已验证字节数边界；float 不要求超出 malloc 保证的对齐。
     if ( !m_interleavedBuffer ) {
         const size_t bytes = static_cast<size_t>(m_blockFrames) *
@@ -201,167 +191,174 @@ bool SDLPlayer::start()
         m_interleavedBuffer.reset(static_cast<float*>(std::malloc(bytes)));
         if ( !m_interleavedBuffer ) return false;
     }
-    // 恢复失败时保留停止状态与现有流，调用方可重试或 close。
-    // 必须先确认设备可恢复，再发布运行请求，避免产生虚假的启动成功。
-    if ( !SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(m_audioStream)) ) {
+    // 回调注册的流锁发布已完成的源绑定与存储准备；此时设备仍处于暂停。
+    if ( !SDL_SetAudioStreamGetCallback(m_audioStream, supplyAudio, this) ) {
         return false;
     }
+    m_callbackAttached = true;
+    // 在恢复设备前允许供数，避免首个设备请求只能获得静音。
     m_running.store(true, std::memory_order_relaxed);
-    m_paused = false;
-    // 重启不清空旧流队列，设备恢复后可能先消费上一轮尚未播放的音频。
-
-    // 后台借用 this，实例必须至少存活到 stop 的 join 完成。
-    m_audioThread = SDL_CreateThread(runAudioThread, "ICE SDL audio", this);
-    // SDL 用空句柄报告创建失败，不能留下没有供数线程的运行请求。
-    if ( !m_audioThread ) {
+    if ( !SDL_ResumeAudioDevice(m_currentDevice) ) {
+        // 失败时撤销借用；不销毁流，允许控制侧再次启动或关闭。
         m_running.store(false, std::memory_order_relaxed);
+        SDL_SetAudioStreamGetCallback(m_audioStream, nullptr, nullptr);
+        m_callbackAttached = false;
         return false;
     }
-
+    m_paused = false;
     return true;
 }
 
-/// @brief 查询线程是否可 join；已结束但未回收的线程同样返回 true。
-bool SDLPlayer::joinable()
-{
-    return m_audioThread != nullptr;
-}
-
-/// @brief 直接等待供数线程结束，不主动发出停止请求。
-/// @pre joinable 为 true 且不是当前线程；通常应通过 stop 完成停止与回收。
-/// @warning 低频控制侧阻塞等待，运行标志未清除时可能一直等待。
-void SDLPlayer::join()
-{
-    SDL_WaitThread(m_audioThread, nullptr);
-    m_audioThread = nullptr;
-}
-
-/// @brief 发布退出标志并等待供数线程返回，保留流与设备供再次启动。
-/// @warning join 为低频控制侧阻塞操作，不得持有图处理所依赖的锁再调用。
+/// @brief 禁用回调并暂停设备，保留同一流已有队列与未提交的块尾。
+/// @details 禁用回调是源绑定的生命周期屏障，与运行标志的观察值职责不同。
+/// 即使设备恢复失败或回调已报告错误，仍须经过屏障才允许释放音频图。
+/// @warning 低频控制路径等待在途图处理，不得在回调或持有图依赖锁时调用。
 void SDLPlayer::stop()
 {
-    // 即使后台已因错误清零标志，仍须回收其线程对象，不能提前返回。
+    // 即使回调已经因错误清零，仍须解除注册并等待其返回，不能提前结束。
     m_running.store(false, std::memory_order_relaxed);
-
-    // 返回后线程不再访问流；暂停设备和排队数据仍由后续 close 或 start 管理。
-    join();
+    if ( m_audioStream ) {
+        // SDL setter 获取流锁，等待在途回调；未持有流锁时才调用设备接口，
+        // 避免与 SDL 音频线程的设备锁、流锁顺序相反。
+        SDL_SetAudioStreamGetCallback(m_audioStream, nullptr, nullptr);
+        m_callbackAttached = false;
+        SDL_PauseAudioDevice(m_currentDevice);
+    }
+    m_paused = false;
 }
-/// @brief 暂停设备消耗队列，但不暂停上游供数循环。
-/// @warning m_paused 仅由串行控制侧读写；后台仍可能填充到队列阈值后再节流。
+/// @brief 暂停设备并等待回调结束，不再提前推进上游音频图。
+/// @details 保留运行意图，使 resume 可以恢复；停止后的 resume 不会隐式重启。
+/// 不清空流队列和本端块尾，避免暂停导致音频帧被重复消费或丢失。
+/// @warning 低频控制路径包含设备同步和回调屏障，不能在音频回调调用。
 void SDLPlayer::pause()
 {
     if ( m_running.load(std::memory_order_relaxed) && !m_paused ) {
         // 仅确认逻辑设备已暂停后更新标记；失败保留原状态以允许重试。
-        if ( SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(m_audioStream)) ) {
-            m_paused = true;
+        if ( SDL_PauseAudioDevice(m_currentDevice) ) {
+            SDL_SetAudioStreamGetCallback(m_audioStream, nullptr, nullptr);
+            m_callbackAttached = false;
+            m_paused           = true;
         }
     }
 }
 /// @brief 在运行请求仍有效时取消暂停并恢复设备消耗队列。
+/// @details 注册回调与恢复设备分开完成，恢复失败时撤销注册但保留暂停状态。
 /// @warning 暂停状态仅由串行控制侧访问，不能与 open/close 并发。
 void SDLPlayer::resume()
 {
     if ( m_running.load(std::memory_order_relaxed) && m_paused ) {
-        // 恢复失败仍视为暂停，避免后续恢复请求被状态检查直接丢弃。
-        if ( SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(m_audioStream)) ) {
+        // 先重新注册以发布暂停期间的状态；不丢弃队列和固定块的剩余样本。
+        if ( !SDL_SetAudioStreamGetCallback(m_audioStream, supplyAudio, this) )
+            return;
+        m_callbackAttached = true;
+        if ( SDL_ResumeAudioDevice(m_currentDevice) ) {
             m_paused = false;
+        } else {
+            // 恢复失败仍保持暂停，并解除回调借用以便重试或关闭。
+            SDL_SetAudioStreamGetCallback(m_audioStream, nullptr, nullptr);
+            m_callbackAttached = false;
         }
     }
 }
 
-/// @brief 适配 SDL 的线程回调签名，不转移播放器所有权。
-/// @warning 每次启动执行一次，调用方通过 SDL_WaitThread 等待全部实例访问结束。
-int SDLCALL SDLPlayer::runAudioThread(void* userdata)
+/// @brief 适配 SDL 的按需回调，只处理尚未排队的输入字节需求。
+/// @param userdata 生命周期覆盖回调注册区间的播放器借用地址。
+/// @param stream 当前请求数据的已注册流，不在回调内改变其绑定。
+/// @param additionalAmount 当前还缺少的输入字节数，零需求不推进音频图。
+/// @warning 每次音频取数时执行；SDL 已持有流锁，不再添加锁、等待或堆操作。
+/// relaxed 运行标志只表达取消和错误，资源生命周期由注册及禁用回调屏障保证。
+void SDLCALL SDLPlayer::supplyAudio(void* userdata, SDL_AudioStream* stream,
+                                    int additionalAmount, int)
 {
-    // 参数由 start 传入非空 this，控制侧在等待完成前不能销毁实例。
-    static_cast<SDLPlayer*>(userdata)->audio_thread_loop();
-    return 0;
+    // totalAmount 包含流内已有样本，使用它供数会重新引入无必要的预排。
+    static_cast<SDLPlayer*>(userdata)->supplyAudio(stream, additionalAmount);
 }
 
-/// @brief 按队列输入字节数节流，将音频图平面数据转成交错数据提交。
-/// @warning 专用供数线程持续读取 m_running，退出时写回 false 供控制侧查询。
-/// 标志使用 relaxed 仅表达请求与状态，线程创建和 join 负责资源同步。
-/// 循环包含 SDL 调用与 1ms 音频轮询休眠，不是无阻塞实时回调。
-/// 禁止加入文件 IO、逐块分配或诊断输出；源节点也必须满足自身处理约束。
-void SDLPlayer::audio_thread_loop()
+/// @brief 确认固定块及所有平面仍满足构造时的存储契约。
+/// @return 格式、活动长度、容量和各声道地址均有效时返回 true。
+/// @details 同时用于启动失败返回值和自定义节点处理后的边界防护。
+/// @warning 每音频块处理前后执行；仅访问已有元数据和指针，不分配、不加锁。
+bool SDLPlayer::hasValidBuffer() const
 {
-    // 阈值按输入浮点 PCM 的三个块计算，不按设备输出格式或时间戳计量。
-    // 判断使用严格大于，恰好三块时还会再送一块，不能将其描述为三块硬上限。
-    const auto blockFrames = m_blockFrames;
-    const int  target_queued_bytes =
-        blockFrames * m_playFormat.channels * sizeof(float) * 3;
-    // 控制侧已准备固定容量，线程创建发布存储，join 保证借用结束。
-    // 首次提交前逐样本写满，无需依赖分配器清零；契约失败的块不会提交。
+    if ( m_blockFrames == 0 || m_buffer.afmt != m_playFormat ||
+         m_buffer.num_frames() != m_blockFrames ||
+         m_buffer.frame_capacity() < m_blockFrames )
+        return false;
+    // 声道表也可能被自定义节点破坏，必须在 clear 和采样访问之前完整校验。
+    const auto planes = m_buffer.raw_ptrs();
+    if ( !planes ) return false;
+    for ( uint16_t channel = 0; channel < m_playFormat.channels; ++channel ) {
+        if ( !planes[channel] ) return false;
+    }
+    return true;
+}
+
+/// @brief 固定块处理音频图，分段提交当前请求需要的交错 PCM。
+/// @param stream 本次设备需求对应的流，提交量按其输入格式计算。
+/// @param additionalAmount 当前缺少的字节数，不包含流内已缓存的数据。
+/// @details 图游标最多领先已提交数据一个固定块，未提交部分归本端持有。
+/// 本地块尾与 SDL 队列分离，既保持固定块处理，也避免提前拉取多块。
+/// @warning 音频热路径无自建线程、轮询、睡眠和共享所有权复制。
+/// 每块读取控制侧 relaxed
+/// 运行请求，失败只清零状态，不在回调里管理设备或输出日志。 SDL
+/// 提交仍使用其内部流同步和缓存，不能据此宣称整个 SDL 调用链零分配。
+void SDLPlayer::supplyAudio(SDL_AudioStream* stream, int additionalAmount)
+{
+    if ( additionalAmount <= 0 ) return;
+    const std::size_t frameBytes = m_playFormat.channels * sizeof(float);
+    // SDL 的字节需求可能因重采样保守估计而不是整帧；向上取整不足一帧的部分。
+    // 使用 size_t 计算，避免接近 int 上限的请求在取整时发生有符号溢出。
+    std::size_t remainingFrames =
+        (static_cast<std::size_t>(additionalAmount) + frameBytes - 1) /
+        frameBytes;
     float* const interleavedBuffer = m_interleavedBuffer.get();
-    const int blockBytes = blockFrames * m_playFormat.channels * sizeof(float);
-    while ( m_running.load(std::memory_order_relaxed) ) {
-        // 查询的是尚未转换的输入字节，不能单独代表实际可听设备延迟。
-        int queued_bytes = SDL_GetAudioStreamQueued(m_audioStream);
-        // 查询失败时不能继续推进图游标，也不在供数线程中反复重试设备错误。
-        if ( queued_bytes < 0 ) break;
-        // 查询期间可能收到控制侧停止请求，观察到取消后不再推进音频图。
-        if ( !m_running.load(std::memory_order_relaxed) ) break;
-        // 查询值只是当前快照，设备会并行消费，无需等待队列精确达到某个长度。
-
-        // 只在超过阈值时退让，暂停设备会使队列积累并进入此分支。
-        if ( queued_bytes > target_queued_bytes ) {
-            if ( !m_running.load(std::memory_order_relaxed) ) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            // 下一轮重新检查退出标志和队列，休眠不承诺精确唤醒时间。
-            continue;
-        }
-
-        // 源仅在 stop/join 完成后替换，线程创建发布绑定，join 保证借用结束。
-        // 直接借用共享指针引用，不产生逐块所有权复制或无配对写锁的读锁。
-        m_buffer.clear();
-        const auto& source = get_source();
-        if ( source ) source->process(m_buffer);
-        // 节点返回时重新检查取消，不为已经停止的播放转换或提交当前块。
-        if ( !m_running.load(std::memory_order_relaxed) ) break;
-        // 清零后的块使空图输出静音，不能把空图当作线程退出条件。
-        // 节点必须保持调用方准备的固定块契约；变化后不能沿用交错缓冲容量。
-        // 缩短块也必须拒绝，否则整数组提交会把上轮尾部当作新音频播放。
-        if ( m_buffer.afmt != m_playFormat ||
-             m_buffer.num_frames() != blockFrames ||
-             m_buffer.frame_capacity() < blockFrames ) {
-            break;
-        }
-        // 平面到交错转换不需要图锁；声道顺序保持图的现有排列。
-        const auto num_frames   = m_buffer.num_frames();
-        const auto num_channels = m_playFormat.channels;
-        auto       planar_data  = m_buffer.raw_ptrs();
-
-        // 元数据正确不保证节点保留了声道指针；整块检查后才允许任何样本读取。
-        // 先检查全部声道，避免前面声道已拷贝而后面空指针触发非法访问。
-        bool validPlanes = planar_data != nullptr;
-        for ( uint16_t ch = 0; validPlanes && ch < num_channels; ++ch ) {
-            validPlanes = planar_data[ch] != nullptr;
-        }
-        if ( !validPlanes ) break;
-
-        for ( size_t i = 0; i < num_frames; ++i ) {
-            // 每帧按声道索引连续排列，字节数随后按整个数组长度统一计算。
-            for ( uint16_t ch = 0; ch < num_channels; ++ch ) {
-                // 与 OpenAL
-                // 浮点路径一致，非有限值按静音处理，避免污染设备转换。
-                // 有限样本保留动态范围和符号，不在后端额外限幅或修改图内数据。
-                const float sample = planar_data[ch][i];
-                interleavedBuffer[i * num_channels + ch] =
-                    std::isfinite(sample) ? sample : 0.0f;
+    while ( remainingFrames > 0 && m_running.load(std::memory_order_relaxed) ) {
+        if ( m_pendingFrameOffset == m_blockFrames ) {
+            // 保持 ICE
+            // 原有固定块调用，不让设备回调长度改变效果器和调度的块契约。
+            if ( !hasValidBuffer() ) {
+                m_running.store(false, std::memory_order_relaxed);
+                return;
             }
+            m_buffer.clear();
+            const auto& source = get_source();
+            if ( source ) source->process(m_buffer);
+            // 即使 stop
+            // 已提出取消，也保存本块生成结果；否则重启会跳过已推进的样本。
+            // 禁用回调等待本次转换结束，随后才能释放源及缓冲。
+            if ( !hasValidBuffer() ) {
+                m_running.store(false, std::memory_order_relaxed);
+                return;
+            }
+            const auto planes = m_buffer.raw_ptrs();
+            for ( std::size_t frame = 0; frame < m_blockFrames; ++frame ) {
+                for ( uint16_t channel = 0; channel < m_playFormat.channels;
+                      ++channel ) {
+                    // 延续原后端约定：非有限样本静音，有限值不额外限幅。
+                    const float sample = planes[channel][frame];
+                    interleavedBuffer[frame * m_playFormat.channels + channel] =
+                        std::isfinite(sample) ? sample : 0.0f;
+                }
+            }
+            m_pendingFrameOffset = 0;
         }
-
-        // 转换期间的停止也应在提交前生效；已进入 SDL 的调用仍由 join 等待完成。
-        if ( !m_running.load(std::memory_order_relaxed) ) break;
-        // SDL 复制提交数据，下一轮可复用本数组；长度单位是字节而非帧。
-        // 提交失败立即结束供数；当前块已推进的图游标无法由设备层回滚。
+        // 不足整块的请求仅提交前缀，剩余样本保存在固定存储中，不能丢弃或重复。
+        const auto frames = std::min(
+            remainingFrames,
+            static_cast<std::size_t>(m_blockFrames - m_pendingFrameOffset));
+        const auto* samples =
+            interleavedBuffer + static_cast<std::size_t>(m_pendingFrameOffset) *
+                                    m_playFormat.channels;
+        if ( !m_running.load(std::memory_order_relaxed) ) return;
+        // 构造阶段已约束单块字节数；SDL 复制后即可复用已消费的存储。
         if ( !SDL_PutAudioStreamData(
-                 m_audioStream, interleavedBuffer, blockBytes) ) {
-            break;
+                 stream, samples, static_cast<int>(frames * frameBytes)) ) {
+            m_running.store(false, std::memory_order_relaxed);
+            return;
         }
+        m_pendingFrameOffset += static_cast<uint32_t>(frames);
+        remainingFrames -= frames;
     }
-    // 仅发布停止请求，不用该原子值发布缓冲数据；资源回收仍由控制侧 join 同步。
-    m_running.store(false, std::memory_order_relaxed);
 }
 
 }  // namespace ice
