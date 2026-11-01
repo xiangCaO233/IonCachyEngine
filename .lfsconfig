@@ -1,0 +1,4 @@
+# 大文件对象由 NAS 的公共 LFS 服务提供，源码仓库地址保持不变。
+# 只读构建无需凭据；上传权限由开发者自己的本机凭据管理。
+[lfs]
+    url = https://gitea.xiang233.top/xiang/mmm-lfs.git/info/lfs
