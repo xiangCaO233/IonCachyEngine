@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <vector>
 
 #include "ice/config/config.hpp"
@@ -11,7 +10,8 @@ namespace ice
 /// @brief 各声道独立维护包络的动态范围压缩器。
 /// @details 各声道不联动，立体声两路可能获得不同衰减；不是峰值限幅器。
 /// 参数未做有限性与范围校验，调用方须提供有限阈值、增益和有效时间、比率。
-/// @warning setter 会写非原子脏标记，参数更新必须与音频处理串行。
+/// @warning 所有 setter 与 prepare 只能在接入音频图以前或处理已停止时调用。
+/// 恢复处理前由宿主发布配置；处理期间参数保持不变，不能跨线程并发读写。
 class Compressor : public IEffectNode
 {
 public:
@@ -21,43 +21,35 @@ public:
     /// @brief 设置开始压缩的电平阈值，单位为 dB。
     inline void set_threshold_db(float db)
     {
-        // 参数先更新，再请求下一次效果调用重算系数；两步不是原子事务。
-        threshold_db.store(db);
-        needs_update = true;
+        // 阈值仅用于每块增益计算，调整它不改变包络系数。
+        threshold_db = db;
     }
     /// @brief 设置超阈值部分的压缩比；调用方保证数值有效且非零。
-    inline void set_ratio(float vratio)
-    {
-        ratio.store(vratio);
-        needs_update = true;
-    }
+    inline void set_ratio(float vratio) { ratio = vratio; }
     /// @brief 设置上升包络的时间参数，单位毫秒，调用方保证为正值。
     inline void set_attack_ms(float ms)
     {
         // 时间变更影响包络系数，不能只写毫秒数而遗漏脏标记。
-        attack_ms.store(ms);
+        attack_ms    = ms;
         needs_update = true;
     }
     /// @brief 设置下降包络的时间参数，单位毫秒，调用方保证为正值。
     inline void set_release_ms(float ms)
     {
-        release_ms.store(ms);
+        release_ms   = ms;
         needs_update = true;
     }
     /// @brief 设置压缩后补偿增益，单位为 dB。
     inline void set_makeup_gain_db(float db)
     {
-        makeup_gain_db.store(db);
-        needs_update = true;
+        // dB 值在块边界取快照，补偿与包络的时间系数互相独立。
+        makeup_gain_db = db;
     }
 
 protected:
     /// @brief 从输入复制 PCM 后按每声道包络计算压缩增益。
-    /// @warning 每块处理；只访问已准备的声道状态，禁止扩容。
-    /// @warning
-    /// 阈值与比率每块读取，时间参数在更新分支读取，补偿增益逐样本读取； setter
-    /// 是写入者，音频处理是读取者，当前均使用默认顺序一致原子操作。
-    /// 参数原子不保护非原子脏标记；控制侧必须在音频处理停止后更新参数。
+    /// @warning 每块处理；只读取控制侧已冻结参数并更新预分配声道状态。
+    /// 处理期间不允许 setter 写入，不得为参数访问增加锁或原子操作。
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:
@@ -65,25 +57,16 @@ private:
     /// @warning 仅在控制侧停止处理后调用，增大声道数可能分配。
     void prepare_effect(const AudioDataFormat& format) override;
 
-    /// @brief 控制侧设置、处理侧读取的电平阈值。
-    /// @warning 原子字段不与 needs_update 形成事务，setter 不可并发执行。
-    std::atomic<float> threshold_db{ 0.0f };
-    /// @brief 超阈值压缩比，1 表示不压缩。
-    /// @warning setter
-    /// 写、处理侧每块读，默认顺序一致；小于一时可能增大超阈值部分。
-    std::atomic<float> ratio{ 1.0f };
-    /// @brief 包络上升时间，转换系数时使用当前采样率。
-    /// @warning setter
-    /// 写、处理侧更新系数时读，默认顺序一致；不与脏标记构成事务。
-    std::atomic<float> attack_ms{ 5.0f };
-    /// @brief 包络下降时间，与上升时间独立配置。
-    /// @warning setter
-    /// 写、处理侧更新系数时读，默认顺序一致；不与脏标记构成事务。
-    std::atomic<float> release_ms{ 100.0f };
-    /// @brief 压缩后的增益补偿，当前实现逐样本读取。
-    /// @warning setter
-    /// 写、处理侧逐样本及更新分支读，默认顺序一致；不能用于多参数同步。
-    std::atomic<float> makeup_gain_db{ 0.0f };
+    /// @brief 触发增益衰减的电平阈值，由控制侧设置、处理侧每块读取。
+    float threshold_db{ 0.0f };
+    /// @brief 超阈值压缩比，1 表示不压缩，小于一时可能增大超阈值部分。
+    float ratio{ 1.0f };
+    /// @brief 包络上升时间，毫秒；只在采样率或时间常数变化后重算系数。
+    float attack_ms{ 5.0f };
+    /// @brief 包络下降时间，毫秒；与上升时间独立配置。
+    float release_ms{ 100.0f };
+    /// @brief 压缩后补偿增益，单位为 dB，处理侧每块读取一次。
+    float makeup_gain_db{ 0.0f };
 
     /// @brief 跨块延续的各声道 dB 包络，新增元素从零 dB 开始而非静音电平。
     /// @warning 仅 prepare_effect 可调整尺寸，逐块处理只更新元素。
@@ -93,13 +76,11 @@ private:
     double attack_coeff = 0.0;
     /// @brief 电平不高于历史包络时使用的单样本平滑系数。
     double release_coeff = 0.0;
-    /// @brief 更新时计算的线性补偿缓存，当前逐样本实现并未使用此成员。
-    double makeup_gain_linear = 1.0;
-
     /// @brief 上一次计算系数使用的采样率，变化时需重算毫秒到采样的转换。
     double sample_rate{ static_cast<double>(
         ICEConfig::internal_format.samplerate) };
-    /// @brief 非原子更新标志，只允许处理停止时由控制接口置位。
+    /// @brief
+    /// 包络时间系数的更新标志，控制侧修改时间常数后置位，处理侧下块消费。
     bool needs_update = true;
 };
 }  // namespace ice
