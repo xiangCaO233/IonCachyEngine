@@ -80,6 +80,11 @@ protected:
                               const AudioBuffer& input) = 0;
 
 private:
+    /// @brief 在控制线程准备派生效果的格式相关状态。
+    /// @param format 已成功准备的输入格式。
+    /// @warning 基类构造时只调用基类实现；派生构造函数须准备自身默认状态。
+    virtual void prepare_effect(const AudioDataFormat& /*format*/) {}
+
     /// @brief 上游节点。
     std::shared_ptr<ice::IAudioNode> inputNode{ nullptr };
 

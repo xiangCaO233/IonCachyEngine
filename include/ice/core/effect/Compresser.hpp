@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <vector>
 
 #include "ice/config/config.hpp"
 #include "ice/core/effect/IEffectNode.hpp"
@@ -14,6 +15,9 @@ namespace ice
 class Compressor : public IEffectNode
 {
 public:
+    /// @brief 初始化默认格式对应的声道包络。
+    Compressor();
+
     /// @brief 设置开始压缩的电平阈值，单位为 dB。
     inline void set_threshold_db(float db)
     {
@@ -49,7 +53,7 @@ public:
 
 protected:
     /// @brief 从输入复制 PCM 后按每声道包络计算压缩增益。
-    /// @warning 每块处理；现有更新分支可能扩容，不能认定已经无分配。
+    /// @warning 每块处理；只访问已准备的声道状态，禁止扩容。
     /// @warning
     /// 阈值与比率每块读取，时间参数在更新分支读取，补偿增益逐样本读取； setter
     /// 是写入者，音频处理是读取者，当前均使用默认顺序一致原子操作。
@@ -57,6 +61,10 @@ protected:
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:
+    /// @brief 调整包络状态以匹配新格式，并保留仍存在的声道历史。
+    /// @warning 仅在控制侧停止处理后调用，增大声道数可能分配。
+    void prepare_effect(const AudioDataFormat& format) override;
+
     /// @brief 控制侧设置、处理侧读取的电平阈值。
     /// @warning 原子字段不与 needs_update 形成事务，setter 不可并发执行。
     std::atomic<float> threshold_db{ 0.0f };
@@ -78,8 +86,7 @@ private:
     std::atomic<float> makeup_gain_db{ 0.0f };
 
     /// @brief 跨块延续的各声道 dB 包络，新增元素从零 dB 开始而非静音电平。
-    /// @warning 更新分支可能
-    /// resize；声道数单独变化不会触发该分支，需保持准备格式稳定。
+    /// @warning 仅 prepare_effect 可调整尺寸，逐块处理只更新元素。
     std::vector<double> envelope_db;
 
     /// @brief 电平高于历史包络时使用的单样本平滑系数。
