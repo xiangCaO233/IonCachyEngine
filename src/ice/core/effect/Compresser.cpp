@@ -4,11 +4,24 @@
 namespace ice
 {
 
+/// @brief 基类构造已经准备输入格式，随后补齐默认声道包络。
+Compressor::Compressor()
+{
+    prepare_effect(get_inputbuffer().afmt);
+}
+
+/// @brief 保留仍在使用的声道包络，新增声道延用初始零 dB。
+void Compressor::prepare_effect(const AudioDataFormat& format)
+{
+    // 声道变化与采样率独立；在控制侧调整状态，处理阶段保持尺寸固定。
+    envelope_db.resize(format.channels, 0.0);
+}
+
 /// @brief 逐声道跟随包络并施加阈值以上的动态衰减。
-/// @warning 每音频块调用；当前系数更新可能扩容包络，尚非完整实时安全实现。
+/// @warning 每音频块调用；只更新预分配的包络状态，禁止扩容。
 /// 控制 setter 同时修改非原子脏标记，必须在处理停止时调整参数。
 /// @warning 处理读取控制侧原子参数，当前默认顺序一致；补偿值甚至逐样本读取。
-/// 本路径仍有可替代的历史原子及扩容，注释不构成实时约束已满足的证明。
+/// 补偿增益读取频率保留现有参数契约。
 void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
     // 仅检查帧数与声道数，不校验两块缓冲采样率；正常基类调用应已保证格式一致。
@@ -28,8 +41,7 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
     const size_t   num_frames   = output.num_frames();
     const uint16_t num_channels = fmt.channels;
 
-    // 低频条件分支仍位于音频调用栈，不能因为不常执行就视为控制线程路径。
-    // 系数更新会重设声道状态容量；实时预准备需要在独立修复中处理。
+    // 系数由时间常数和采样率决定；声道尺寸已在格式准备阶段同步。
     if ( needs_update || fmt.samplerate != sample_rate ) {
         sample_rate = fmt.samplerate;
 
@@ -41,10 +53,6 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 
         // 此缓存目前未用于逐样本乘法；实际增益仍在下方重新读取并转换。
         makeup_gain_linear = std::pow(10.0, makeup_gain_db.load() / 20.0);
-
-        // resize 保留已有元素，新声道从零 dB 开始，并非每次更新都重置所有包络。
-        // 此条件不包含声道变化，单独改变声道数而不置脏可能使状态数组尺寸不匹配。
-        envelope_db.resize(num_channels, 0.0);
 
         needs_update = false;
     }

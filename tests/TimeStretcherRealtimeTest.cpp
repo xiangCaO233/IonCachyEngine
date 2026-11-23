@@ -6,6 +6,7 @@
 /// 堆操作计数不测量回调耗时、锁竞争或调度抖动，零计数不能证明满足实时截止期限。
 /// 本文件定义全局分配替换入口，应独立链接，不能与另一组全局替换定义合并。
 #include "ice/core/IAudioNode.hpp"
+#include "ice/core/effect/Compresser.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 
@@ -1053,11 +1054,11 @@ int testRealtimeStartCompensation()
     // RStretcher 的 1.25 是输出时长倍率，不是 TimeStretcher 的输入消耗倍率。
     // 后一个 1.0 保持音高不变，使该用例聚焦起始延迟与偏移写入。
     ice::RStretcher  stretcher(FORMAT,
-                               ice::TimeStretchQuality::Finer,
-                               BLOCK_FRAMES,
-                               BLOCK_FRAMES,
-                               1.25,
-                               1.0);
+                              ice::TimeStretchQuality::Finer,
+                              BLOCK_FRAMES,
+                              BLOCK_FRAMES,
+                              1.25,
+                              1.0);
     ice::AudioBuffer input(FORMAT, BLOCK_FRAMES);
     ice::AudioBuffer output(FORMAT, BLOCK_FRAMES);
     input.clear();
@@ -1888,6 +1889,65 @@ void operator delete[](void* memory, std::size_t) noexcept
     std::free(memory);
 }
 
+/// @brief 验证同采样率重新准备时，声道状态在控制侧同步且处理阶段无分配。
+/// @details 通过 IEffectNode 接口重配，覆盖通用音频图持有基类的调用方式。
+/// @return 非零代表实时分配或声道输出断言失败。
+/// 故意使用等长数据，让回调无法借帧数变化碰巧进入其他准备路径。
+/// 所有效果状态只在测试线程创建和切换，避免把并发 setter 纳入本回归。
+int testCompressorChannelReprepare()
+{
+    ice::Compressor compressor;
+    compressor.set_inputnode(std::make_shared<SignalNode>());
+    compressor.set_ratio(4.0F);
+    compressor.set_threshold_db(-24.0F);
+    ice::IEffectNode& effect = compressor;
+    // 基准保持单声道以观测第一个声道的包络历史；两路上游生成同相位测试信号。
+    // 此比较不依赖平台对立体声以外声道的映射，压缩器分别处理各声道。
+    // 两个节点的阈值保持一致，使保留状态与实时无分配可以分别失败。
+    ice::Compressor reference;
+    reference.set_inputnode(std::make_shared<SignalNode>());
+    reference.set_ratio(4.0F);
+    reference.set_threshold_db(-24.0F);
+    const ice::AudioDataFormat referenceFormat{ 1U, 48000U };
+    reference.prepare(referenceFormat, 8U);
+    ice::AudioBuffer referenceOutput(referenceFormat, 8U);
+
+    int failures = 0;
+    // 帧数和采样率保持不变，确保只由声道数驱动准备状态更新。
+    for ( const std::uint16_t channels : { 2, 6, 1, 6 } ) {
+        const ice::AudioDataFormat format{ channels, 48000U };
+        ice::AudioBuffer           output(format, 8U);
+        // 第一次准备让默认声道状态生效，后续扩展和缩减都通过同一个基类入口。
+        // 准备阶段允许分配，计数窗口必须等控制侧完成后再开始。
+        effect.prepare(format, 8U);
+        beginHeapTracking();
+        effect.process(output);
+        // 关闭计数后再做断言和日志，避免把测试框架开销计入回调分配。
+        // 有限非零的声道输出也可以识别通过静音躲避状态越界的回归。
+        endHeapTracking();
+        failures += expectNoHeapAllocation("compressor reprepare callback");
+        // 同样的第一声道数据应经过同一包络；重建所有历史会导致衰减不同。
+        // 基准在开始前只调用一次 prepare，不可能因目标布局切换同步重置。
+        // 逐样本比较比单点检查更严格，因为某个样本可能尚未触发压缩。
+        // 基准不进入已结束的实时计数窗口，避免将它的处理混入目标线程统计。
+        reference.process(referenceOutput);
+        for ( std::size_t i = 0; i < output.num_frames(); ++i ) {
+            failures +=
+                expectTrue(std::abs(output.raw_ptrs()[0][i] -
+                                    referenceOutput.raw_ptrs()[0][i]) < 1e-6F,
+                           "compressor retains existing channel envelope");
+        }
+        for ( std::uint16_t channel = 0; channel < channels; ++channel ) {
+            // 首样本在各测试块都非零，静音拒绝或无效包络不能通过。
+            const float sample = output.raw_ptrs()[channel][0];
+            failures +=
+                expectTrue(std::isfinite(sample) && sample != 0.0F,
+                           "compressor processes every prepared channel");
+        }
+    }
+    return failures;
+}
+
 /// @brief 串行执行实时处理回归用例并汇总退出状态。
 /// @return 全部断言通过返回零，否则返回一，供 CTest 判断成功与失败。
 /// @details 失败数不会作为退出码直接返回，防止多个失败在进程退出码中截断为零。
@@ -1897,6 +1957,7 @@ void operator delete[](void* memory, std::size_t) noexcept
 int main()
 {
     int failures = 0;
+    failures += testCompressorChannelReprepare();
     failures += testRealtimeStateAndReset();
     // 邮箱 final 与 provider Final
     // 由不同用例触发，不可将其中一条入口覆盖替代另一条。
