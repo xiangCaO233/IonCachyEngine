@@ -18,10 +18,8 @@ void Compressor::prepare_effect(const AudioDataFormat& format)
 }
 
 /// @brief 逐声道跟随包络并施加阈值以上的动态衰减。
-/// @warning 每音频块调用；只更新预分配的包络状态，禁止扩容。
-/// 控制 setter 同时修改非原子脏标记，必须在处理停止时调整参数。
-/// @warning 处理读取控制侧原子参数，当前默认顺序一致；补偿值甚至逐样本读取。
-/// 补偿增益读取频率保留现有参数契约。
+/// @warning 每音频块调用，只更新预分配的包络状态，禁止扩容和同步操作。
+/// 参数在控制侧停止处理时修改，时间常数或采样率变化后只在块开始重算系数。
 void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
     // 仅检查帧数与声道数，不校验两块缓冲采样率；正常基类调用应已保证格式一致。
@@ -46,21 +44,17 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
         sample_rate = fmt.samplerate;
 
         // 将毫秒时间常数换成单样本指数衰减；时间为正且采样率有效才能得到稳定系数。
-        attack_coeff =
-            std::exp(-1.0 / (attack_ms.load() * sample_rate * 0.001));
-        release_coeff =
-            std::exp(-1.0 / (release_ms.load() * sample_rate * 0.001));
-
-        // 此缓存目前未用于逐样本乘法；实际增益仍在下方重新读取并转换。
-        makeup_gain_linear = std::pow(10.0, makeup_gain_db.load() / 20.0);
+        attack_coeff  = std::exp(-1.0 / (attack_ms * sample_rate * 0.001));
+        release_coeff = std::exp(-1.0 / (release_ms * sample_rate * 0.001));
 
         needs_update = false;
     }
 
-    // 阈值和压缩比每块各取一次快照；补偿增益仍由下方逐样本读取。
-    // 原子参数本身不能使非原子 needs_update 变为可并发访问。
-    const float thresh_db = threshold_db.load();
-    const float ratio_val = ratio.load();
+    // 整块使用同一组阈值、压缩系数和补偿增益；逐样本只计算信号相关部分。
+    // 比率除法与输入无关，移到块边界仍保持原增益公式及运算精度。
+    const double thresh_db       = threshold_db;
+    const double reduction_ratio = 1.0 - 1.0 / ratio;
+    const double makeup_db       = makeup_gain_db;
 
     // 热路径:逐样本处理
     for ( uint16_t ch = 0; ch < num_channels; ++ch ) {
@@ -90,12 +84,12 @@ void Compressor::apply_effect(AudioBuffer& output, const AudioBuffer& input)
                 double overshoot_db = envelope_db[ch] - thresh_db;
                 // 根据压缩比，计算需要压掉多少dB
                 // 例如 4:1 只保留超阈值部分的四分之一，而非缩小整个输入。
-                gain_reduction_db = overshoot_db * (1.0 - 1.0 / ratio_val);
+                gain_reduction_db = overshoot_db * reduction_ratio;
             }
 
             // 增益应用:将计算出的衰减和补充增益，一起应用到原始样本上
             // 总增益 = 补充增益 - 计算出的衰减
-            double total_gain_db = makeup_gain_db.load() - gain_reduction_db;
+            double total_gain_db = makeup_db - gain_reduction_db;
             // 将总增益从dB转换为线性倍率
             double total_gain_linear = std::pow(10.0, total_gain_db / 20.0);
 

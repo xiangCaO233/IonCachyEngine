@@ -1948,6 +1948,57 @@ int testCompressorChannelReprepare()
     return failures;
 }
 
+/// @brief 验证停机后修改补偿值可在下一处理块生效。
+/// @details 两个独立节点的输入相位和压缩参数完全相同。只修改其中一份补偿，
+/// 因而可以用另一节点的输出区分补偿变化与包络随时间变化。
+/// @return 分配计数或增益偏差断言的失败总数。
+/// 以双声道验证补偿应用范围，避免实现只改首声道也能通过。
+/// 基准压缩器保持原始参数，不能以单块前后变化量替代独立同相位基准。
+int testCompressorGainChangeBetweenBlocks()
+{
+    ice::Compressor            neutral;
+    ice::Compressor            boosted;
+    const ice::AudioDataFormat format{ 2U, 48000U };
+    // 分配与参数设置只发生在启动处理前，测试不会让 setter 参与实时计数。
+    for ( auto* node : { &neutral, &boosted } ) {
+        node->set_inputnode(std::make_shared<SignalNode>());
+        node->set_threshold_db(-24.0F);
+        node->set_ratio(4.0F);
+        node->prepare(format, 16U);
+    }
+    ice::AudioBuffer reference(format, 16U);
+    ice::AudioBuffer actual(format, 16U);
+    // 先推进两条包络到相同的非初始状态，覆盖真实已开始播放后的停机重配。
+    // 如果重配误重置包络，正式比较时两路输出的差异不再只来自补偿倍率。
+    neutral.process(reference);
+    boosted.process(actual);
+
+    // 在两块之间模拟控制侧停机修改；同一输出块必须采用完整的新增益。
+    // 保留内部包络，从而同时检验调整补偿不会重置阈值衰减历史。
+    boosted.set_makeup_gain_db(6.0F);
+    neutral.process(reference);
+    beginHeapTracking();
+    boosted.process(actual);
+    endHeapTracking();
+
+    int failures =
+        expectNoHeapAllocation("compressor parameter change callback");
+    // 使用协议约定的 dB 到倍率换算作为基准，不借用被测节点的内部系数。
+    // 比较放在计数窗口外，避免误把断言和日志开销归给回调。
+    const double multiplier = std::pow(10.0, 6.0 / 20.0);
+    for ( std::uint16_t channel = 0; channel < format.channels; ++channel ) {
+        for ( std::size_t frame = 0; frame < actual.num_frames(); ++frame ) {
+            // 逐样本比较增益比，避免恰好取零输入时无法识别补偿没有更新。
+            const auto expected =
+                reference.raw_ptrs()[channel][frame] * multiplier;
+            failures += expectTrue(
+                std::abs(expected - actual.raw_ptrs()[channel][frame]) < 1e-6,
+                "compressor applies updated makeup gain consistently");
+        }
+    }
+    return failures;
+}
+
 /// @brief 串行执行实时处理回归用例并汇总退出状态。
 /// @return 全部断言通过返回零，否则返回一，供 CTest 判断成功与失败。
 /// @details 失败数不会作为退出码直接返回，防止多个失败在进程退出码中截断为零。
@@ -1958,6 +2009,7 @@ int main()
 {
     int failures = 0;
     failures += testCompressorChannelReprepare();
+    failures += testCompressorGainChangeBetweenBlocks();
     failures += testRealtimeStateAndReset();
     // 邮箱 final 与 provider Final
     // 由不同用例触发，不可将其中一条入口覆盖替代另一条。
