@@ -1,77 +1,65 @@
 #pragma once
 
-#include <atomic>
-#include <cmath>
 #include <ice/core/effect/IEffectNode.hpp>
 #include <ice/core/effect/rubberband/RStretcher.hpp>
 
+#include <cstddef>
+#include <memory>
+
 namespace ice
 {
-/// @brief 历史单独变调节点，保持时间倍率不变。
-/// @details 按设备块等量请求输入，不按音高倍率缩放上游请求帧数。
-/// 同一节点的缓冲与后端不能由多个音频线程同时处理。
+/// @brief 独立调整音高，保持时间倍率及上游请求帧数不变。
+/// @details 处理容量、格式限制和输入复用由 IEffectNode 统一执行。
+/// 单位倍率附近保留累加直通；非单位倍率由控制侧准备的后端写满输出。
 class PitchAlter : public IEffectNode
 {
 public:
-    /**
-     * @brief 设置音高变化,直接设置倍率
-     * @param scale 音高倍率
-     * @pre 倍率必须有限且大于零，本接口不验证对数定义域。
-     * @warning 控制侧默认顺序一致地写两字段，不是成对原子发布；多个 setter
-     * 应串行。
-     */
-    inline void set_pitch_scale(double scale)
-    {
-        // 倍率必须为正，半音换算使用以 2 为底的对数。
-        pitch_scale.store(scale);
-        pitch_semitones.store(12.0 * std::log2(scale));
-    }
+    /// @brief 采用基类已准备的默认音频格式和设备块长度。
+    PitchAlter();
 
-    /**
-     * @brief 设置音高变化,以半音（semitones）为单位
-     * 例如 +12.0f 是升高一个八度，-12.0f 是降低一个八度。
-     * @param semitones 音高变化
-     * @pre 半音必须有限，换算后的倍率须保持有限且大于零；未做溢出或下溢保护。
-     */
-    inline void set_pitch_shift(double semitones)
-    {
-        // 每十二个半音对应倍率翻倍；两次原子写入不构成一致快照。
-        pitch_semitones.store(semitones);
-        pitch_scale.store(std::pow(2.0, pitch_semitones.load() / 12.0));
-    }
+    /// @brief 设置音高倍率并预热相应配置；非法倍率保持原配置。
+    /// @warning 仅可在处理停止时调用，切换倍率可重建后端并丢弃旧处理历史。
+    void set_pitch_scale(double scale);
 
-    /// @brief 查询最近保存的半音表示，不代表后端已经消费该参数。
-    /// @return 独立原子读取的半音值，不能与 scale 组合成一致快照。
-    inline double semitones() const { return pitch_semitones.load(); }
+    /// @brief 用半音设置音高，十二半音对应倍率翻倍。
+    /// @warning 与 set_pitch_scale 一样，只允许在处理停止时重配。
+    void set_pitch_shift(double semitones);
 
-    /// @brief 查询最近保存的倍率表示，不代表后端已经应用它。
-    inline double scale() const { return pitch_scale.load(); }
+    /// @brief 查询已配置的半音数；禁止与控制侧重配并发。
+    [[nodiscard]] double semitones() const { return m_pitchSemitones; }
 
-    /// @brief 拉取上游并按音高倍率处理音频。
-    /// @warning
-    /// 每块路径仍存在容量调整，需要后续实时化；禁止增加共享所有权复制。
-    /// @warning process 每块读取控制侧倍率，apply_effect
-    /// 可能再次读取，当前默认顺序一致。
-    /// 上游由基类持有，处理仅借用观察指针；运行期间禁止替换或释放上游。
+    /// @brief 查询已配置的倍率；禁止与控制侧重配并发。
+    [[nodiscard]] double scale() const { return m_pitchScale; }
+
+    /// @brief 通过基类检查已连接的上游，未连接时保留输出。
+    /// @warning 音频热路径，每块调用，不持锁、不分配，不复制上游所有权。
     void process(AudioBuffer& buffer) override;
 
 protected:
-    /// @brief 惰性建立并调用后端变调器。
-    /// @warning 首次处理可分配和预热，不能在严格实时回调中首次触发。
-    /// @warning 处理侧向后端写入控制侧倍率的原子快照，不与另一次 process
-    /// 读取成事务。
+    /// @brief 对已验证的输入执行累加直通或固定倍率的变调。
+    /// @warning 音频热路径，每次处理一块；禁止调整格式、容量或倍率。
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 
 private:
-    /// @brief 控制侧写入的半音表示，音频处理实际消费倍率字段。
-    /// @warning setter
-    /// 与查询接口默认顺序一致地读写；只保护单字段，无法保护换算过程。
-    std::atomic<double> pitch_semitones{ 0. };
-    /// @brief 控制侧写、音频线程按块读的倍率，不与半音字段形成事务。
-    /// @warning
-    /// 每块可能读取两次，默认顺序一致；原子不保护后端和复用缓冲的并发访问。
-    std::atomic<double> pitch_scale{ 1. };
-    /// @brief 首次效果处理时建立的后端，生命周期由节点独占。
-    std::unique_ptr<RStretcher> stretcher;
+    /// @brief 从基类成功准备的输入块记录配置，重新建立变调器。
+    /// @warning 控制侧可能分配；禁止与 process 并发。
+    void prepare_effect(const AudioDataFormat& format) override;
+
+    /// @brief 应用一组等价的倍率和半音参数，倍率不变时保留算法历史。
+    void updatePitch(double scale, double semitones);
+
+    /// @brief 按最新成功准备的块尺寸及最终倍率构造和预热后端。
+    void prepareStretcher();
+
+    /// @brief 控制侧最近成功准备的格式，用于停机改倍率时复用。
+    AudioDataFormat m_preparedFormat{};
+    /// @brief 控制侧准备的最大输入与输出帧数，不随短块变化。
+    std::size_t m_preparedFrames{ 0U };
+    /// @brief 控制侧配置的半音表示。
+    double m_pitchSemitones{ 0.0 };
+    /// @brief 控制侧配置的音高倍率。
+    double m_pitchScale{ 1.0 };
+    /// @brief 与准备格式及倍率匹配的预热后端；空表示直通或未经有效准备。
+    std::unique_ptr<RStretcher> m_stretcher;
 };
 }  // namespace ice

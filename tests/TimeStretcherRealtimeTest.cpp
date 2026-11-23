@@ -7,6 +7,7 @@
 /// 本文件定义全局分配替换入口，应独立链接，不能与另一组全局替换定义合并。
 #include "ice/core/IAudioNode.hpp"
 #include "ice/core/effect/Compresser.hpp"
+#include "ice/core/effect/PitchAlter.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
 #include "ice/manage/AudioBuffer.hpp"
 
@@ -1999,6 +2000,130 @@ int testCompressorGainChangeBetweenBlocks()
     return failures;
 }
 
+/// @brief 验证基类容量约束、短块复用和停机后重配。
+/// @details 二次准备改用不同采样率和声道数，迫使后端重新建立。
+/// 回调窗口独立统计 C/C++ 堆操作，所有夹具和输出容量在窗口外准备。
+/// 观察上游请求帧数，确认音高处理不会额外消耗输入。
+/// 已知非零输出用于区分正常覆盖、保留旧数据和静音拒绝。
+/// @return 静音、输入帧数或实时分配断言的失败数。
+int testPitchAlterPreparedCapacity()
+{
+    // 同一节点跨多个格式复用，独立构造无法暴露修改后继承旧历史的问题。
+    ice::PitchAlter pitch;
+    const auto      source = std::make_shared<SignalNode>();
+    pitch.set_inputnode(source);
+    // 调用方通常持有基类节点，测试不借用派生内部缓冲或后端。
+    ice::IEffectNode&          effect = pitch;
+    const ice::AudioDataFormat stereo{ 2U, 48000U };
+    constexpr std::size_t      MAX_FRAMES = 256U;
+    // 初始调用停在控制侧，基类约定最大逻辑帧数而非实际内存容量。
+    effect.prepare(stereo, MAX_FRAMES);
+    // 多准备一帧，让超限用例由 PitchAlter 拒绝而非由输出缓冲拒绝。
+    ice::AudioBuffer output(stereo, MAX_FRAMES + 1U);
+    // 累计不同块的失败，帮助区分容量、写入语义和堆操作问题。
+    int failures = 0;
+    for ( std::size_t frames :
+          { MAX_FRAMES, std::size_t{ 31U }, MAX_FRAMES, MAX_FRAMES + 1U } ) {
+        // 短块再恢复满块，覆盖误把活动长度当成实际容量的实现。
+        output.set_active_frames(frames);
+        // 每个声道先置基准值，旁路输出必须叠加当前输入而不是沿用短块残留。
+        for ( auto channel = 0U; channel < stereo.channels; ++channel )
+            std::fill_n(output.raw_ptrs()[channel], frames, 1.0F);
+        // 以请求计数验证拒绝块不会推进音频源，单凭静音无法分辨。
+        const auto inputBefore = source->processedFrames();
+        beginHeapTracking();
+        effect.process(output);
+        // 在统计结束后再运行断言和日志。
+        endHeapTracking();
+        // 用非零输出初值观察累加语义，上游幅度最多为 0.5。
+        // 无效块必须主动覆盖非零初值，不能因为旧缓冲本来为零而通过。
+        failures += expectNoHeapAllocation("pitch bypass capacity callback");
+        // 按本次活动长度拉取，若使用最大容量则短块计数会偏大。
+        if ( frames <= MAX_FRAMES ) {
+            failures +=
+                expectTrue(source->processedFrames() == inputBefore + frames &&
+                               output.raw_ptrs()[0][0] >= 0.5F,
+                           "pitch adds prepared bypass input");
+        } else {
+            failures += expectTrue(
+                source->processedFrames() == inputBefore && isSilent(output),
+                "pitch rejects oversized block without pulling");
+        }
+    }
+
+    // 变调的首次预热由控制调用完成，计数只包含第一块及后续真实处理。
+    // 两轮维持相同音高，任何只在倍率变化时重建后端的实现都会在第二轮静音。
+    for ( const auto format : { stereo, ice::AudioDataFormat{ 1U, 44100U } } ) {
+        // 使用公开 prepare 进行重配，测试不直接清理任何旧后端对象。
+        effect.prepare(format, MAX_FRAMES);
+        // 首轮停机改倍率，第二轮相同倍率不能掩盖因格式变化触发的重建。
+        pitch.set_pitch_shift(5.0);
+        // 每轮独立输出存储，避免把旧格式的平面误作此次准备成功。
+        ice::AudioBuffer processed(format, MAX_FRAMES);
+        const auto       inputBefore = source->processedFrames();
+        // 准备好并不意味着首次就有样本，必须覆盖多块才可观察输出。
+        bool producedAudio = false;
+        for ( unsigned block = 0; block < 40U; ++block ) {
+            // 短块出现在稳定流程中间，允许检测回调在再次变长时重新分配。
+            const auto frames = block == 7U ? std::size_t{ 59U } : MAX_FRAMES;
+            // 逻辑长度独立于容量，短块恢复时不能再进入预热或扩容。
+            processed.set_active_frames(frames);
+            // 加法会保留这个大幅度哨兵，真正进入变调时应覆盖它。
+            if ( block == 0 ) processed.raw_ptrs()[0][0] = 32.0F;
+            beginHeapTracking();
+            effect.process(processed);
+            endHeapTracking();
+            failures +=
+                // 检查所有块，包含第一次进入变调器和重新开始使用满块。
+                expectNoHeapAllocation("prepared pitch backend callback");
+            if ( block == 0 )
+                failures +=
+                    expectTrue(std::abs(processed.raw_ptrs()[0][0]) < 4.0F,
+                               "pitch backend overwrites the bypass sentinel");
+            // 允许后端初始延迟，但不能让有信号的完整测试段始终输出静音。
+            producedAudio |= !isSilent(processed);
+        }
+        failures += expectTrue(
+            // 计数按帧而非样本，声道变化不能掩盖错误的输入跨度。
+            source->processedFrames() == inputBefore + 39U * MAX_FRAMES + 59U &&
+                producedAudio,
+            "pitch produces nonzero audio after format prepare");
+    }
+    // 最后换回旧格式的输出，应在开始拉取前拒绝，不使用旧立体声后端。
+    const auto inputBefore = source->processedFrames();
+    // 保留有效物理缓冲，不能靠零长度输出令格式拒绝用例通过。
+    output.set_active_frames(MAX_FRAMES);
+    beginHeapTracking();
+    effect.process(output);
+    endHeapTracking();
+    failures += expectNoHeapAllocation(
+        "pitch rejects obsolete format without allocation");
+    failures +=
+        expectTrue(source->processedFrames() == inputBefore && isSilent(output),
+                   "pitch rejects obsolete stereo format");
+
+    // 可选混音支路断开后，仍要保留由其它支路写入的样本。
+    // 使用当前准备格式，单独验证断开语义而非依赖错误格式短路。
+    const ice::AudioDataFormat mono{ 1U, 44100U };
+    ice::AudioBuffer           mixed(mono, MAX_FRAMES);
+    std::fill_n(mixed.raw_ptrs()[0], MAX_FRAMES, 1.0F);
+    // 断开由控制线程执行，其所有权变更不能计入回调的堆事件。
+    pitch.set_inputnode({});
+    beginHeapTracking();
+    effect.process(mixed);
+    endHeapTracking();
+    // 已断开的源不再被消费；整个输出块保持相同内容而非只保留第一帧。
+    // 零堆操作与跨帧数据保持分别断言，防止实现复制混音缓冲后再恢复。
+    failures += expectNoHeapAllocation("pitch disconnected callback");
+    return failures +
+           expectTrue(
+               source->processedFrames() == inputBefore &&
+                   std::all_of(mixed.raw_ptrs()[0],
+                               mixed.raw_ptrs()[0] + MAX_FRAMES,
+                               [](float sample) { return sample == 1.0F; }),
+               "disconnected pitch preserves the mix");
+}
+
 /// @brief 串行执行实时处理回归用例并汇总退出状态。
 /// @return 全部断言通过返回零，否则返回一，供 CTest 判断成功与失败。
 /// @details 失败数不会作为退出码直接返回，防止多个失败在进程退出码中截断为零。
@@ -2008,6 +2133,7 @@ int testCompressorGainChangeBetweenBlocks()
 int main()
 {
     int failures = 0;
+    failures += testPitchAlterPreparedCapacity();
     failures += testCompressorChannelReprepare();
     failures += testCompressorGainChangeBetweenBlocks();
     failures += testRealtimeStateAndReset();
