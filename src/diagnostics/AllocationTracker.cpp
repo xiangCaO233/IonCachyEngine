@@ -1,32 +1,41 @@
+// 全局分配替换会改变整个进程的行为，由独立诊断目标显式启用。
+#if !defined(ICE_ENABLE_ALLOCATION_DIAGNOSTICS)
+#    error \
+        "AllocationTracker.cpp requires the standalone ICE allocation diagnostics target"
+#endif
+
 #include <ice/tool/AllocationTracker.hpp>
+
+#include <fmt/format.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
-#include <iostream>
 #include <new>
 
 /// @brief 测试进程中普通全局 new 的调用次数。
 /// @warning 多线程写、诊断代码读；relaxed 只累计次数，不发布分配对象。
 /// 替换定义仅链接到显式启用诊断的可执行文件，不能编入引擎库。
 /// 没有线程局部开关，链接到该入口的准备、后台任务及诊断分配都会累计。
-std::atomic<size_t> g_alloc_count = 0;
+std::atomic<std::size_t> g_alloc_count = 0;
 /// @brief 被诊断实现覆盖的 delete 重载调用次数，不等价于释放成功的对象数。
 /// @warning 多线程释放侧以 relaxed
 /// 累加，诊断侧读取；仅作统计，不同步被释放对象的访问。
-std::atomic<size_t> g_dealloc_count = 0;
+std::atomic<std::size_t> g_dealloc_count = 0;
 
 /// @brief 记录普通分配入口，再转发给 C 堆。
 /// @param size 请求字节数，零字节按一个字节申请以满足普通分配契约。
-/// @return 成功分配的存储；原有失败分支抛出 bad_alloc，尚非返回值式错误接口。
+/// @return 成功时返回满足标准对齐要求的非空存储。
+/// @exception std::bad_alloc 诊断目标内的可替换抛出型 operator new
+/// 的标准失败行为。
 /// @warning 所有进入此入口的线程均执行 relaxed
 /// 原子累加，计数器竞争会影响被测时延。 对齐、数组及第三方直接调用 C
 /// 堆的行为不应假定都由此入口覆盖。
-[[nodiscard]] void* operator new(size_t size)
+[[nodiscard]] void* operator new(std::size_t size)
 {
     // 失败前也会计数，因此统计的是尝试次数，不是成功分配次数。
     g_alloc_count.fetch_add(1, std::memory_order_relaxed);
-    // 沿用普通 new 的历史失败路径；这个测试替换入口不提供错误恢复。
+    // 抛出型替换遵循 [new.delete.single] 的失败契约，仅对诊断可执行文件生效。
     // malloc(0) 允许返回空指针，但零尺寸的普通分配请求不能因此被误判失败。
     void* p = std::malloc(size == 0 ? 1 : size);
     if ( !p ) throw std::bad_alloc();
@@ -48,7 +57,7 @@ void operator delete(void* p) noexcept
 /// @param size 编译器提供的大小，本实现不校验也不累计它。
 /// @warning 释放侧以 relaxed 累加，直接转发 free，避免再调用另一 delete
 /// 重载重复计数。
-void operator delete(void* p, size_t size) noexcept
+void operator delete(void* p, std::size_t size) noexcept
 {
     // 此统计不追踪分配字节数，大小参数也不能用于推导当前存活对象数。
     (void)size;
@@ -73,18 +82,19 @@ void reset_allocation_counters()
 /// @warning 流输出可能加锁或分配，禁止在实时音频路径调用。
 /// @details
 /// 输出操作自身也可能影响全局计数，结果只供粗粒度诊断，不是无扰动测量。
-/// 这里保留历史 cout 入口，尚未迁移项目日志规范；不要作为新增诊断代码模板。
+/// 输出沿用独立演示程序的 fmt 格式，统计值先从原子计数器取出。
 void print_allocation_stats()
 {
     // 两次独立原子读取不构成事务快照；应先停止任务再打印最终结果。
     // 在任何流操作前保存两个值，避免输出自身的分配或释放污染本次报告。
     // relaxed 读取只观测计数，工作线程停止仍须依靠调用方的生命周期同步。
-    const size_t allocationCount =
+    const std::size_t allocationCount =
         g_alloc_count.load(std::memory_order_relaxed);
-    const size_t deallocationCount =
+    const std::size_t deallocationCount =
         g_dealloc_count.load(std::memory_order_relaxed);
-    std::cout << "[分配统计] New 调用数: " << allocationCount
-              << ", delete 调用数: " << deallocationCount << "\n";
+    fmt::print("[分配统计] New 调用数: {}, delete 调用数: {}\n",
+               allocationCount,
+               deallocationCount);
 }
 
 }  // namespace ice
