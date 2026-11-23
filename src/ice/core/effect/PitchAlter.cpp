@@ -1,10 +1,8 @@
 #include <ice/core/effect/PitchAlter.hpp>
 
-#include <ice/core/IAudioNode.hpp>
 #include <ice/core/effect/rubberband/RStretcher.hpp>
 #include <ice/manage/AudioBuffer.hpp>
 
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -13,80 +11,124 @@ namespace ice
 {
 namespace
 {
-/// @brief 检查上游缓冲是否仍满足当前输出块的格式、长度及平面要求。
-/// @warning 每块调用两次，仅遍历声道表，不分配或增加共享引用计数。
-/// 非空悬空指针无法在此识别，上游仍须遵守存储生命周期约束。
-bool hasMatchingInput(const AudioBuffer& input, const AudioBuffer& output)
+/// @brief 单位倍率附近保留历史直通阈值。
+constexpr double UNITY_PITCH_TOLERANCE = 0.001F;
+
+/// @brief 确认上游处理后仍提供有效的声道平面。
+/// @warning 每音频块最多调用一次，只遍历声道指针，不分配。
+bool hasReadablePlanes(const AudioBuffer& input)
 {
-    if ( input.afmt != output.afmt ||
-         input.num_frames() != output.num_frames() ||
-         input.frame_capacity() < output.num_frames() )
-        return false;
-    // 空块无需访问平面，允许默认空缓冲没有地址表。
-    if ( output.num_frames() == 0 ) return true;
+    // 空块不会读取 PCM，允许没有平面表。
+    if ( input.num_frames() == 0 ) return true;
+    // 帧容量和声道地址可能由自定义上游更换，分别验证。
     const auto planes = input.raw_ptrs();
-    if ( !planes ) return false;
-    for ( uint16_t ch = 0; ch < input.num_channels(); ++ch ) {
-        if ( !planes[ch] ) return false;
+    if ( !planes || input.frame_capacity() < input.num_frames() ) return false;
+    // 自定义上游可能更换平面地址，不能将空声道交给累加或变调算法。
+    for ( std::uint16_t channel = 0; channel < input.num_channels();
+          ++channel ) {
+        if ( !planes[channel] ) return false;
     }
     return true;
 }
 }  // namespace
 
-/// @brief 拉取上游，单位倍率附近直通，否则交给变调器。
-/// @warning 每块调用；历史实现仍会 resize，尚未实时化。
-/// 上游配置只在处理停止时修改；节点成员持有所有权，本次调用仅借用。
-/// @warning
-/// 倍率由控制侧写、处理侧以默认顺序一致原子读取；不能据此认定整块参数一致。
-void PitchAlter::process(AudioBuffer& buffer)
+/// @brief 继承基类默认准备状态，保持默认构造后的直通用法。
+PitchAlter::PitchAlter()
 {
-    // 覆盖基类 process 后自行校验上游块，容量准备仍沿用历史动态路径。
-    AudioBuffer& input_buf = get_inputbuffer();
-    // 与基类固定容量路径不同，这里会按本次块长调整容量。
-    if ( !input_buf.resize(buffer.afmt, buffer.num_frames()) ||
-         !hasMatchingInput(input_buf, buffer) ) {
-        // 准备失败不能继续按旧块长拉取上游，否则会推进无法交付的音频位置。
-        // 用静音覆盖当前输出，避免调用方误用未更新的旧样本。
-        buffer.clear();
+    // 基类构造期间不会分派到派生准备入口，派生构造完成后记录默认配置。
+    // 默认倍率直通，只记录最大逻辑块，不创建不需要的后端。
+    prepare_effect(get_inputbuffer().afmt);
+}
+
+/// @brief 接受有限正倍率，保存等价的半音数。
+void PitchAlter::set_pitch_scale(double scale)
+{
+    if ( !std::isfinite(scale) || scale <= 0.0 ) return;
+    // 对数换算在控制侧执行，音频回调只消费准备好的结果。
+    updatePitch(scale, 12.0 * std::log2(scale));
+}
+
+/// @brief 接受可表达为有限正倍率的半音数。
+void PitchAlter::set_pitch_shift(double semitones)
+{
+    // 半音接口保留输入的精确表示，而后端只需要换算后的倍率。
+    const double scale = std::exp2(semitones / 12.0);
+    // 拒绝指数溢出与下溢，避免把无效配置发布给新后端。
+    if ( !std::isfinite(scale) || scale <= 0.0 ) return;
+    updatePitch(scale, semitones);
+}
+
+/// @brief 在停止处理时提交同一组参数。
+void PitchAlter::updatePitch(double scale, double semitones)
+{
+    // 更新半音表示不要求重建输出结果完全相同的配置。
+    m_pitchSemitones = semitones;
+    // 设置等价倍率时无需重新预热，也不会清除已准备的历史。
+    if ( m_pitchScale == scale ) return;
+    // 先完成整个控制侧配置，再构造会随配置发布给回调的后端。
+    m_pitchScale = scale;
+    prepareStretcher();
+}
+
+/// @brief 读取由基类刚准备的满容量逻辑块。
+void PitchAlter::prepare_effect(const AudioDataFormat& format)
+{
+    // 重新准备即使倍率不变，也不能沿用与旧声道布局关联的历史。
+    m_preparedFormat = format;
+    // 此钩子只在控制侧进入，prepare 刚把逻辑帧数设为声明上限。
+    // 不能从回调后的短块读取此值，也不能把对齐分配的额外帧数算作上限。
+    m_preparedFrames = get_inputbuffer().num_frames();
+    prepareStretcher();
+}
+
+/// @brief 建立不需要在处理过程中调整倍率的固定后端。
+void PitchAlter::prepareStretcher()
+{
+    // 格式无效时不能创建算法；单位倍率也无需保留算法状态。
+    if ( m_preparedFrames == 0 || m_preparedFormat.channels == 0 ||
+         m_preparedFormat.samplerate == 0 ||
+         std::abs(m_pitchScale - 1.0) < UNITY_PITCH_TOLERANCE ) {
+        // 直通与无效准备都不需要算法历史；后端只在控制侧释放。
+        m_stretcher.reset();
         return;
     }
-    input_buf.clear();
-    // 空上游不改写输出；调用方不能将本函数视为总会清零的音频源。
-    if ( IAudioNode* input = get_inputnode_observer() ) {
-        // 基类成员在整个处理期间保持上游存活，不为每个块增减共享引用计数。
-        input->process(input_buf);
-        // 上游不得改变块契约，先拒绝异常状态，再进入累加或后端样本读取。
-        if ( !hasMatchingInput(input_buf, buffer) ) {
-            buffer.clear();
-            return;
-        }
-        if ( std::abs(pitch_scale.load() - 1.) < 0.001f ) {
-            // 近似单位倍率选择旁路，不是只在精确等于一时绕过算法。
-            // 此分支不清除已有后端状态，离开旁路后仍会使用之前的算法历史。
-            // 直通使用累加而非覆盖，调用方需明确输出的初始内容。
-            buffer += input_buf;
-            return;
-        } else {
-            apply_effect(buffer, input_buf);
-        }
-    }
+    // 预热与首次填充逻辑都不留到音频设备回调执行。
+    // 构造传入最终倍率与最大块长，避免回调内调用可重新分配的倍率 setter。
+    // 时间倍率固定为一，输入和输出预热长度来自同一个设备块约定。
+    m_stretcher = std::make_unique<RStretcher>(m_preparedFormat,
+                                               TimeStretchQuality::Finer,
+                                               m_preparedFrames,
+                                               m_preparedFrames,
+                                               1.0,
+                                               m_pitchScale);
 }
-/// @brief 使用 RubberBand 包装处理平面 PCM，不改变目标时间倍率。
-/// @warning 首次调用惰性创建并预热后端，不能视为无分配的音频热路径。
-/// @warning
-/// 每块再次读取控制侧倍率，使用默认顺序一致原子操作；值可与旁路判断时不同。
+
+/// @brief 借用稳定上游，保持节点作为可选混音支路时的空输入语义。
+/// @warning 音频热路径，不读取控制参数或申请缓冲。
+void PitchAlter::process(AudioBuffer& buffer)
+{
+    // 未连接的效果不改写已有混音样本；连接后统一由基类拒绝不合规的块。
+    if ( !get_inputnode_observer() ) return;
+    IEffectNode::process(buffer);
+}
+
+/// @brief 消费基类验证并拉取的块，保持原有输出语义。
+/// @warning 音频热路径，每块只读取稳定后端，禁止分配及参数重建。
 void PitchAlter::apply_effect(AudioBuffer& output, const AudioBuffer& input)
 {
-    // 后端沿用首次输入格式，后续更换格式没有在此触发自动重建。
-    if ( !stretcher ) {
-        stretcher = std::make_unique<RStretcher>(input.afmt);
+    // 基类检查格式和逻辑长度，这里额外验证上游填充后的物理存储。
+    if ( !hasReadablePlanes(input) ) {
+        // 拒绝异常上游时不能把不完整的 PCM 推进变调历史。
+        output.clear();
+        return;
     }
-
-    // 倍率只在本次处理前设置，不应由别的线程直接修改同一后端实例。
-    // 创建后端时没有在此使用调用方块长重新准备，不能把本接口当成任意容量适配层。
-    stretcher->set_pitch_ratio(pitch_scale.load());
-
-    // 后端可能先消耗输入而暂不产出等长音频，不能假设输入输出一一对应。
-    stretcher->process(output, input);
+    // 控制侧同时确定分支和倍率，处理侧无需再读取参数。
+    if ( m_stretcher ) {
+        // 后端的启动延迟可能产生短输出，未写入部分由包装器清零。
+        m_stretcher->process(output, input);
+    } else {
+        // 直通沿用历史累加语义，保留调用者已经放在输出中的样本。
+        output += input;
+    }
 }
 }  // namespace ice
