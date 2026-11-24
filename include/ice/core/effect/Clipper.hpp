@@ -4,8 +4,8 @@
 
 namespace ice
 {
-/// @brief 限幅效果的占位类型，目前没有裁剪或直通实现。
-/// 不能把该类型已存在当成输出采样已被限制到安全范围的依据。
+/// @brief 无状态硬削波，将各声道样本限制在 [-1, 1]。
+/// @details 保留范围内的样本；正负无穷饱和到对应边界，NaN 转为静音。
 class Clipper : public IEffectNode
 {
 public:
@@ -15,9 +15,10 @@ public:
     ~Clipper() override = default;
 
 protected:
-    /// @brief 当前不写输出，不能依赖此节点实现峰值保护。
-    /// @warning 每块热路径；占位实现不代表已满足限幅算法需求。
-    /// 输出不会自动复制输入，调用方不能将其视作直通效果。
+    /// @brief 用裁剪后的输入覆盖所有活动帧。
+    /// @param output 格式和活动帧数已由基类检查的目标缓冲。
+    /// @param input 与目标分离的上游 PCM 缓冲。
+    /// @warning 每个音频块调用；不得分配、加锁或更改缓冲容量。
     void apply_effect(AudioBuffer& output, const AudioBuffer& input) override;
 };
 
