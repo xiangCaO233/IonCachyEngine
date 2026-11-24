@@ -1,18 +1,15 @@
 #pragma once
 
-#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <unordered_map>
 
 #include "ice/config/config.hpp"
@@ -56,110 +53,35 @@ public:
     /// @brief 选择解码工厂，当前仅 FFMPEG 建立可用实现。
     explicit AudioPool(
         CodecBackend codec_backend = ICEConfig::default_codec_backend);
-    /// @brief 释放缓存持有的音轨引用；外部强引用可继续保活已取出的音轨。
+    /// @brief 使用调用方提供的解码工厂，音频池共享其生命周期。
+    /// @param decoder_factory 可被多个资源并发调用的工厂。
+    explicit AudioPool(std::shared_ptr<IDecoderFactory> decoder_factory);
+    /// @brief 释放缓存引用；调用方须先等待正在使用音频池的操作结束。
     virtual ~AudioPool() = default;
 
-    /// @brief 从缓存中移除指定音频文件。
+    /// @brief 同时移除指定路径的两种缓存策略及其待加载条目。
     /// @param file UTF-8 音频文件路径。
-    /// @warning 低频控制侧独占锁操作，可能析构完整音轨，不可在音频回调调用。
-    void invalidate(std::string_view file)
-    {
-        // 不读取文件签名，显式失效适用于同大小、同时间戳覆盖后强制重载。
-        std::unique_lock<std::shared_mutex> lock(m_poolMutex);
-        // 两种策略按同一文件一起失效，已发布的播放引用继续保活旧资源。
-        for ( auto* cache : { &m_pool, &m_streamingPool } ) {
-            if ( auto it = cache->find(file); it != cache->end() )
-                cache->erase(it);
-        }
-    }
+    /// @warning 低频控制侧操作，可能等待被移除的预读线程退出。
+    void invalidate(std::string_view file);
 
     /// @brief 释放仅由音频池自身保活的缓存音轨。
     /// @return 本次从缓存中移除的音轨数量。
-    /// @warning 低频资源回收路径：会独占缓存锁并可能析构完整 PCM，禁止在
-    /// 音频回调或每帧更新中调用。
-    [[nodiscard]] std::size_t release_unused()
-    {
-        std::unique_lock<std::shared_mutex> lock(m_poolMutex);
-        std::size_t                         released = 0;
-        for ( auto* cache : { &m_pool, &m_streamingPool } ) {
-            const auto previousSize = cache->size();
-            std::erase_if(*cache, [](const auto& entry) {
-                // 只有缓存保活时才能停止预读或回收 PCM，不撤销正在播放的引用。
-                return !entry.second.track ||
-                       entry.second.track.use_count() == 1;
-            });
-            released += previousSize - cache->size();
-        }
-        return released;
-    }
+    /// @warning 低频回收路径；不可在音频回调或每帧更新中调用。
+    [[nodiscard]] std::size_t release_unused();
 
-    /// @brief 返回匹配文件状态的音轨，缓存未命中时在写锁下创建音轨。
-    /// @param thread_pool 音轨解码任务使用的线程池，生命周期须覆盖后台任务。
+    /// @brief 返回签名及策略匹配的音轨；同一加载条目共享创建结果。
+    /// @param thread_pool 解码任务使用的线程池，生命周期须覆盖后台任务。
     /// @param file 非空且无内嵌零字节的 UTF-8 路径，插入时复制为拥有型键。
     /// @param strategy 缓存策略参与命中判断，非法值返回空且不改变缓存。
-    /// @return 音轨弱引用，不保证后台解码完成，也不替调用方持有播放期所有权。
-    /// @warning 每次调用均查询文件系统，未命中可分配、等待锁或创建解码任务。
+    /// @return 音轨弱引用，不保证后台解码完成；加载期间失效返回空。
+    /// @warning 会查询文件系统；未命中可能等待同一条目的加载。
     /// 必须从低频资源加载流程调用，不能用于每帧查表或音频回调取样。
-    /// 流式未命中在写锁内同步解码首块；旧条目析构也可能等待预读线程退出。
     template<std::convertible_to<std::string_view> StringLike>
     [[nodiscard]] std::weak_ptr<AudioTrack>
     get_or_load(ThreadPool& thread_pool, const StringLike& file,
                 CachingStrategy strategy = ICEConfig::default_caching_strategy)
     {
-        // 策略决定缓存分区，非法值必须在选表和任何旧条目失效操作前拒绝。
-        // 否则无效请求会落入普通缓存并逐出同路径的有效音轨。
-        if ( strategy != CachingStrategy::CACHY &&
-             strategy != CachingStrategy::STREAMING )
-            return {};
-        // 播放与分析可以同时使用同一路径，不因另一策略加载而逐出已有资源。
-        auto& cache =
-            strategy == CachingStrategy::STREAMING ? m_streamingPool : m_pool;
-        std::string_view sv_name(file);
-        // C 文件接口在零字节处截断，缓存键不能指向另一个实际文件名。
-        // 空视图也在路径转换前拒绝，避免对默认视图的空地址做范围运算。
-        if ( sv_name.empty() || sv_name.find('\0') != std::string_view::npos )
-            return {};
-        const auto currentSignature = read_file_signature(sv_name);
-        // 签名读取在缓存锁外，减少持锁 IO；文件并发写入时不构成内容快照。
-        // 使用共享锁,允许多个线程同时读取
-        {
-            std::shared_lock<std::shared_mutex> lock(m_poolMutex);
-            auto                                it = cache.find(sv_name);
-            if ( it != cache.end() && it->second.track &&
-                 it->second.signature == currentSignature &&
-                 it->second.track->cachingStrategy() == strategy ) {
-                // 资源已缓存且文件未变化-返回结果
-                return it->second.track;
-            }
-        }
-        // 从读锁升级为写锁之前存在竞争窗口，下面必须再次检查缓存。
-
-        // 同路径并发未命中只创建一次资源；创建期间也会阻塞其他路径的写入。
-        std::unique_lock<std::shared_mutex> lock(m_poolMutex);
-
-        // 再次检查
-        // 等待写锁的期间可能有另一个线程完成了加载
-        auto it = cache.find(sv_name);
-        if ( it != cache.end() ) {
-            if ( it->second.track && it->second.signature == currentSignature &&
-                 it->second.track->cachingStrategy() == strategy ) {
-                // 另一个线程提前写入完成,直接返回它的结果
-                return it->second.track;
-            }
-            // 文件已变化或资源无效,移除旧缓存
-            cache.erase(it);
-        }
-        // 建立音轨不等于全量 PCM 已就绪，缓存可持有仍在后台解码的对象。
-        // 加载失败不保留空条目，避免连续无效路径累积无用键和签名。
-        auto new_data = AudioTrack::create(
-            sv_name, thread_pool, m_decoderFactory, strategy);
-        if ( !new_data ) return {};
-
-        // 缓存键必须拥有路径文本，不能把调用方临时 string_view 存入 map。
-        cache.emplace(std::string(sv_name),
-                      CachedTrack{ new_data, currentSignature });
-
-        return new_data;
+        return get_or_load_impl(thread_pool, std::string_view(file), strategy);
     }
 
 private:
@@ -185,71 +107,38 @@ private:
         }
     };
 
-    /// @brief 缓存的音轨和文件状态。
+    /// @brief 同一文件签名的创建槽；成员不在槽脱离索引时被修改。
     struct CachedTrack {
-        /// @brief 已解码或正在解码的音轨。
+        /// @brief 领取槽后仅由 call_once 完成一次加载；等待发生在索引锁外。
+        std::once_flag loadOnce;
+        /// @brief 发布后只读的音轨。索引读取由缓存锁同步，等待者由 call_once
+        /// 同步。
         std::shared_ptr<AudioTrack> track;
-
-        /// @brief 载入时的文件状态签名。
+        /// @brief 载入时的状态签名，创建后不变。
         FileSignature signature;
     };
 
-    /// @brief 将 UTF-8 路径字符串转换为文件系统路径。
-    /// @param file UTF-8 路径字符串。
-    /// @return 文件系统路径。
-    static std::filesystem::path make_filesystem_path(std::string_view file)
-    {
-#ifdef __cpp_char8_t
-        // 显式指定 UTF-8 编码，不让 Windows 窄字符路径按本地代码页解释。
-        const auto* data = reinterpret_cast<const char8_t*>(file.data());
-        return std::filesystem::path(std::u8string(data, data + file.size()));
-#else
-        return std::filesystem::u8path(std::string(file));
-#endif
-    }
+    /// @brief 共享槽允许加载、回收和删除索引分别持有自己的生命周期。
+    using TrackSlot = std::shared_ptr<CachedTrack>;
+    /// @brief 保留透明查询，使常见命中路径无需分配临时键。
+    using Cache =
+        std::unordered_map<std::string, TrackSlot, StringHash, std::equal_to<>>;
 
-    /// @brief 读取文件状态签名。
-    /// @param file UTF-8 音频文件路径。
-    /// @return 文件状态签名；失败时 valid 为 false。
-    static FileSignature read_file_signature(std::string_view file)
-    {
-        std::error_code filesystemError;
-        const auto      path = make_filesystem_path(file);
-        if ( !std::filesystem::is_regular_file(path, filesystemError) ||
-             filesystemError ) {
-            // 缺失、目录或权限错误均返回无效签名，不缓存半次状态读取结果。
-            return {};
-        }
+    /// @brief 读取文件状态签名，系统查询失败时返回无效签名。
+    static FileSignature read_file_signature(std::string_view file);
 
-        FileSignature signature;
-        signature.size = std::filesystem::file_size(path, filesystemError);
-        if ( filesystemError ) {
-            return {};
-        }
-        signature.write_time =
-            std::filesystem::last_write_time(path, filesystemError);
-        if ( filesystemError ) {
-            return {};
-        }
-        signature.valid = true;
-        // 三次文件系统查询并非原子操作，加载后文件仍可能变化，下次访问再复查。
-        return signature;
-    }
+    /// @brief 在索引中命中或领取待加载条目，离开索引锁后执行或等待解码。
+    [[nodiscard]] std::weak_ptr<AudioTrack> get_or_load_impl(
+        ThreadPool& thread_pool, std::string_view file,
+        CachingStrategy strategy);
 
-    /// @brief 保护缓存条目及所有权更新；读操作可并发，加载和回收独占。
+    /// @brief 仅保护缓存索引与结果发布，不覆盖探测、解码或音轨析构。
     mutable std::shared_mutex m_poolMutex;
-    /// @brief 共享解码工厂，创建音轨时传递给其后台加载流程。
+    /// @brief 共享解码工厂，池构造之后不会更换。
     std::shared_ptr<IDecoderFactory> m_decoderFactory;
-    /// @brief 拥有路径键与音轨强引用，文件状态仅用作低成本失效判断。
-    std::unordered_map<std::string, CachedTrack, StringHash, std::equal_to<>>
-        m_pool;
-    /// @brief 流式音轨独立保活，键与失效签名规则和完整缓存一致。
-    /// 两个映射共用 m_poolMutex，切换策略不会破坏另一策略的缓存身份。
-    /// invalidate 必须同时处理两张表，避免文件覆盖后继续读取旧流。
-    /// release_unused
-    /// 按各轨道的外部所有权回收，不依赖另外一种策略是否仍在播放。
-    /// 流式对象析构可能等待后台块读取，因此回收仍限于低频控制侧。
-    std::unordered_map<std::string, CachedTrack, StringHash, std::equal_to<>>
-        m_streamingPool;
+    /// @brief 完整缓存，与流式缓存按同一路径独立协调。
+    Cache m_pool;
+    /// @brief 流式缓存，与完整缓存共用索引锁但不共用加载条目。
+    Cache m_streamingPool;
 };
 }  // namespace ice
