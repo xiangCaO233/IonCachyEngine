@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace ice
@@ -47,9 +48,9 @@ struct SourceNode::ReferenceProviderState {
 SourceNode::SourceNode(std::shared_ptr<AudioTrack> track)
     : m_track(std::move(track))
 {
-    // 总帧数在播放前固定，后续 EOF 检测不需要等待解码任务。
-    // 音轨所有权只在节点生命周期边界变化，不在每个 block 复制。
-    if ( m_track ) {
+    // 完整缓存应在播放前取得总帧数，后续 EOF 检测不等待解码任务。
+    // 流式音轨在后台读取时修正长度，播放节点不得缓存元信息估值。
+    if ( m_track && m_track->cachingStrategy() != CachingStrategy::STREAMING ) {
         m_totalFrames = m_track->num_frames();
     }
 
@@ -62,6 +63,14 @@ SourceNode::SourceNode(std::shared_ptr<AudioTrack> track)
 /// @brief 在音频线程停止访问后释放音轨、回调及所有 provider 快照。
 /// @warning 析构不是 hazard 协议中的并发回收入口，调用方必须先停止 process。
 SourceNode::~SourceNode() = default;
+
+/// @brief 完整缓存读取构造快照，流式音轨转发当前长度估值。
+std::size_t SourceNode::num_frames() const
+{
+    return m_track && m_track->cachingStrategy() == CachingStrategy::STREAMING
+               ? m_track->num_frames()
+               : m_totalFrames;
+}
 
 /// @brief 按块消费音轨，处理起播调度、结束通知、增益和显示电平。
 /// @warning 每音频块调用；禁止加锁、分配、复制 shared_ptr 或等待资源。
@@ -184,16 +193,19 @@ void SourceNode::process(AudioBuffer& buffer)
 
     const std::size_t playbackPosition =
         m_playbackPosition.load(std::memory_order_relaxed);
-    // EOF 根据实际源帧游标判断，不以本次是否读满一整块为唯一依据。
-    // 空音轨从零帧即视为结束，沿用相同的循环/单次结束通知路径。
-    const bool reachedEnd = playbackPosition >= m_totalFrames;
-    if ( reachedEnd ) {
+    // 缺页或耗尽估值时可能暂不推进；流式音轨只有确认的边界才能触发结束。
+    // 完整缓存使用构造时的快照，避免回调再次访问解码器初始化路径。
+    const auto endFrame =
+        m_track->cachingStrategy() == CachingStrategy::STREAMING
+            ? m_track->end_frame()
+            : std::optional{ m_totalFrames };
+    if ( endFrame && playbackPosition >= *endFrame ) {
         const bool looping = m_isLooping.load(std::memory_order_relaxed);
         // 循环只重置下一块游标；本块不足部分不再次从音轨头部填充。
         if ( looping ) {
             m_playbackPosition.store(0U, std::memory_order_relaxed);
         } else {
-            m_playbackPosition.store(m_totalFrames, std::memory_order_relaxed);
+            m_playbackPosition.store(*endFrame, std::memory_order_relaxed);
             // 非循环结束固定在总帧数，避免之后进度通知超过音轨尾部。
             pause();
         }

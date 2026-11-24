@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -67,11 +68,13 @@ struct StreamingDecoder::State {
     size_t m_victim{ 0 };
     /// @brief 当前后端的精确目标帧游标，仅工作线程修改。
     size_t m_cursor{ 0 };
-    /// @brief 创建侧写入长度估算，工作线程短读时修正，读取侧据此裁剪请求。
-    /// @warning 每块 relaxed
-    /// 读取独立长度，不承担缓存页的发布；页内容由互斥量保护。
-    /// 短读也可能来自失败，不把此数值当成成功解码完整文件的证明。
-    std::atomic<size_t> m_total{ 0 };
+    /// @brief 长度提示，由创建阶段初始化，后台按完整读取扩大。
+    /// @warning 回调按块 relaxed 读取供时间线推进，PCM 仍由缓存锁发布。
+    std::atomic<size_t> m_lengthHint{ 0 };
+    /// @brief 已读取到的末尾；EMPTY 表示仍可在长度提示之外读取。
+    /// @warning 创建侧和预读线程写入，音频回调按块 relaxed 读取。
+    /// 只判断区间边界，不用于发布 PCM；后端不区分正常 EOF 和部分解码失败。
+    std::atomic<size_t> m_end{ EMPTY };
     /// @brief 通知版本由请求侧递增，工作线程等待版本变化。
     /// @warning 每批请求 release 发布，后台 acquire
     /// 等待，避免通知先于等待而丢失。
@@ -111,7 +114,7 @@ struct StreamingDecoder::State {
     /// @warning 每音频块调用，可更新唤醒计数但不得分配请求节点或等待。
     void request(size_t start)
     {
-        if ( start >= m_total.load(std::memory_order_relaxed) ||
+        if ( start >= m_end.load(std::memory_order_relaxed) ||
              contains(start) || start == m_inFlight )
             return;
         // 重复回调可能在 IO 完成前多次请求同一页，去重防止其占满队列。
@@ -156,6 +159,8 @@ struct StreamingDecoder::State {
                 m_wake.wait(version, std::memory_order_acquire);
                 continue;
             }
+            // 末尾可能在请求入队之后才确定，跳过已经确认越界的请求。
+            if ( target >= m_end.load(std::memory_order_relaxed) ) continue;
             // 已消费游标之后的请求可以直接顺序推进，不重启重采样器。
             // 倒退请求不能复用旧滤波历史，因此必须明确从文件头重置。
             if ( target < m_cursor ) {
@@ -171,14 +176,14 @@ struct StreamingDecoder::State {
                 const size_t got = m_instance->read(scratch.raw_ptrs(), wanted);
                 // 后端返回值不能授权越过临时块；违约后停止消费并保留已知前缀。
                 if ( got > wanted ) {
-                    m_total.store(m_cursor, std::memory_order_relaxed);
+                    m_end.store(m_cursor, std::memory_order_relaxed);
                     return;
                 }
                 // 累加实际输出帧而非请求帧，保证短读不会造成后续位置偏移。
                 // 本策略把任何短读作为末尾；后端临时短读或失败也会缩短长度。
                 m_cursor += got;
                 if ( got < wanted ) {
-                    m_total.store(m_cursor, std::memory_order_relaxed);
+                    m_end.store(m_cursor, std::memory_order_relaxed);
                     break;
                 }
             }
@@ -191,12 +196,10 @@ struct StreamingDecoder::State {
             const size_t got    = m_instance->read(scratch.raw_ptrs(), wanted);
             if ( got > wanted ) {
                 // 不发布违约页的帧数，否则消费者可能按虚假长度读取未填充样本。
-                m_total.store(m_cursor, std::memory_order_relaxed);
+                m_end.store(m_cursor, std::memory_order_relaxed);
                 return;
             }
             m_cursor += got;
-            if ( got < PAGE_FRAMES )
-                m_total.store(m_cursor, std::memory_order_relaxed);
             {
                 // 只交换预分配存储，锁内不做文件访问或整块 PCM 复制。
                 std::lock_guard lock(m_mutex);
@@ -204,6 +207,14 @@ struct StreamingDecoder::State {
                 std::swap(page.m_pcm, scratch);
                 page.m_start  = target;
                 page.m_frames = got;
+                // 先准备完整描述符，再公布新长度，避免新读者把尾页当成缺页。
+                // 倒退缓存重建不会缩短已知前缀，只有短读能确认末尾。
+                if ( got < PAGE_FRAMES ) {
+                    m_end.store(m_cursor, std::memory_order_relaxed);
+                } else if ( m_cursor >
+                            m_lengthHint.load(std::memory_order_relaxed) ) {
+                    m_lengthHint.store(m_cursor, std::memory_order_relaxed);
+                }
             }
         }
     }
@@ -225,7 +236,7 @@ StreamingDecoder::~StreamingDecoder()
 }
 
 /// @brief 在非实时侧验证格式、准备首块并建立长期预读服务。
-/// @return 无效路径、不支持的格式、未知时长或空工厂返回空句柄。
+/// @return 无效路径、不支持的格式或空工厂返回空句柄。
 /// 后端历史异常行为不在此包装成成功，调用方仍遵循工厂失败契约。
 /// @warning 此处允许同步读取首块，禁止从回调延迟创建实例。
 std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
@@ -247,11 +258,8 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     if ( state.m_format.channels != target_format.channels ||
          state.m_format.samplerate != target_format.samplerate )
         return {};
-    // 元信息用于时间线长度；未知长度先拒绝，避免将零误报为可播放资源。
-    // 请求同时受此估算上界限制；估算偏小不保证通过后台读取自动恢复完整长度。
-    state.m_total.store(state.m_instance->get_source_total_frames(),
-                        std::memory_order_relaxed);
-    if ( state.m_total.load(std::memory_order_relaxed) == 0 ) return {};
+    // 元信息只提供暂定长度及缓存预算。零估值仍需读取首块才能确定可用帧数。
+    const size_t estimate = state.m_instance->get_source_total_frames();
     // 与完整缓存使用同一初始化定位，避免 AAC 等格式的首读与 seek 后读
     // 对编码延迟采用不同处理，导致切换策略或倒退时 PCM 起点变化。
     if ( !state.m_instance->seek(0) ) return {};
@@ -267,15 +275,19 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     state.m_victim = 1;
     if ( first.m_frames < State::PAGE_FRAMES ) {
         // 首次短读按已结束处理，无需创建永久线程或分配其余十五页。
-        // 没有单独的 EOF 状态，不能区分空音频、解码失败或可继续读取的短读。
-        // 保持同一流式接口语义，但资源占用只相当于一页。
-        state.m_total.store(first.m_frames, std::memory_order_relaxed);
+        // 无已知估值也可以是有效的短音频；此时只需保留实际读出的首块。
+        state.m_end.store(first.m_frames, std::memory_order_relaxed);
         return decoder;
     }
-    const auto estimatedPages =
-        state.m_total.load(std::memory_order_relaxed) / State::PAGE_FRAMES + 1;
+    state.m_lengthHint.store(std::max(estimate, first.m_frames),
+                             std::memory_order_relaxed);
+    // 无估值时保留常规流式缓存容量；已知估值只用于预算，至少保留相邻两页。
+    // 小于一页的真实短音频已经在上方返回，不会占用额外存储。
+    const auto estimatedPages = estimate / State::PAGE_FRAMES + 1;
     state.m_pageCount =
-        std::clamp(estimatedPages, size_t(2), State::PAGE_COUNT);
+        estimate == 0
+            ? State::PAGE_COUNT
+            : std::clamp(estimatedPages, size_t(2), State::PAGE_COUNT);
     for ( size_t index = 1; index < state.m_pageCount; ++index ) {
         // 只发布全部页存储准备成功的实例，失败由局部对象统一释放已分配页。
         if ( !state.m_pages[index].m_pcm.resize(state.m_format,
@@ -300,7 +312,18 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
 /// @warning 每块 relaxed 读取独立数值，无等待；读取页样本仍必须取得缓存锁。
 size_t StreamingDecoder::num_frames() const
 {
-    return m_state ? m_state->m_total.load(std::memory_order_relaxed) : 0;
+    if ( !m_state ) return 0;
+    if ( const auto end = end_frame() ) return *end;
+    return m_state->m_lengthHint.load(std::memory_order_relaxed);
+}
+
+/// @brief 返回确认的排除结束帧；未遇到实际短读时保留未知状态。
+/// @warning 音频回调仅 relaxed 读取后台发布的独立边界，不依赖缓存锁。
+std::optional<size_t> StreamingDecoder::end_frame() const noexcept
+{
+    if ( !m_state ) return 0;
+    const auto end = m_state->m_end.load(std::memory_order_relaxed);
+    return end == State::EMPTY ? std::nullopt : std::optional{ end };
 }
 
 /// @brief 按请求区间填充输出，静音也计入已推进的时间线帧数。
@@ -312,9 +335,12 @@ size_t StreamingDecoder::num_frames() const
 size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
                                 size_t frames)
 {
-    const auto total = num_frames();
-    if ( !buffer || channels == 0 || frames == 0 || start >= total ) return 0;
-    const auto wanted = std::min(frames, total - start);
+    if ( !m_state || !buffer || channels == 0 || frames == 0 ) return 0;
+    const auto end = end_frame();
+    if ( end && start >= *end ) return 0;
+    const auto total =
+        end ? *end : m_state->m_lengthHint.load(std::memory_order_relaxed);
+    const auto wanted = start < total ? std::min(frames, total - start) : 0;
     // 先验证整张输出表，后续声道无效时也不能改写前面有效声道的样本。
     for ( uint16_t channel = 0; channel < channels; ++channel )
         if ( !buffer[channel] ) return 0;
@@ -325,6 +351,12 @@ size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
     std::unique_lock lock(m_state->m_mutex, std::try_to_lock);
     // 未取得锁也无法修改请求环；本次只推进静音，依赖后续调用再次请求。
     if ( !lock.owns_lock() ) return wanted;
+    if ( wanted == 0 ) {
+        // 只有长度提示用完，尚未遇到实际末尾。请求目标页后暂停当前游标，
+        // 避免把后台尚未确认存在的尾部推进成永久静音。
+        m_state->request(start / State::PAGE_FRAMES * State::PAGE_FRAMES);
+        return 0;
+    }
     // 每次循环最多跨一页，单次请求可以覆盖任意多个页边界。
     // 在整个复制区间保留同一把锁，工作线程不能替换正在借读的页地址。
     size_t copied = 0;

@@ -162,7 +162,7 @@ public:
         const auto requestedFrame =
             static_cast<std::size_t>(seconds * sampleRate);
         // 上界裁剪不修复浮点到无符号整数转换之前的负值或越界。
-        set_playpos(std::min(requestedFrame, m_totalFrames));
+        set_playpos(std::min(requestedFrame, num_frames()));
     }
 
     /// @brief 设置相对于参考时钟的预定开始帧。
@@ -249,9 +249,9 @@ public:
     /// @warning 诊断接口，会获取控制锁，不得在 process 调用。
     std::size_t retiredReferenceProviderCount() const;
 
-    /// @brief 获取音轨总帧数。
+    /// @brief 获取总帧数；流式音轨的估算值会随解码更新。
     /// @return 音轨为空时返回零。
-    std::size_t num_frames() const { return m_totalFrames; }
+    std::size_t num_frames() const;
 
     /// @brief 获取音轨原始格式。
     /// @return 音轨媒体格式。
@@ -335,7 +335,7 @@ private:
     /// @brief 保持解码资源存活的音轨。
     std::shared_ptr<AudioTrack> m_track;
 
-    /// @brief 构造阶段完成解码等待后固定的音轨总帧数。
+    /// @brief 构造阶段完成解码等待后固定的完整缓存帧数。
     ///
     /// 音频回调直接读取该不可变值，避免再次进入解码器的 call_once 快路径。
     std::size_t m_totalFrames{ 0U };

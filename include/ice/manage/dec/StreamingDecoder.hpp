@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -29,7 +30,7 @@ public:
     /// @param factory 同步创建后端实例的工厂，返回后由状态独占实例。
     /// @warning 低频资源操作，包含文件访问、分配和首块解码。
     /// thread_pool 为策略接口兼容参数，长期预读不占用其工作线程。
-    /// @return 无效路径、空工厂、不匹配格式、零估算长度及初始定位失败返回空。
+    /// @return 无效路径、空工厂、不匹配格式、初始定位失败返回空。
     /// 线程创建失败也返回空；首次短读可创建零长度对象，后端异常仍沿用历史通道。
     static std::unique_ptr<StreamingDecoder> create(
         std::string_view path, const AudioDataFormat& target_format,
@@ -41,11 +42,15 @@ public:
     ~StreamingDecoder() override;
     /// @brief 返回目标采样率下的长度估计，后端短读时按当前游标修正。
     /// @return 当前帧数快照；空对象返回零，不作为缓存页就绪证明。
-    /// 不区分短读与解码失败；估算偏小时不保证继续请求估算末尾之外的页。
+    /// 已解码区间可以超过元信息估值；遇到短读后返回实际末尾。
     /// @warning 逐块查询仅 relaxed 读取工作线程更新的独立长度，不执行 IO。
     size_t num_frames() const override;
+    /// @brief 获取已确认的排除结束帧，由后端短读或错误建立。
+    /// @return 确认的帧数；尚未到达末尾时返回空值。
+    /// @warning 音频回调只读取后台发布的 relaxed 边界，不访问缓存与后端。
+    std::optional<size_t> end_frame() const noexcept;
     /// @brief 复制就绪块，缺页或竞争时补静音，返回时间线上有效的帧数。
-    /// 返回零只表示越过已知末尾或请求无效，不把缺页误报为播放结束。
+    /// 若耗尽暂定长度则请求目标页并返回零；播放结束须独立查询 end_frame。
     /// @param buffer 非空可写声道指针表，不与内部缓存存储重叠。
     /// @param num_channels 输出表声道数，多余声道填充静音。
     /// @param start_frame 目标采样率下的绝对起始帧，不修改共享播放游标。

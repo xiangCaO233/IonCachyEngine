@@ -69,12 +69,24 @@ if(ICE_BUILD_TESTS)
   endif()
   # 只登记自动化用例，示例播放器不参与无人值守测试；此处没有设置 CTest 超时。
   add_test(NAME IonTimeStretcherRealtimeTest COMMAND TimeStretcherRealtimeTest)
+  # 独立验证流式估值、后台读取和实际结束帧，完全使用可控的内存后端。 测试直接复用当前引擎目标，不依赖宿主应用或录制设备。
+  # 超时只约束测试同步失败时的退出，不进入正式播放。
+  add_executable(
+    StreamingDecoderLengthTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/StreamingDecoderLengthTest.cpp")
+  target_link_libraries(StreamingDecoderLengthTest
+                        PRIVATE ${ICE_LIBRARY_TARGET})
+  add_test(NAME IonStreamingDecoderLengthTest
+           COMMAND StreamingDecoderLengthTest)
+  # 门闩测试出现回收问题时，CTest 仍能报告并终止失败用例。
+  set_tests_properties(IonStreamingDecoderLengthTest PROPERTIES TIMEOUT 30)
   # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。 源码依赖模式不一定定义运行时复制函数，因此先检查
   # helper 是否存在。
   if(COMMAND ice_prebuilt_copy_runtime_files)
-    # 两个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
+    # 每个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
+    ice_prebuilt_copy_runtime_files(StreamingDecoderLengthTest)
   endif()
 
   message(STATUS "Building IonCachyEngine tests enabled.")

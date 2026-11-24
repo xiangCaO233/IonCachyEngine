@@ -5,6 +5,7 @@
 #include <ice/manage/AudioFormat.hpp>
 #include <ice/manage/dec/MediaInfo.hpp>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -78,6 +79,11 @@ public:
     /// @brief 查询解码策略报告的帧数，完全缓存为实际长度，流式为可修正估算。
     /// @warning 完全缓存策略首次查询可能等待后台任务，须在播放前完成。
     size_t num_frames() const;
+    /// @brief 获取音轨确认的排除结束帧。
+    /// @return 流式音轨尚未到末尾时返回空值，未加载时返回零。
+    /// @warning 完整缓存的首次读取仍可能等待；流式只读取原子帧边界。
+    std::optional<size_t> end_frame() const;
+
 
     /// @brief 返回创建时确定的解码策略，便于上层选择 PCM 视图或分块读取。
     CachingStrategy cachingStrategy() const noexcept { return m_strategy; }
