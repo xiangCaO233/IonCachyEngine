@@ -13,15 +13,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
-
-struct AVCodecContext;
-struct AVFormatContext;
-struct AVAudioFifo;
-struct AVFrame;
-struct AVPacket;
-struct AVStream;
-struct SwrContext;
 
 namespace ice
 {
@@ -117,56 +110,10 @@ public:
     [[nodiscard]] bool is_running() const override;
 
 private:
-    /// @brief 按输出路径扩展名初始化容器、编码器和输出流。
-    /// @return 成功时返回 true。
-    bool open_encoder();
+    /// @brief 单次导出的编码器和容器资源，类型只在实现文件定义。
+    class EncoderSession;
 
-    /// @brief 初始化输入到编码器格式的重采样器。
-    /// @return 成功时返回 true。
-    bool open_resampler();
-
-    /// @brief 转换输入块并入 FIFO，提交已满足编码帧长的样本。
-    /// @param buffer 引擎平面浮点缓冲。
-    /// @param frame_count 有效帧数。
-    /// @return 转换和入队成功时返回 true，不保证已经产生编码包。
-    bool write_buffer(const AudioBuffer& buffer, std::size_t frame_count);
-
-    /// @brief 将转换后的音频样本写入 FIFO。
-    /// @param converted_data 转换后的声道数据。
-    /// @param frame_count 转换后的帧数。
-    /// @return 完整入队或空输入时返回 true；正帧缺资源或负帧数返回 false。
-    /// @details 复制样本但不接管输入数组所有权，帧数按输出采样率计算。
-    bool write_converted_to_fifo(uint8_t** converted_data, int frame_count);
-
-    /// @brief 将 FIFO 中足够编码的样本送入编码器。
-    /// @param flush 是否正在结束编码，允许写出不足一整帧的尾部。
-    /// @details 短尾不在此补零；发送失败不回滚已取出的 FIFO 数据和 PTS。
-    /// @return 成功时返回 true。
-    bool encode_fifo(bool flush);
-
-    /// @brief 依次排出转换延迟、FIFO 尾部和编码器包，再写容器 trailer。
-    /// @warning 离线收尾不检查停止标记，失败不能无条件重试或回滚输出。
-    /// @return 成功时返回 true。
-    bool finish_encoding();
-
-    /// @brief 发送一帧给编码器。
-    /// @param frame FFmpeg 音频帧；nullptr 表示刷新编码器。
-    /// @details 发送成功后立即取包；send 返回 EAGAIN
-    /// 也按失败处理，没有重试分支。
-    /// @return 成功时返回 true。
-    bool send_frame(AVFrame* frame);
-
-    /// @brief 接收并写出编码包。
-    /// @param draining 已发送结束帧时为 true，要求最终观察到 EOF。
-    /// @return 普通取包遇到 EAGAIN 或最终排空遇到 EOF 时成功，否则报告错误。
-    bool drain_packets(bool draining);
-
-    /// @brief 记录 FFmpeg 错误文本。
-    /// @param prefix 错误上下文。
-    /// @param code FFmpeg 错误码。
-    void set_ffmpeg_error(const char* prefix, int code);
-
-    /// @brief 记录普通错误文本。
+    /// @brief 记录输入预算、图拉取或取消等接收端错误。
     /// @param message 错误文本。
     void set_error(std::string message);
 
@@ -211,39 +158,11 @@ private:
     /// 对象生命周期与配置串行化仍由调用者保证，不能从取消已发送推断退出。
     std::atomic<bool> m_stopRequested{ false };
 
-    /// @brief FFmpeg 输出容器上下文。
-    /// @details 由接收端拥有，close 关闭所需 AVIO 并释放容器及其流对象。
-    AVFormatContext* m_formatContext{ nullptr };
-
-    /// @brief FFmpeg 音频编码器上下文。
-    AVCodecContext* m_codecContext{ nullptr };
-
-    /// @brief 容器拥有的音频流观察指针，容器释放后仅清空，不单独释放。
-    AVStream* m_stream{ nullptr };
-
-    /// @brief 复用的编码输出包。
-    AVPacket* m_packet{ nullptr };
-
-    /// @brief 引擎格式到编码器格式的重采样器。
-    SwrContext* m_swrContext{ nullptr };
-
-    /// @brief 缓存重采样后样本并按编码器帧长输出的 FIFO。
-    AVAudioFifo* m_fifo{ nullptr };
-
-    /// @brief 下一个编码帧的 PTS，单位为实际编码采样率的一个样本周期。
-    /// @details 发送前即推进，不等同于成功写包的时长，也不用于输入进度回调。
-    int64_t m_nextPts{ 0 };
-
-    /// @brief 输出链路是否已打开。
-    bool m_opened{ false };
-
-    /// @brief trailer 是否已经写出。
-    /// @details
-    /// 只在写尾成功后置位，用于防止重复正常收尾，不表示文件已完成磁盘持久化。
-    bool m_trailerWritten{ false };
+    /// @brief 当前完整打开的会话；close 释放会话但保留输入进度与诊断。
+    /// @note 导出时分配一次，类型定义和所有 FFmpeg 析构逻辑均在实现文件。
+    std::unique_ptr<EncoderSession> m_session;
 
     /// @brief 用户请求的输出采样率，零表示跟随输入时钟协商。
-    /// @note 新字段置于旧对象布局末尾，以便迁移预编译包时保持既有偏移。
     std::uint32_t m_outputSampleRate{ 0 };
 
     /// @brief 用户请求的有损码率，零表示沿用编码器默认策略。

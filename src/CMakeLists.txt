@@ -101,6 +101,17 @@ if(ICE_BUILD_TESTS)
   add_test(NAME IonAudioPoolConcurrencyTest COMMAND AudioPoolConcurrencyTest)
   # 若回归导致测试线程无法释放门闩，CTest 的进程级超时负责收尾。
   set_tests_properties(IonAudioPoolConcurrencyTest PROPERTIES TIMEOUT 30)
+  # 使用真实 FFmpeg 编码与解码验证部分打开失败、取消、重开和非整块尾部。 输出写到测试专属目录，测试不初始化播放设备。
+  add_executable(
+    FFmpegFileReceiverSessionTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/FFmpegFileReceiverSessionTest.cpp")
+  target_link_libraries(FFmpegFileReceiverSessionTest
+                        PRIVATE ${ICE_LIBRARY_TARGET})
+  add_test(NAME IonFFmpegFileReceiverSessionTest
+           COMMAND FFmpegFileReceiverSessionTest
+                   "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-receiver-session-test")
+  # 仅限制测试的非预期挂起，导出实现不引入超时。
+  set_tests_properties(IonFFmpegFileReceiverSessionTest PROPERTIES TIMEOUT 30)
   # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。 源码依赖模式不一定定义运行时复制函数，因此先检查
   # helper 是否存在。
   if(COMMAND ice_prebuilt_copy_runtime_files)
@@ -111,6 +122,7 @@ if(ICE_BUILD_TESTS)
     ice_prebuilt_copy_runtime_files(CachedDecodeResultTest)
     ice_prebuilt_copy_runtime_files(StreamingDecoderLengthTest)
     ice_prebuilt_copy_runtime_files(AudioPoolConcurrencyTest)
+    ice_prebuilt_copy_runtime_files(FFmpegFileReceiverSessionTest)
   endif()
 
   message(STATUS "Building IonCachyEngine tests enabled.")
