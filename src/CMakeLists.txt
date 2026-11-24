@@ -4,6 +4,17 @@
 # 一并编进库。 CONFIGURE_DEPENDS 让新增实现文件触发重配置，避免手动刷新源列表。
 file(GLOB_RECURSE ICE_SOURCES CONFIGURE_DEPENDS "ice/*.cpp")
 
+# OpenAL 共用播放循环只调用私有平台接口。每个目标仅编译一种环境与供数线程策略。 递归收集返回绝对路径，必须用同一形式排除另一平台的实现。
+set(ICE_OPENAL_PLATFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ice/out/play/openal")
+# Windows 使用原生优先级，其他受支持目标走 POSIX 环境分支。
+if(WIN32)
+  list(REMOVE_ITEM ICE_SOURCES
+       "${ICE_OPENAL_PLATFORM_DIR}/ALPlayerPlatformPosix.cpp")
+else()
+  list(REMOVE_ITEM ICE_SOURCES
+       "${ICE_OPENAL_PLATFORM_DIR}/ALPlayerPlatformWindows.cpp")
+endif()
+
 # 依赖链接偏好为 shared 时，引擎本体生成平台共享库，Windows 上对应 DLL。 保留已有静态库目标名，避免破坏按目标名构建引擎的脚本。
 set(ICE_LIBRARY_TARGET IonCachyEngine-static)
 set(ICE_LIBRARY_TYPE STATIC)
@@ -92,6 +103,22 @@ if(ICE_BUILD_TESTS)
            COMMAND StreamingDecoderLengthTest)
   # 门闩测试出现回收问题时，CTest 仍能报告并终止失败用例。
   set_tests_properties(IonStreamingDecoderLengthTest PROPERTIES TIMEOUT 30)
+  # 每个进程用独立 OpenAL Soft 环境测试空值取默认和外部非空配置优先。 使用 null 驱动覆盖真实线程启动，且不打开物理设备。
+  add_executable(
+    ALPlayerPlatformTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/ALPlayerPlatformTest.cpp")
+  target_link_libraries(ALPlayerPlatformTest PRIVATE ${ICE_LIBRARY_TARGET})
+  # 空值按缺省设置处理；此前 POSIX 不覆盖已存在的空项。
+  add_test(NAME IonALPlayerPlatformEmptyDefault COMMAND ALPlayerPlatformTest 2)
+  # 空值场景独立启动进程，避免从已有后端初始化继承环境。
+  set_tests_properties(
+    IonALPlayerPlatformEmptyDefault
+    PROPERTIES ENVIRONMENT "ALSOFT_DRIVERS=null;ALSOFT_LOGLEVEL=" TIMEOUT 20)
+  add_test(NAME IonALPlayerPlatformKeepExternal COMMAND ALPlayerPlatformTest 0)
+  # 校验非空日志级别和驱动都保留，同时避免依赖系统声音设备。 测试超时只用于发现供数没有启动或没有正常回收。
+  set_tests_properties(
+    IonALPlayerPlatformKeepExternal
+    PROPERTIES ENVIRONMENT "ALSOFT_DRIVERS=null;ALSOFT_LOGLEVEL=0" TIMEOUT 20)
   # 音轨池用真实流式解码线程和内存工厂隔离慢加载、慢回收及同路径竞争。 门闩仅用于测试同步。CTest 超时约束实现回归造成的进程无法退出。
   add_executable(
     AudioPoolConcurrencyTest
@@ -118,6 +145,8 @@ if(ICE_BUILD_TESTS)
     # 每个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
+    # 空设备测试需要动态 OpenAL Soft 库，复用现有测试依赖部署入口。
+    ice_prebuilt_copy_runtime_files(ALPlayerPlatformTest)
     # 合法空轨由 FFmpeg 实际解析，共享模式须随测试部署依赖。
     ice_prebuilt_copy_runtime_files(CachedDecodeResultTest)
     ice_prebuilt_copy_runtime_files(StreamingDecoderLengthTest)
