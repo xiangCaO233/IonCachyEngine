@@ -115,6 +115,7 @@ if(ICE_BUILD_TESTS)
   set_tests_properties(
     IonALPlayerPlatformEmptyDefault
     PROPERTIES ENVIRONMENT "ALSOFT_DRIVERS=null;ALSOFT_LOGLEVEL=" TIMEOUT 20)
+  # 另一用例单独注册为进程，验证 OpenAL 首次读取用户覆盖值时不被默认策略改写。
   add_test(NAME IonALPlayerPlatformKeepExternal COMMAND ALPlayerPlatformTest 0)
   # 校验非空日志级别和驱动都保留，同时避免依赖系统声音设备。 测试超时只用于发现供数没有启动或没有正常回收。
   set_tests_properties(
@@ -136,6 +137,7 @@ if(ICE_BUILD_TESTS)
   # 测试和实现共用这次源码构建的头与库，避免混用不同版本的接收器对象布局。
   target_link_libraries(FFmpegFileReceiverSessionTest
                         PRIVATE ${ICE_LIBRARY_TARGET})
+  # 向测试传入该配置的输出子树。并行或多配置构建不会在源码目录留下音频文件。
   add_test(NAME IonFFmpegFileReceiverSessionTest
            COMMAND FFmpegFileReceiverSessionTest
                    "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-receiver-session-test")
@@ -147,7 +149,7 @@ if(ICE_BUILD_TESTS)
     # 每个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
-    # 空设备测试需要动态 OpenAL Soft 库，复用现有测试依赖部署入口。 OpenAL 空设备测试也需要随共享构建部署实际运行时。
+    # 空设备测试需要动态 OpenAL Soft 库，复用现有测试依赖部署入口。
     ice_prebuilt_copy_runtime_files(ALPlayerPlatformTest)
     # 合法空轨由 FFmpeg 实际解析，共享模式须随测试部署依赖。
     ice_prebuilt_copy_runtime_files(CachedDecodeResultTest)
