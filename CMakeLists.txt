@@ -25,7 +25,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 追加引擎模块路径，不清空宿主已提供的搜索项。 按模块名 include 时，先前路径中的同名模块仍可能优先命中，不能保证路径隔离。
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include("configure-project")
+# 由调用方的目标架构及编译器默认值选择指令集。目录级的 ISA 开关 会影响所有依赖子目录，也不能为只包含公开头的独立消费者提供保证。
 
 # ICE_BUILD_TESTS 同时控制示例程序和实时安全回归测试。 SOURCES_BUILD 只决定外部依赖来源，引擎自身在此工程始终从源码编译。
 # 关闭依赖源码构建时，缺少预编译包必须报错，不能自动回退。

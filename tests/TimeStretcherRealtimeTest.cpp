@@ -1507,7 +1507,7 @@ int testBufferResizeRange()
 /// @return 值比较、写边界及实时分配检查的失败数。
 /// 对齐尾部仍属于分配空间，但不是本次音频块，不能贡献样本或被改写。
 /// 用精确可表示的常量消除浮点舍入因素，独立构造每个帧位置的期望值。
-/// 此用例同时适用于标量与 Linux 向量实现，活动长度的外部契约应保持一致。
+/// 此用例同时适用于通用与 Linux x86 对齐存储，活动长度的外部契约保持一致。
 /// 不兼容输入必须整体拒绝；不覆盖分配失败或其他指令集运行时派发。
 /// 尾部处于合法分配内，地址检查工具未必能发现这种逻辑写越界。
 int testMixActiveBounds()
@@ -1601,8 +1601,9 @@ int testMixActiveBounds()
     return failures;
 }
 
-#ifdef __linux__
-/// @brief 检查 Linux 双声道解交错的帧边界、声道顺序和目标后缀。
+#if defined(__linux__) && !defined(__ANDROID__) && \
+    (defined(__x86_64__) || defined(__i386__))
+/// @brief 检查 Linux x86 对齐存储的双声道解交错的帧边界、声道顺序和目标后缀。
 /// 测试样本均可由 float 精确表示，转换不含算术变换，因此使用精确相等。
 /// 当前输入最大十七帧，不覆盖大容量吞吐或所有 CPU 目标的指令派发。
 /// @details 长度覆盖向量边界两侧，源只提供有效帧，不授权读取对齐填充。
@@ -2153,7 +2154,8 @@ int main()
     failures += testNearUnityOutputBounds();
     failures += testMixActiveBounds();
     failures += testBufferResizeRange();
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__) && \
+    (defined(__x86_64__) || defined(__i386__))
     // 专用入口只在 Linux 连续平面实现提供，其他平台不伪造通过结果。
     failures += testStereoDeinterleaveBounds();
 #endif

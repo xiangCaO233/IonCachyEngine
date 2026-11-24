@@ -2,9 +2,6 @@
 
 #include <ice/manage/AudioFormat.hpp>
 
-// SIMD 由目标 CPU 决定；Android ARM64 复用现有通用存储，不能因 Linux 宏启用
-// AVX。
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -17,9 +14,8 @@
 
 #if defined(__linux__) && !defined(__ANDROID__) && \
     (defined(__x86_64__) || defined(__i386__))
-// 系统头必须位于全局作用域，避免其声明随业务头的包含顺序进入 ice。
-// SIMD 实现依赖编译目标的 AVX 能力，不在本头做运行时 CPU 派发。
-#    include <immintrin.h>
+// 仅使用旧有对齐分配器，保留 Linux x86 缓冲存储和释放约定。
+// 此头不引入对调用方目标指令集有要求的 SIMD 运算。
 #    include <mm_malloc.h>
 #endif
 
@@ -153,7 +149,7 @@ private:
     void sync_pointers();
 };
 #else
-/// @brief Linux 连续平面 PCM 缓冲，声道起点按固定 SIMD 跨度排列。
+/// @brief Linux x86 连续平面 PCM 缓冲，声道起点按固定对齐跨度排列。
 /// 有效长度可逐块改变，但已有存储的声道间隔只在 resize 时更新。
 class AudioBuffer
 {
@@ -239,7 +235,7 @@ class AudioBuffer
 public:
     /// @brief 连续存储的字节对齐要求。
     static constexpr size_t SIMD_ALIGNMENT = 32;
-    /// @brief 每个向量容纳的浮点采样数，用于向上取整声道跨度。
+    /// @brief 每个对齐单元的浮点样本数，保留既有声道跨度约定。
     static constexpr size_t SIMD_VECTOR_SIZE = 8;
 
     /// @brief 样本格式快照，声道布局变更必须通过 resize 同步存储。
@@ -432,31 +428,18 @@ public:
     {
         // 在索引左右声道前拒绝不适用的格式，零帧不需要有效源地址。
         if ( !src || num_channels() != 2U || num_frames() == 0U ) return;
-        float**      dest   = this->raw_ptrs();
+        float* const left   = raw_ptrs()[0];
+        float* const right  = raw_ptrs()[1];
         const size_t frames = num_frames();
-        size_t       i      = 0U;
-        // 每次输入八浮点即四帧，输出每声道恰好四浮点，保持步长与写宽一致。
-        // 只处理完整四帧组，不使用向上补齐长度，源无需额外可读填充。
-        for ( ; frames - i >= 4U; i += 4U ) {
-            const __m128 first  = _mm_loadu_ps(src + i * 2U);
-            const __m128 second = _mm_loadu_ps(src + i * 2U + 4U);
-            // 两输入各选偶数位置得到 L0..L3，奇数位置得到 R0..R3。
-            const __m128 left =
-                _mm_shuffle_ps(first, second, _MM_SHUFFLE(2, 0, 2, 0));
-            const __m128 right =
-                _mm_shuffle_ps(first, second, _MM_SHUFFLE(3, 1, 3, 1));
-            // 非对齐存储不依赖每组地址满足原 256 位指令的对齐要求。
-            _mm_storeu_ps(dest[0] + i, left);
-            _mm_storeu_ps(dest[1] + i, right);
-        }
-        // 最多三帧的尾部按标量处理，不覆盖下一声道或目标容量中的保留区。
-        for ( ; i < frames; ++i ) {
-            dest[0][i] = src[i * 2U];
-            dest[1][i] = src[i * 2U + 1U];
+        // 源只需要提供实际交错帧，两路输出也仅覆盖当前活动长度。
+        // 使用目标编译器的默认指令集，普通消费者可以内联此转换。
+        for ( size_t i = 0; i < frames; ++i ) {
+            left[i]  = src[i * 2U];
+            right[i] = src[i * 2U + 1U];
         }
     }
 
-    /// @brief 向量化累加兼容缓冲的活动前缀，允许自身累加并保留未激活尾部。
+    /// @brief 累加兼容缓冲的活动前缀，允许自身累加并保留未激活尾部。
     /// @return 格式或活动长度不匹配时返回 false，目标保持不变。
     /// @warning 每个混音块调用，禁止引入分配、阻塞或异常。
     inline bool operator+=(const AudioBuffer& other) noexcept
@@ -477,21 +460,14 @@ public:
         const size_t   frames   = this->num_frames();
         const uint16_t channels = this->num_channels();
 
-        // 按声道逐段处理，各声道起点已由准备阶段保证满足向量对齐。
+        // 连续的声道内循环允许编译器按目标自动向量化，调用方无需启用 AVX。
+        // 不能合并为一次跨声道的遍历，否则会叠加首个声道的预留尾部。
         for ( uint16_t ch = 0; ch < channels; ++ch ) {
             float*       dest = all_dest_channels[ch];
             const float* src  = all_src_channels[ch];
 
-            size_t i = 0;
-            // 完整向量组仍使用对齐加载，短尾不能跨过活动边界。
-            for ( ; frames - i >= SIMD_VECTOR_SIZE; i += SIMD_VECTOR_SIZE ) {
-                __m256 dest_vec   = _mm256_load_ps(dest + i);
-                __m256 src_vec    = _mm256_load_ps(src + i);
-                __m256 result_vec = _mm256_add_ps(dest_vec, src_vec);
-                _mm256_store_ps(dest + i, result_vec);
-            }
-            // 剩余不足一个向量的样本逐个累加，零帧时两条循环均不执行。
-            for ( ; i < frames; ++i ) {
+            // 当缓冲自身累加时逐样本翻倍，非活动帧保持不变。
+            for ( size_t i = 0; i < frames; ++i ) {
                 dest[i] += src[i];
             }
         }
@@ -539,5 +515,5 @@ private:
         }
     }
 };
-#endif  // x86 Linux SIMD 与通用平台存储分支
+#endif  // Linux x86 对齐存储与通用平台存储分支
 }  // namespace ice
