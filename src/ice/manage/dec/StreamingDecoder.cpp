@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -74,8 +75,19 @@ struct StreamingDecoder::State {
     std::atomic<size_t> m_lengthHint{ 0 };
     /// @brief 已读取到的末尾；EMPTY 表示仍可在长度提示之外读取。
     /// @warning 创建侧和预读线程写入，音频回调按块 relaxed 读取。
-    /// 只判断区间边界，不用于发布 PCM；后端不区分正常 EOF 和部分解码失败。
+    /// 只判断区间边界，不用于发布 PCM；只有无错误的短读才确认曲尾。
     std::atomic<size_t> m_end{ EMPTY };
+    /// @brief 后端不可恢复读取失败，零表示尚未失败。
+    /// @warning 预读线程发布，短读的设备回调或控制侧 relaxed 查询。
+    /// 错误码是独立状态；已取得的 PCM 仍由缓存互斥量发布。
+    std::atomic<int> m_error{ 0 };
+
+    /// @brief 对不合契约的帧数和后端读取错误统一诊断。
+    /// @note 只能在后端 read 后由同一个调用线程访问其局部诊断。
+    int read_error(size_t count, size_t capacity) const noexcept
+    {
+        return count > capacity ? -EIO : m_instance->last_read_error();
+    }
     /// @brief 通知版本由请求侧递增，工作线程等待版本变化。
     /// @warning 每批请求 release 发布，后台 acquire
     /// 等待，避免通知先于等待而丢失。
@@ -116,7 +128,8 @@ struct StreamingDecoder::State {
     void request(size_t start)
     {
         if ( start >= m_end.load(std::memory_order_relaxed) ||
-             contains(start) || start == m_inFlight )
+             m_error.load(std::memory_order_relaxed) != 0 || contains(start) ||
+             start == m_inFlight )
             return;
         // 重复回调可能在 IO 完成前多次请求同一页，去重防止其占满队列。
         // 不合并不同位置的请求，允许复合时间线同时消费同一音轨的远近片段。
@@ -164,20 +177,26 @@ struct StreamingDecoder::State {
             if ( target >= m_end.load(std::memory_order_relaxed) ) continue;
             // 相邻预读沿用现有后端历史；远处缺页或回跳才尝试精确定位。
             // 空读不能用来确认远处 EOF，回到已知起点重走后才发布末尾。
-            size_t got = 0;
+            size_t got         = 0;
+            bool   alreadyRead = false;
+            int    error       = 0;
             if ( m_cursor != EMPTY &&
                  (target < m_cursor || target - m_cursor >= 2 * PAGE_FRAMES) ) {
                 const auto positioned = m_instance->seek_exact(target);
                 // 不支持时保留现有游标，向前仍可从上一次读取的位置继续。
                 if ( positioned ) {
                     const auto wanted = std::min(PAGE_FRAMES, EMPTY - target);
-                    if ( *positioned )
-                        got = m_instance->read(scratch.raw_ptrs(), wanted);
-                    m_cursor = got > 0 && got <= wanted ? target : EMPTY;
-                    if ( m_cursor == EMPTY ) got = 0;
+                    if ( *positioned ) {
+                        got   = m_instance->read(scratch.raw_ptrs(), wanted);
+                        error = read_error(got, wanted);
+                        // 有有效前缀或明确错误时保留本次结果。无错误空读仍走
+                        // 顺序恢复，避免把远处寻址误判成可证实的 EOF。
+                        alreadyRead = got > 0 || error != 0;
+                    }
+                    m_cursor = alreadyRead ? target : EMPTY;
                 }
             }
-            if ( got == 0 && (m_cursor == EMPTY || target < m_cursor) ) {
+            if ( !alreadyRead && (m_cursor == EMPTY || target < m_cursor) ) {
                 // 定位失败保留已发布页。下一次请求可再次恢复解码游标。
                 m_cursor = EMPTY;
                 if ( !m_instance->seek(0) ) continue;
@@ -188,13 +207,12 @@ struct StreamingDecoder::State {
                     !m_stopping.load(std::memory_order_relaxed) ) {
                 const size_t wanted = std::min(PAGE_FRAMES, target - m_cursor);
                 const size_t got = m_instance->read(scratch.raw_ptrs(), wanted);
-                // 后端返回值不能授权越过临时块；违约后停止消费并保留已知前缀。
-                if ( got > wanted ) {
-                    m_end.store(m_cursor, std::memory_order_relaxed);
+                // 跳过区间时没有目标页可交付，错误直接终止后台任务。
+                if ( const int readError = read_error(got, wanted) ) {
+                    m_error.store(readError, std::memory_order_relaxed);
                     return;
                 }
-                // 累加实际输出帧而非请求帧，保证短读不会造成后续位置偏移。
-                // 本策略把任何短读作为末尾；后端临时短读或失败也会缩短长度。
+                // 仅使用实际读出的帧推进位置。
                 m_cursor += got;
                 if ( got < wanted ) {
                     m_end.store(m_cursor, std::memory_order_relaxed);
@@ -207,10 +225,13 @@ struct StreamingDecoder::State {
             if ( m_cursor != target ) continue;
             // 最后一个可表示区间也受整数剩余范围限制，游标累加不能回绕。
             const size_t wanted = std::min(PAGE_FRAMES, EMPTY - m_cursor);
-            if ( got == 0 ) got = m_instance->read(scratch.raw_ptrs(), wanted);
+            if ( !alreadyRead ) {
+                got   = m_instance->read(scratch.raw_ptrs(), wanted);
+                error = read_error(got, wanted);
+            }
             if ( got > wanted ) {
-                // 不发布违约页的帧数，否则消费者可能按虚假长度读取未填充样本。
-                m_end.store(m_cursor, std::memory_order_relaxed);
+                // 违约长度不能作为可读前缀交付。
+                m_error.store(error, std::memory_order_relaxed);
                 return;
             }
             m_cursor += got;
@@ -223,12 +244,23 @@ struct StreamingDecoder::State {
                 page.m_frames = got;
                 // 先准备完整描述符，再公布新长度，避免新读者把尾页当成缺页。
                 // 倒退缓存重建不会缩短已知前缀，只有短读能确认末尾。
-                if ( got < PAGE_FRAMES ) {
+                if ( error != 0 ) {
+                    // 先交付遇错前的有效样本，但绝不将失败写进正常曲尾。
+                    m_lengthHint.store(
+                        std::max(m_cursor,
+                                 m_lengthHint.load(std::memory_order_relaxed)),
+                        std::memory_order_relaxed);
+                } else if ( got < PAGE_FRAMES ) {
                     m_end.store(m_cursor, std::memory_order_relaxed);
                 } else if ( m_cursor >
                             m_lengthHint.load(std::memory_order_relaxed) ) {
                     m_lengthHint.store(m_cursor, std::memory_order_relaxed);
                 }
+            }
+            if ( error != 0 ) {
+                // 先放开缓存锁再公开终止状态。看到错误的控制侧仍可读取已交付前缀。
+                m_error.store(error, std::memory_order_relaxed);
+                return;
             }
         }
     }
@@ -284,7 +316,7 @@ std::unique_ptr<StreamingDecoder> StreamingDecoder::create(
     first.m_frames =
         state.m_instance->read(first.m_pcm.raw_ptrs(), State::PAGE_FRAMES);
     // 首块同样不信任后端报告的长度，拒绝发布超出已分配页的范围。
-    if ( first.m_frames > State::PAGE_FRAMES ) return {};
+    if ( state.read_error(first.m_frames, State::PAGE_FRAMES) != 0 ) return {};
     state.m_cursor = first.m_frames;
     state.m_victim = 1;
     if ( first.m_frames < State::PAGE_FRAMES ) {
@@ -338,6 +370,12 @@ std::optional<size_t> StreamingDecoder::end_frame() const noexcept
     if ( !m_state ) return 0;
     const auto end = m_state->m_end.load(std::memory_order_relaxed);
     return end == State::EMPTY ? std::nullopt : std::optional{ end };
+}
+
+/// @brief 获取后台读取终止原因，不把它合并为正常 EOF。
+int StreamingDecoder::streaming_decode_error() const noexcept
+{
+    return m_state ? m_state->m_error.load(std::memory_order_relaxed) : 0;
 }
 
 /// @brief 返回从请求起点连续可读的前缀；缺页时等待后续回调重试。

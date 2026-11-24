@@ -49,6 +49,10 @@ public:
     /// @return 确认的帧数；尚未到达末尾时返回空值。
     /// @warning 音频回调只读取后台发布的 relaxed 边界，不访问缓存与后端。
     std::optional<size_t> end_frame() const noexcept;
+    /// @brief 查询不可恢复的流式读取错误，零表示尚未出错或不使用流式策略。
+    /// @warning 可在设备短读分支调用，仅借用不变策略和读取独立错误码。
+    int streaming_decode_error() const noexcept;
+
     /// @brief 复制就绪块，缺页或竞争时补静音，只返回连续可读的 PCM 帧数。
     /// 若耗尽暂定长度则请求目标页并返回零；播放结束须独立查询 end_frame。
     /// @param buffer 非空可写声道指针表，不与内部缓存存储重叠。

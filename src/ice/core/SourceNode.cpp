@@ -199,7 +199,13 @@ void SourceNode::process(AudioBuffer& buffer)
         m_track->cachingStrategy() == CachingStrategy::STREAMING
             ? m_track->end_frame()
             : std::optional{ m_totalFrames };
-    if ( endFrame && playbackPosition >= *endFrame ) {
+    if ( !endFrame && gainedThisBlock < requestedFrames - silenceFrames &&
+         m_track->streaming_decode_error() != 0 ) {
+        // 缓存中可连续读取的前缀已经交付。终止后不循环，也不发正常完成事件。
+        // 下游仍需收到 final 通知以排空自己的待输出数据。
+        pause();
+        notifyFinalInput();
+    } else if ( endFrame && playbackPosition >= *endFrame ) {
         const bool looping = m_isLooping.load(std::memory_order_relaxed);
         // 循环只重置下一块游标；本块不足部分不再次从音轨头部填充。
         if ( looping ) {

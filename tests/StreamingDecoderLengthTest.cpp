@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -47,6 +48,8 @@ struct LengthInput {
     std::atomic<size_t> decodedFrames{};
     /// @brief 仅统计非顺序定位，与正常首块读取区分。
     std::atomic<size_t> exactSeeks{};
+    /// @brief 在指定读操作输出有效前缀后报告底层 IO 错误。
+    std::size_t failingRead{};
 };
 
 /// @brief 能独立控制实际可读长度与元信息估值的顺序解码替身。
@@ -102,8 +105,12 @@ public:
         // 统计后端读取实际交付的帧，兼容页尾短读和探测后的 EOF。
         m_input.decodedFrames.fetch_add(count, std::memory_order_relaxed);
         m_cursor += count;
+        m_error = m_reads == m_input.failingRead ? -EIO : 0;
         return count;
     }
+
+    /// @brief 最近调用报告的诊断，与设备读写线程隔离。
+    int last_read_error() const noexcept override { return m_error; }
 
     /// @brief 返回固定输出格式。
     const ice::AudioDataFormat& get_source_format() const override
@@ -127,6 +134,8 @@ private:
     std::size_t m_cursor{ 0U };
     /// @brief 区分同步首块和异步预读。
     std::size_t m_reads{ 0U };
+    /// @brief 与该实例最近一次 read 同步更新，不需要原子。
+    int m_error{};
 };
 
 /// @brief 同时让 AudioTrack 看到估值，并为其创建实际可供数的实例。
@@ -321,6 +330,53 @@ bool seeksDistantPages(ice::ThreadPool& pool)
            totalDecoded <= 10U * PAGE_FRAMES &&
            std::chrono::steady_clock::now() - before < std::chrono::seconds(5);
 }
+/// @brief 区分首读失败、后台短读失败和正常曲尾。
+bool preservesReadFailure(ice::ThreadPool& pool)
+{
+    LengthInput first{ 0U, 3U };
+    first.failingRead = 1U;
+    if ( ice::AudioTrack::create("broken-first",
+                                 pool,
+                                 std::make_shared<LengthFactory>(first),
+                                 ice::CachingStrategy::STREAMING) )
+        return false;
+
+    LengthInput second{ PAGE_FRAMES, PAGE_FRAMES + 3U };
+    second.failingRead = 2U;
+    auto track =
+        ice::AudioTrack::create("broken-second",
+                                pool,
+                                std::make_shared<LengthFactory>(second),
+                                ice::CachingStrategy::STREAMING);
+    // 放开后端后等待明确失败状态，不能把暂时缺页误当作故障。
+    second.prefetch.release();
+    if ( !track || !awaitCondition([&] {
+             return track->streaming_decode_error() == -EIO;
+         }) ||
+         track->end_frame() )
+        return false;
+
+    struct Completion final : ice::PlayCallBack {
+        /// @brief 出错的前缀结束不能被记录成正常播放完成。
+        mutable int count{};
+        void        play_done(bool) const override { ++count; }
+        void        frameplaypos_updated(size_t) override {}
+        void        timeplaypos_updated(std::chrono::nanoseconds) override {}
+    };
+    auto            callback = std::make_shared<Completion>();
+    ice::SourceNode source(track);
+    source.add_playcallback(callback);
+    source.setvolume(1.0F);
+    source.setloop(true);
+    source.set_playpos(PAGE_FRAMES);
+    source.play();
+    ice::AudioBuffer output;
+    if ( !output.resize(ice::ICEConfig::internal_format, 8U) ) return false;
+    // 即使开启循环也应保留这三帧并停在错误位置，不能跳回帧零。
+    source.process(output);
+    return matches(output, PAGE_FRAMES, 3) && !source.isplaying() &&
+           source.get_playpos() == PAGE_FRAMES + 3U && callback->count == 0;
+}
 }  // namespace
 
 /// @brief 覆盖一页估值、零估值、整页 EOF 以及短文件。
@@ -338,5 +394,6 @@ int main()
     if ( !acceptsUnknownShortFile(pool, 0U) ) return 4;
     // 大幅度往返不应依赖已受验证的短文件顺序分支。
     if ( !seeksDistantPages(pool) ) return 5;
+    if ( !preservesReadFailure(pool) ) return 6;
     return 0;
 }
