@@ -6,7 +6,7 @@ file(GLOB_RECURSE ICE_SOURCES CONFIGURE_DEPENDS "ice/*.cpp")
 
 # OpenAL 共用播放循环只调用私有平台接口。每个目标仅编译一种环境与供数线程策略。 递归收集返回绝对路径，必须用同一形式排除另一平台的实现。
 set(ICE_OPENAL_PLATFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ice/out/play/openal")
-# Windows 使用原生优先级，其他受支持目标走 POSIX 环境分支。
+# Windows 使用原生优先级，其他受支持目标走 POSIX 环境分支。 GLOB 会收集两份实现，按平台排除另一份以保持同名私有符号唯一。
 if(WIN32)
   list(REMOVE_ITEM ICE_SOURCES
        "${ICE_OPENAL_PLATFORM_DIR}/ALPlayerPlatformPosix.cpp")
@@ -107,6 +107,7 @@ if(ICE_BUILD_TESTS)
   add_executable(
     ALPlayerPlatformTest
     "${CMAKE_CURRENT_SOURCE_DIR}/../tests/ALPlayerPlatformTest.cpp")
+  # 使用与播放器一致的链接目标，测试才能观察真实设备初始化所使用的适配。
   target_link_libraries(ALPlayerPlatformTest PRIVATE ${ICE_LIBRARY_TARGET})
   # 空值按缺省设置处理；此前 POSIX 不覆盖已存在的空项。
   add_test(NAME IonALPlayerPlatformEmptyDefault COMMAND ALPlayerPlatformTest 2)
@@ -132,6 +133,7 @@ if(ICE_BUILD_TESTS)
   add_executable(
     FFmpegFileReceiverSessionTest
     "${CMAKE_CURRENT_SOURCE_DIR}/../tests/FFmpegFileReceiverSessionTest.cpp")
+  # 测试和实现共用这次源码构建的头与库，避免混用不同版本的接收器对象布局。
   target_link_libraries(FFmpegFileReceiverSessionTest
                         PRIVATE ${ICE_LIBRARY_TARGET})
   add_test(NAME IonFFmpegFileReceiverSessionTest
@@ -145,7 +147,7 @@ if(ICE_BUILD_TESTS)
     # 每个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
-    # 空设备测试需要动态 OpenAL Soft 库，复用现有测试依赖部署入口。
+    # 空设备测试需要动态 OpenAL Soft 库，复用现有测试依赖部署入口。 OpenAL 空设备测试也需要随共享构建部署实际运行时。
     ice_prebuilt_copy_runtime_files(ALPlayerPlatformTest)
     # 合法空轨由 FFmpeg 实际解析，共享模式须随测试部署依赖。
     ice_prebuilt_copy_runtime_files(CachedDecodeResultTest)
