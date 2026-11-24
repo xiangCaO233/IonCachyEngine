@@ -374,6 +374,122 @@ struct SampleArray {
 
 }  // namespace
 
+/// @brief 单次离线编码的容器、编码器和重采样资源所有者。
+/// @details 容器持有流观察值，FIFO 与编码器按固定顺序排尾；接收端只推送输入块。
+class FFmpegFileReceiver::EncoderSession
+{
+public:
+    /// @brief 借用接收器诊断槽直到本次导出结束。
+    /// @param format 输入图格式，初始化后不再变化。
+    /// @param errorMessage 接收器拥有的诊断槽，生命周期覆盖本会话。
+    EncoderSession(AudioDataFormat format, std::string& errorMessage)
+        : m_format(format), m_errorMessage(errorMessage)
+    {
+    }
+
+    /// @brief 释放已经取得的资源，包括 open 中途失败留下的句柄。
+    /// @warning 离线操作，关闭 AVIO 可以阻塞写盘。
+    ~EncoderSession();
+
+    EncoderSession(const EncoderSession&)            = delete;
+    EncoderSession& operator=(const EncoderSession&) = delete;
+
+    /// @brief 按输出路径扩展名初始化容器、编码器和输出流。
+    /// @param outputPath 当前导出的容器路径。
+    /// @param outputSampleRate 请求的编码采样率，零表示自动选择。
+    /// @param requestedBitrate 请求的有损码率，零表示默认值。
+    /// @param blockFrames 用于初始化 FIFO 的输入块容量。
+    /// @return 所有资源初始化完成时返回 true。
+    bool open(const std::filesystem::path& outputPath,
+              std::uint32_t outputSampleRate, std::uint64_t requestedBitrate,
+              std::size_t blockFrames);
+
+    /// @brief 转换输入块并入 FIFO，提交已满足编码帧长的样本。
+    /// @param buffer 引擎平面浮点缓冲。
+    /// @param frame_count 有效帧数。
+    /// @return 转换和入队成功时返回 true，不保证已经产生编码包。
+    bool write_buffer(const AudioBuffer& buffer, std::size_t frame_count);
+
+    /// @brief 依次排出转换延迟、FIFO 尾部和编码器包，再写容器 trailer。
+    /// @warning 离线收尾不检查停止标记，失败不能无条件重试或回滚输出。
+    /// @return 成功时返回 true。
+    bool finish_encoding();
+
+private:
+    /// @brief 初始化输入到编码器格式的重采样器。
+    /// @param blockFrames 初始 FIFO 容量。
+    /// @return 成功时返回 true。
+    bool open_resampler(std::size_t blockFrames);
+
+    /// @brief 将转换后的音频样本写入 FIFO。
+    /// @param converted_data 转换后的声道数据。
+    /// @param frame_count 转换后的帧数。
+    /// @return 完整入队或空输入时返回 true；正帧缺资源或负帧数返回 false。
+    /// @details 复制样本但不接管输入数组所有权，帧数按输出采样率计算。
+    bool write_converted_to_fifo(uint8_t** converted_data, int frame_count);
+
+    /// @brief 将 FIFO 中足够编码的样本送入编码器。
+    /// @param flush 是否正在结束编码，允许写出不足一整帧的尾部。
+    /// @details 短尾不在此补零；发送失败不回滚已取出的 FIFO 数据和 PTS。
+    /// @return 成功时返回 true。
+    bool encode_fifo(bool flush);
+
+    /// @brief 发送一帧给编码器。
+    /// @param frame FFmpeg 音频帧；nullptr 表示刷新编码器。
+    /// @details 发送成功后立即取包；send 返回 EAGAIN
+    /// 也按失败处理，没有重试分支。
+    /// @return 成功时返回 true。
+    bool send_frame(AVFrame* frame);
+
+    /// @brief 接收并写出编码包。
+    /// @param draining 已发送结束帧时为 true，要求最终观察到 EOF。
+    /// @return 普通取包遇到 EAGAIN 或最终排空遇到 EOF 时成功，否则报告错误。
+    bool drain_packets(bool draining);
+
+    /// @brief 记录 FFmpeg 错误文本。
+    /// @param prefix 错误上下文。
+    /// @param code FFmpeg 错误码。
+    void set_ffmpeg_error(const char* prefix, int code);
+
+    /// @brief 为编码会话记录普通失败。
+    /// @param message 要保存的诊断文本。
+    void set_error(std::string message);
+
+    /// @brief 输入图的固定格式；音源修改块布局时据此拒绝输入。
+    AudioDataFormat m_format;
+
+    /// @brief 诊断写入接收器存储，使关闭后的错误仍可读取。
+    std::string& m_errorMessage;
+
+    /// @brief FFmpeg 输出容器上下文。
+    /// @details 由编码会话拥有，析构关闭 AVIO 并释放容器及其流对象。
+    AVFormatContext* m_formatContext{ nullptr };
+
+    /// @brief FFmpeg 音频编码器上下文。
+    AVCodecContext* m_codecContext{ nullptr };
+
+    /// @brief 容器拥有的音频流观察指针，容器释放后仅清空，不单独释放。
+    AVStream* m_stream{ nullptr };
+
+    /// @brief 复用的编码输出包。
+    AVPacket* m_packet{ nullptr };
+
+    /// @brief 引擎格式到编码器格式的重采样器。
+    SwrContext* m_swrContext{ nullptr };
+
+    /// @brief 缓存重采样后样本并按编码器帧长输出的 FIFO。
+    AVAudioFifo* m_fifo{ nullptr };
+
+    /// @brief 下一个编码帧的 PTS，单位为实际编码采样率的一个样本周期。
+    /// @details 发送前即推进，不等同于成功写包的时长，也不用于输入进度回调。
+    int64_t m_nextPts{ 0 };
+
+    /// @brief trailer 是否已经写出。
+    /// @details
+    /// 只在写尾成功后置位，用于防止重复正常收尾，不表示文件已完成磁盘持久化。
+    bool m_trailerWritten{ false };
+};
+
 /// @brief 保存输出配置并为离线块预分配引擎缓冲，不在构造时打开文件。
 /// @param output_path 将在 open 时使用的输出路径。
 /// @param format 输入图的声道数与采样率配置。
@@ -430,7 +546,7 @@ void FFmpegFileReceiver::set_block_frames(std::size_t frame_count)
 /// @return 无效或运行期间拒绝，成功保存时为 true。
 bool FFmpegFileReceiver::set_output_sample_rate(std::uint32_t sample_rate)
 {
-    if ( m_running.load(std::memory_order_relaxed) || m_opened ||
+    if ( m_running.load(std::memory_order_relaxed) || m_session ||
          sample_rate >
              static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ) {
         return false;
@@ -444,7 +560,7 @@ bool FFmpegFileReceiver::set_output_sample_rate(std::uint32_t sample_rate)
 /// @return 非法范围或已开始编码时为 false。
 bool FFmpegFileReceiver::set_bitrate(std::uint64_t bits_per_second)
 {
-    if ( m_running.load(std::memory_order_relaxed) || m_opened ||
+    if ( m_running.load(std::memory_order_relaxed) || m_session ||
          bits_per_second > static_cast<std::uint64_t>(
                                std::numeric_limits<std::int64_t>::max()) ) {
         return false;
@@ -487,39 +603,44 @@ const std::string& FFmpegFileReceiver::error_message() const
 /// @warning 低频文件路径：可能创建或截断输出文件，不在失败时恢复原文件内容。
 bool FFmpegFileReceiver::open()
 {
-    if ( m_opened ) {
-        // 已打开时直接复用，不重置计数、错误或停止请求，也不验证输出路径变化。
+    if ( m_session ) {
+        // 已打开时直接复用，不重置计数、错误或停止请求。
         return true;
     }
     m_errorMessage.clear();
-    // 新一轮才清累计输入进度和输出 PTS，停止标记也在这里清除。
-    m_framesWritten  = 0;
-    m_nextPts        = 0;
-    m_trailerWritten = false;
-    // 新 open 会清除停止请求，所以启动前的 stop 不保证在下一轮继续生效。
+    m_framesWritten = 0;
+    // 新一轮才清停止请求；启动前的停止标记不会延续到下一次导出。
     m_stopRequested.store(false, std::memory_order_relaxed);
 
-    if ( !open_encoder() ) {
-        // 私有初始化分阶段写入成员句柄，统一由 close
-        // 回收，失败文本保留供调用者读取。
-        close();
+    auto session = std::make_unique<EncoderSession>(m_format, m_errorMessage);
+    if ( !session->open(m_outputPath,
+                        m_outputSampleRate,
+                        m_requestedBitrate,
+                        m_blockFrames) ) {
+        // 本地会话析构释放半初始化资源，不覆盖打开失败的首个诊断。
         return false;
     }
+    m_session = std::move(session);
     return true;
 }
 
-/// @brief 尝试正常收尾后释放句柄，不删除失败或取消后的部分输出文件。
-/// @warning 低频耗时路径：可能进行重采样排尾、编码及文件 IO；不能与 start
-/// 并发。
-/// @warning running=false 只是状态发布，不意味着另一个线程已停止访问成员资源。
+/// @brief 尝试正常收尾后释放会话，不删除失败或取消后的部分输出文件。
+/// @warning 低频耗时路径，可能重采样、编码及写盘。调用方须等待 start 返回。
 void FFmpegFileReceiver::close()
 {
-    if ( m_opened && !m_trailerWritten && m_errorMessage.empty() ) {
-        // 只有正常打开且无已知错误时补尾；失败或停止路径不承诺文件含完整
-        // trailer。 close 没有返回值，收尾失败只能通过错误文本观察。
-        static_cast<void>(finish_encoding());
+    if ( m_session && m_errorMessage.empty() ) {
+        // 已写过 trailer 的会话会直接返回。已有失败或取消则禁止补尾。
+        static_cast<void>(m_session->finish_encoding());
     }
+    m_session.reset();
+    // 运行标志用于状态展示，不保护诊断或会话所有权。
+    m_running.store(false, std::memory_order_relaxed);
+}
 
+/// @brief 释放 FFmpeg 资源及容器持有的音频流。
+/// @details 此处不编码排尾。先前操作的诊断优先于关闭文件句柄的错误。
+FFmpegFileReceiver::EncoderSession::~EncoderSession()
+{
     if ( m_fifo ) {
         // FIFO 先释放未提交样本；失败路径不会再尝试把残留数据编码成完整文件。
         av_audio_fifo_free(m_fifo);
@@ -554,15 +675,6 @@ void FFmpegFileReceiver::close()
         }
         avformat_free_context(m_formatContext);
     }
-
-    // stream 随容器上下文释放，只清观察指针，不单独释放流对象。
-    m_formatContext  = nullptr;
-    m_codecContext   = nullptr;
-    m_stream         = nullptr;
-    m_nextPts        = 0;
-    m_opened         = false;
-    m_trailerWritten = false;
-    m_running.store(false, std::memory_order_relaxed);
 }
 
 /// @brief 在调用线程拉取输入预算、编码并完成输出。
@@ -584,7 +696,7 @@ bool FFmpegFileReceiver::start()
         set_error("FFmpegFileReceiver target frame count is zero");
         return false;
     }
-    if ( !m_opened && !open() ) {
+    if ( !m_session && !open() ) {
         return false;
     }
 
@@ -615,7 +727,7 @@ bool FFmpegFileReceiver::start()
             break;
         }
         // 失败块不计入进度，但可能已转换或写入部分数据，因此不能按计数原地重放。
-        if ( !write_buffer(m_buffer, frameCount) ) {
+        if ( !m_session->write_buffer(m_buffer, frameCount) ) {
             ok = false;
             break;
         }
@@ -632,7 +744,7 @@ bool FFmpegFileReceiver::start()
         set_error("FFmpegFileReceiver stopped");
         ok = false;
     }
-    if ( ok && !finish_encoding() ) {
+    if ( ok && !m_session->finish_encoding() ) {
         ok = false;
     }
 
@@ -663,11 +775,13 @@ bool FFmpegFileReceiver::is_running() const
 }
 
 /// @brief 协商输出格式并依次建立容器、编码器、文件与重采样链路。
-/// @return 所有阶段成功且 m_opened 已发布时返回 true。
+/// @return 所有阶段成功时返回 true。
 /// @warning 离线初始化：涉及分配与文件 IO；失败由 open 调用 close
 /// 回收部分句柄。
 /// @warning 文件可能在后续初始化失败前已创建或截断，不提供文件内容回滚。
-bool FFmpegFileReceiver::open_encoder()
+bool FFmpegFileReceiver::EncoderSession::open(
+    const std::filesystem::path& outputFile, std::uint32_t outputSampleRate,
+    std::uint64_t requestedBitrate, std::size_t blockFrames)
 {
     if ( !is_valid_input_format(m_format) ) {
         // 输入采样率用于有符号的编码与重采样接口，不能依赖窄化后的值协商。
@@ -676,7 +790,7 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
-    const std::string outputPath = path_to_utf8(m_outputPath);
+    const std::string outputPath = path_to_utf8(outputFile);
     // C 字符串接口会截断嵌入空字符，必须先拒绝，防止覆盖路径前缀对应的文件。
     // 空路径同样不进入格式推断或文件创建，失败保持外部文件内容不变。
     if ( outputPath.empty() || outputPath.find('\0') != std::string::npos ) {
@@ -684,7 +798,7 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
     const OutputFormatSelection outputSelection =
-        select_output_format(m_outputPath);
+        select_output_format(outputFile);
     // 显式格式覆盖优先；未覆盖时由输出路径让 FFmpeg 选择 muxer。
     int ret = avformat_alloc_output_context2(&m_formatContext,
                                              nullptr,
@@ -711,7 +825,7 @@ bool FFmpegFileReceiver::open_encoder()
     }
 
     const AVCodec* codec =
-        find_output_encoder(outputSelection, codecId, m_requestedBitrate);
+        find_output_encoder(outputSelection, codecId, requestedBitrate);
     if ( !codec ) {
         // 当前 FFmpeg 构建可能裁剪掉所需
         // encoder，不自动更换用户选择的输出格式。
@@ -744,16 +858,15 @@ bool FFmpegFileReceiver::open_encoder()
     }
     // 成功值与错误分离，避免用零时钟或格式结束标记编码失败原因。
     const auto sampleRate = select_sample_rate(
-        codec,
-        m_outputSampleRate == 0 ? m_format.samplerate : m_outputSampleRate);
+        codec, outputSampleRate == 0 ? m_format.samplerate : outputSampleRate);
     if ( !sampleRate ) {
         set_ffmpeg_error("Failed to select encoder sample rate",
                          sampleRate.error());
         return false;
     }
     // 显式采样率必须精确满足，不能把编码器能力表回退伪装为用户所选值。
-    if ( m_outputSampleRate != 0 &&
-         *sampleRate != static_cast<int>(m_outputSampleRate) ) {
+    if ( outputSampleRate != 0 &&
+         *sampleRate != static_cast<int>(outputSampleRate) ) {
         set_error("Encoder does not support requested output sample rate");
         return false;
     }
@@ -775,7 +888,7 @@ bool FFmpegFileReceiver::open_encoder()
     m_codecContext->time_base   = AVRational{ 1, m_codecContext->sample_rate };
     // 显式允许实验性编码器，不把成功打开解释为所有格式均具有相同成熟度。
     m_codecContext->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
-    if ( m_requestedBitrate != 0 && !should_set_default_bitrate(codecId) ) {
+    if ( requestedBitrate != 0 && !should_set_default_bitrate(codecId) ) {
         // 无损/PCM 编码没有可控的目标码率，不能静默忽略用户设置。
         set_error("Output codec does not support adjustable bitrate");
         return false;
@@ -783,9 +896,8 @@ bool FFmpegFileReceiver::open_encoder()
     if ( should_set_default_bitrate(codecId) ) {
         // 有损格式使用显式总码率，未设置时保持历史默认值。
         m_codecContext->bit_rate =
-            m_requestedBitrate == 0
-                ? 192000
-                : static_cast<std::int64_t>(m_requestedBitrate);
+            requestedBitrate == 0 ? 192000
+                                  : static_cast<std::int64_t>(requestedBitrate);
     }
 
     ret = av_channel_layout_copy(&m_codecContext->ch_layout, &outputLayout);
@@ -842,13 +954,12 @@ bool FFmpegFileReceiver::open_encoder()
         return false;
     }
 
-    if ( !open_resampler() ) {
-        // 尚未发布 m_opened，因此失败清理不会试图对未就绪链路补写尾部。
+    if ( !open_resampler(blockFrames) ) {
+        // 打开失败的会话没有转移给接收端，析构只释放句柄。
         return false;
     }
 
     // 编码器、容器头和输入转换全部就绪后才允许写块与正常排尾。
-    m_opened = true;
     return true;
 }
 
@@ -856,7 +967,7 @@ bool FFmpegFileReceiver::open_encoder()
 /// @return 转换器与 FIFO 都可用时返回 true。
 /// @warning 离线初始化：需要已打开的编码上下文，可能分配转换状态和缓存。
 // 相同采样率仍可能需要样本格式或声道转换，因此不会直接跳过重采样器配置。
-bool FFmpegFileReceiver::open_resampler()
+bool FFmpegFileReceiver::EncoderSession::open_resampler(std::size_t blockFrames)
 {
     AVChannelLayout inputLayout{};
     // 引擎输入只给声道数，这里采用默认布局，不支持从 AudioBuffer
@@ -897,7 +1008,7 @@ bool FFmpegFileReceiver::open_resampler()
     // 初始容量只作起点，输入/输出采样率不同时后续写入仍可能扩容。
     m_fifo = av_audio_fifo_alloc(m_codecContext->sample_fmt,
                                  m_codecContext->ch_layout.nb_channels,
-                                 static_cast<int>(m_blockFrames));
+                                 static_cast<int>(blockFrames));
     // 默认块大小及 setter 均保证正值和 int 上界，此处沿用已验证的容量。
     // 容量合法不代表分配必然成功，空句柄仍需进入初始化失败清理。
     if ( !m_fifo ) {
@@ -913,8 +1024,8 @@ bool FFmpegFileReceiver::open_resampler()
 /// @param frame_count 输入采样率下的有效帧数，不是输出编码帧长。
 /// @return 转换和入队成功时返回 true，不保证本块已经产生文件输出包。
 /// @warning 离线逐块路径：分配样本数组与声道指针表，不能用于实时音频回调。
-bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
-                                      std::size_t        frame_count)
+bool FFmpegFileReceiver::EncoderSession::write_buffer(const AudioBuffer& buffer,
+                                                      std::size_t frame_count)
 {
     if ( !m_swrContext || !m_fifo || !m_codecContext ) {
         set_error("FFmpegFileReceiver is not open");
@@ -1010,8 +1121,8 @@ bool FFmpegFileReceiver::write_buffer(const AudioBuffer& buffer,
 /// @param frame_count 输出采样率下的帧数。
 /// @return 成功入队或零帧无操作时返回 true；无效状态和短写返回 false。
 /// @warning 离线路径：FIFO 可能扩容和复制样本，不能在实时回调中调用。
-bool FFmpegFileReceiver::write_converted_to_fifo(uint8_t** converted_data,
-                                                 int       frame_count)
+bool FFmpegFileReceiver::EncoderSession::write_converted_to_fifo(
+    uint8_t** converted_data, int frame_count)
 {
     // 零帧无需访问任何存储，但正帧输入不能在缺失资源时静默丢弃。
     // 调用者依据成功值增加输入进度，错误的无操作成功会把漏写样本计入结果。
@@ -1057,7 +1168,7 @@ bool FFmpegFileReceiver::write_converted_to_fifo(uint8_t** converted_data,
 /// @param flush 结束阶段允许提交不足固定帧长的最后一帧。
 /// @return 所有可提交样本处理成功时返回 true，缺少编码资源时返回 false。
 /// @warning 离线编码路径：逐帧分配 AVFrame 与样本区，发送后可能进行文件写入。
-bool FFmpegFileReceiver::encode_fifo(bool flush)
+bool FFmpegFileReceiver::EncoderSession::encode_fifo(bool flush)
 {
     if ( !m_fifo || !m_codecContext ) {
         // 缺失队列或编码器并非排空成功，内部不变量被破坏时仍向上层报告失败。
@@ -1159,16 +1270,14 @@ bool FFmpegFileReceiver::encode_fifo(bool flush)
 /// @warning
 /// 离线耗时路径：可能多次分配、编码与写文件，不检查停止标记或提供时限。
 /// @warning 失败不回滚已消耗样本或已写文件；调用者不能无条件重试整个收尾流程。
-bool FFmpegFileReceiver::finish_encoding()
+bool FFmpegFileReceiver::EncoderSession::finish_encoding()
 {
-    if ( !m_opened || m_trailerWritten ) {
-        // 未完成 open 的半初始化链路不排尾；成功写过 trailer 的链路也不重复提交
-        // EOF。
+    if ( m_trailerWritten ) {
+        // 接收器可以在正常结束后再调用 close；已经写过 trailer 就不重复排尾。
         return true;
     }
 
     // 已打开状态必须具有完整链路，缺资源不能按空延迟或空队列继续写尾。
-    // 检查放在未打开状态的早退之后，允许 open 失败时清理部分初始化句柄。
     // 此处留下诊断使 close 跳过补尾重试，随后仍按已有顺序释放剩余资源。
     // 不在错误路径重建转换器，以免丢失原链路累计的延迟和时间戳。
     if ( !m_swrContext || !m_fifo || !m_codecContext || !m_formatContext ||
@@ -1258,7 +1367,7 @@ bool FFmpegFileReceiver::finish_encoding()
 /// @warning 离线编码路径：可能编码和写文件，不保留调用者帧指针供异步任务使用。
 /// @warning send 的负返回值全部按失败处理，没有针对 EAGAIN 先 drain
 /// 后重试的分支。
-bool FFmpegFileReceiver::send_frame(AVFrame* frame)
+bool FFmpegFileReceiver::EncoderSession::send_frame(AVFrame* frame)
 {
     if ( !m_codecContext ) {
         // 即使调用链通常由 open 保证资源存在，也不能把漏发帧报告为成功。
@@ -1286,7 +1395,7 @@ bool FFmpegFileReceiver::send_frame(AVFrame* frame)
 /// 路径：循环次数由编码器输出决定，不检查停止标记或限制执行时间。
 /// @warning 依赖 codec、stream 与 format
 /// 上下文已就绪；这里只单独验证复用包存在。
-bool FFmpegFileReceiver::drain_packets(bool draining)
+bool FFmpegFileReceiver::EncoderSession::drain_packets(bool draining)
 {
     if ( !m_packet ) {
         // 没有复用包无法接收编码结果，不能把资源未初始化解释成暂无输出。
@@ -1333,7 +1442,8 @@ bool FFmpegFileReceiver::drain_packets(bool draining)
 /// @param prefix 非空的操作描述字符串。
 /// @param code FFmpeg 返回的状态码，调用者负责判断它是否表示失败。
 /// @warning 诊断路径会分配字符串，不同步保护读取者，也不累计完整错误历史。
-void FFmpegFileReceiver::set_ffmpeg_error(const char* prefix, int code)
+void FFmpegFileReceiver::EncoderSession::set_ffmpeg_error(const char* prefix,
+                                                          int         code)
 {
     // 只保存最后一次错误，后续 set_error
     // 可覆盖；此函数本身不停止循环或释放资源。
@@ -1344,11 +1454,17 @@ void FFmpegFileReceiver::set_ffmpeg_error(const char* prefix, int code)
 /// @param message 要保存的诊断文本，移动进成员以复用调用方字符串存储。
 /// @warning 与 error_message
 /// 的引用读取不能无同步并发，调用者需保证对象线程归属。
-void FFmpegFileReceiver::set_error(std::string message)
+void FFmpegFileReceiver::EncoderSession::set_error(std::string message)
 {
     // 统一保存错误供 start/open/close
     // 决策，设置文本不等于文件已关闭或尾部已写完。
     // 错误赋值不发布原子完成状态，读取线程必须通过外部同步保证字符串没有并发修改。
+    m_errorMessage = std::move(message);
+}
+
+/// @brief 保存接收端准备、图拉取或取消的失败说明。
+void FFmpegFileReceiver::set_error(std::string message)
+{
     m_errorMessage = std::move(message);
 }
 
