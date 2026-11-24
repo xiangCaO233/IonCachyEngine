@@ -80,6 +80,15 @@ if(ICE_BUILD_TESTS)
            COMMAND StreamingDecoderLengthTest)
   # 门闩测试出现回收问题时，CTest 仍能报告并终止失败用例。
   set_tests_properties(IonStreamingDecoderLengthTest PROPERTIES TIMEOUT 30)
+  # 音轨池用真实流式解码线程和内存工厂隔离慢加载、慢回收及同路径竞争。 门闩仅用于测试同步。CTest 超时约束实现回归造成的进程无法退出。
+  add_executable(
+    AudioPoolConcurrencyTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/AudioPoolConcurrencyTest.cpp")
+  # 使用与示例一致的引擎链接配置，保证回收真正的后台预读对象。
+  target_link_libraries(AudioPoolConcurrencyTest PRIVATE ${ICE_LIBRARY_TARGET})
+  add_test(NAME IonAudioPoolConcurrencyTest COMMAND AudioPoolConcurrencyTest)
+  # 若回归导致测试线程无法释放门闩，CTest 的进程级超时负责收尾。
+  set_tests_properties(IonAudioPoolConcurrencyTest PROPERTIES TIMEOUT 30)
   # shared 预编译依赖复制到独立测试程序旁边，避免 Windows 运行时查找不到 DLL。 源码依赖模式不一定定义运行时复制函数，因此先检查
   # helper 是否存在。
   if(COMMAND ice_prebuilt_copy_runtime_files)
@@ -87,6 +96,7 @@ if(ICE_BUILD_TESTS)
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
     ice_prebuilt_copy_runtime_files(StreamingDecoderLengthTest)
+    ice_prebuilt_copy_runtime_files(AudioPoolConcurrencyTest)
   endif()
 
   message(STATUS "Building IonCachyEngine tests enabled.")
