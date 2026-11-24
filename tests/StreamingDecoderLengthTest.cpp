@@ -50,6 +50,8 @@ struct LengthInput {
     std::atomic<size_t> exactSeeks{};
     /// @brief 在指定读操作输出有效前缀后报告底层 IO 错误。
     std::size_t failingRead{};
+    /// @brief 在测试观察到正常曲尾后，注入后续回跳读取失败。
+    std::atomic<bool> failAfterEof{};
 };
 
 /// @brief 能独立控制实际可读长度与元信息估值的顺序解码替身。
@@ -95,6 +97,11 @@ public:
              !m_input.prefetch.try_acquire_for(std::chrono::seconds(5)) )
             return 0;
 
+        // 该开关在预读线程确认曲尾后才会发布，独立于首次读取的故障计数。
+        if ( m_input.failAfterEof.load(std::memory_order_relaxed) ) {
+            m_error = -EIO;
+            return 0;
+        }
         // 由真实长度裁剪最后一页，精确整页的结束通过下一次读返回零体现。
         const auto count = std::min(frames, m_input.total - m_cursor);
         for ( std::size_t channel = 0; channel < m_format.channels;
@@ -377,6 +384,40 @@ bool preservesReadFailure(ice::ThreadPool& pool)
     return matches(output, PAGE_FRAMES, 3) && !source.isplaying() &&
            source.get_playpos() == PAGE_FRAMES + 3U && callback->count == 0;
 }
+/// @brief 已知正常曲尾不应掩盖回跳到未缓存区域后的后端错误。
+bool stopsAfterFailedRewind(ice::ThreadPool& pool)
+{
+    // 元信息只为一页预算，实际尾页到达后会淘汰最早的缓存页。
+    constexpr size_t tail = 4U * PAGE_FRAMES;
+    LengthInput      input{ PAGE_FRAMES, tail + 3U };
+    input.exactSeek = true;
+    auto track      = ice::AudioTrack::create("rewind-failure",
+                                         pool,
+                                         std::make_shared<LengthFactory>(input),
+                                         ice::CachingStrategy::STREAMING);
+    input.prefetch.release();
+    ice::AudioBuffer block;
+    if ( !track || !block.resize(ice::ICEConfig::internal_format, 8U) )
+        return false;
+    if ( !awaitCondition([&] {
+             track->read(block, tail, 8U);
+             return track->end_frame() == input.total;
+         }) )
+        return false;
+
+    // 正常曲尾已经被确认。回跳重新读取是另一项操作，可能遇到真实 IO 错误。
+    input.failAfterEof.store(true, std::memory_order_relaxed);
+    ice::SourceNode source(track);
+    source.play();
+    if ( !awaitCondition([&] {
+             source.process(block);
+             return track->streaming_decode_error() == -EIO;
+         }) )
+        return false;
+    // 第一次缺页可能发生在错误公开之前，再处理一块以观察终止决策。
+    source.process(block);
+    return !source.isplaying() && source.get_playpos() == 0;
+}
 }  // namespace
 
 /// @brief 覆盖一页估值、零估值、整页 EOF 以及短文件。
@@ -395,5 +436,6 @@ int main()
     // 大幅度往返不应依赖已受验证的短文件顺序分支。
     if ( !seeksDistantPages(pool) ) return 5;
     if ( !preservesReadFailure(pool) ) return 6;
+    if ( !stopsAfterFailedRewind(pool) ) return 7;
     return 0;
 }
