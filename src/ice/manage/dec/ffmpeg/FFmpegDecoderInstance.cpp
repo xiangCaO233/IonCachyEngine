@@ -19,6 +19,7 @@ extern "C" {
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -442,6 +443,47 @@ public:
         return true;
     }
 
+    /// @brief 利用 PCM WAVE 的块对齐规则定位，不重建重采样相位。
+    /// @details FFmpeg 的 WAVE 读取器按字节宽度换算帧位置。需要前导帧的编码
+    /// 或需要历史采样的重采样不满足这个契约，调用方继续顺序读取。
+    std::optional<bool> seek_exact_frame(size_t frame)
+    {
+        if ( !m_ready ||
+             m_sourceSampleRate != static_cast<int>(ice_format.samplerate) ||
+             avfmt_ctx->nb_streams != 1 || !avfmt_ctx->pb ||
+             !(avfmt_ctx->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+             std::string_view(avfmt_ctx->iformat->name) != "wav" )
+            return std::nullopt;
+
+        const auto* stream = avfmt_ctx->streams[stream_index];
+        const auto* codec  = stream->codecpar;
+        // 仅接受每通道每帧占固定整数个字节、且无编码前导帧的 PCM。
+        switch ( codec->codec_id ) {
+        case AV_CODEC_ID_PCM_U8:
+        case AV_CODEC_ID_PCM_S16LE:
+        case AV_CODEC_ID_PCM_S24LE:
+        case AV_CODEC_ID_PCM_S32LE:
+        case AV_CODEC_ID_PCM_F32LE:
+        case AV_CODEC_ID_PCM_F64LE: break;
+        default: return std::nullopt;
+        }
+        const auto bytes = av_get_exact_bits_per_sample(codec->codec_id) / 8;
+        if ( codec->block_align <= 0 || codec->ch_layout.nb_channels <= 0 ||
+             codec->block_align / codec->ch_layout.nb_channels != bytes ||
+             codec->block_align % codec->ch_layout.nb_channels != 0 ||
+             (codec->bit_rate > 0 &&
+              codec->bit_rate != static_cast<int64_t>(codec->block_align) *
+                                     m_sourceSampleRate * 8) ||
+             stream->time_base.num != 1 ||
+             stream->time_base.den != m_sourceSampleRate ||
+             (stream->start_time != 0 && stream->start_time != AV_NOPTS_VALUE) )
+            return std::nullopt;
+
+        // 超出已知容器长度的请求由顺序路径确认实际 EOF，不把寻道落点当作结尾。
+        if ( frame >= total_frames ) return std::nullopt;
+        return seek_to_frame(frame);
+    }
+
     /// @brief 解码数据并在坏包/坏帧上保留已解出的音频。
     /// @param buffer 输出缓冲区，按声道平面排列。
     /// @param chunksize 本次请求的目标帧数。
@@ -479,9 +521,9 @@ public:
                              conversion_buffer_remains);
 
                 for ( uint16_t ch = 0; ch < ice_format.channels; ++ch ) {
-                    const float* src  = conversion_buffer.raw_ptrs()[ch] +
-                                        conversion_buffer_offset;
-                    float*       dest = buffer[ch] + frames_decoded_total;
+                    const float* src = conversion_buffer.raw_ptrs()[ch] +
+                                       conversion_buffer_offset;
+                    float* dest = buffer[ch] + frames_decoded_total;
                     std::memcpy(dest, src, frames_to_copy * sizeof(float));
                 }
 
@@ -774,6 +816,12 @@ bool FFmpegDecoderInstance::seek(size_t pos)
 {
     // 直接传播失败，不把 seek 后可能部分重置的状态包装成成功。
     return ffimpl->seek_to_frame(pos);
+}
+
+/// @brief 将可证明精确的目标位置交给后端，始终在解码工作线程执行。
+std::optional<bool> FFmpegDecoderInstance::seek_exact(size_t pos)
+{
+    return ffimpl->seek_exact_frame(pos);
 }
 
 /// @brief 将至多 chunksize 帧写入调用方平面，返回有效帧数而不填充剩余空间。

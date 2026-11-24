@@ -7,10 +7,12 @@
 #include "ice/thread/ThreadPool.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <semaphore>
 #include <string_view>
 #include <thread>
@@ -39,6 +41,12 @@ struct LengthInput {
     std::size_t total;
     /// @brief 只拦截首次后台预读；同步首块和后续预读无门闩。
     std::binary_semaphore prefetch{ 0 };
+    /// @brief 开启后按目标帧精确寻址，模拟能直接按 PCM 帧定位的后端。
+    bool exactSeek{};
+    /// @brief 工作线程统计实际供数，测试读取只用于核对解码工作量。
+    std::atomic<size_t> decodedFrames{};
+    /// @brief 仅统计非顺序定位，与正常首块读取区分。
+    std::atomic<size_t> exactSeeks{};
 };
 
 /// @brief 能独立控制实际可读长度与元信息估值的顺序解码替身。
@@ -64,6 +72,15 @@ public:
         return true;
     }
 
+    /// @brief 模拟逐帧定位，不遍历任何中间 PCM。
+    std::optional<bool> seek_exact(size_t frame) override
+    {
+        if ( !m_input.exactSeek || frame >= m_input.total ) return std::nullopt;
+        m_cursor = frame;
+        m_input.exactSeeks.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
     /// @brief 按真实长度返回 PCM，后台首次读取由测试控制。
     /// @param output 引擎准备的平面缓冲，从每个声道的第零帧开始写入。
     /// @param frames 请求容量；不得根据元信息调整真实样本生成范围。
@@ -82,6 +99,8 @@ public:
             for ( std::size_t frame = 0; frame < count; ++frame )
                 output[channel][frame] = sample(m_cursor + frame, channel);
         }
+        // 统计后端读取实际交付的帧，兼容页尾短读和探测后的 EOF。
+        m_input.decodedFrames.fetch_add(count, std::memory_order_relaxed);
         m_cursor += count;
         return count;
     }
@@ -262,6 +281,46 @@ bool acceptsUnknownShortFile(ice::ThreadPool& pool, std::size_t total)
     return block.resize(ice::ICEConfig::internal_format, 8U) &&
            track->read(block, 0U, 8U) == total && matches(block, 0U, total);
 }
+/// @brief 验证大跨度前跳和回跳，在首目标页就恢复正确样本。
+/// 曲长以合成帧计算，不产生大文件；页数限制直接检测是否仍在顺序追赶。
+/// @param pool 音轨创建共用任务池，模拟的流式后端另有预读线程。
+bool seeksDistantPages(ice::ThreadPool& pool)
+{
+    constexpr auto pages = 400U;
+    LengthInput    input{ pages * PAGE_FRAMES, pages * PAGE_FRAMES };
+    input.exactSeek = true;
+    auto track      = ice::AudioTrack::create("long-stream",
+                                         pool,
+                                         std::make_shared<LengthFactory>(input),
+                                         ice::CachingStrategy::STREAMING);
+    // 缓存未提供目标页时无需等待 IO，也不推进静音。先准备输出，再放开后台门闩。
+    ice::AudioBuffer block;
+    if ( !track || !block.resize(ice::ICEConfig::internal_format, 8U) ) {
+        input.prefetch.release();
+        return false;
+    }
+    constexpr auto forward         = 350U * PAGE_FRAMES + 37U;
+    constexpr auto backward        = 25U * PAGE_FRAMES + 19U;
+    const auto     before          = std::chrono::steady_clock::now();
+    const bool     stalledAtTarget = track->read(block, forward, 8U) == 0U;
+    input.prefetch.release();
+    if ( !stalledAtTarget ) return false;
+
+    // 读回结果直接和绝对帧的生成器比对，不能把关键帧附近的 PCM 当作目标。
+    for ( const auto position : { forward, backward } ) {
+        if ( !awaitCondition([&] {
+                 return track->read(block, position, 8U) == 8U &&
+                        matches(block, position, 8U);
+             }) )
+            return false;
+    }
+    // 包含首块、后台预读及两次目标跳转，最多允许十页；原先需读数百页。
+    const auto totalDecoded =
+        input.decodedFrames.load(std::memory_order_relaxed);
+    return input.exactSeeks.load(std::memory_order_relaxed) >= 2U &&
+           totalDecoded <= 10U * PAGE_FRAMES &&
+           std::chrono::steady_clock::now() - before < std::chrono::seconds(5);
+}
 }  // namespace
 
 /// @brief 覆盖一页估值、零估值、整页 EOF 以及短文件。
@@ -277,5 +336,7 @@ int main()
     // 空轨与真实短轨都在创建阶段确认，但只有后者可以交付样本。
     if ( !acceptsUnknownShortFile(pool, 3U) ) return 3;
     if ( !acceptsUnknownShortFile(pool, 0U) ) return 4;
+    // 大幅度往返不应依赖已受验证的短文件顺序分支。
+    if ( !seeksDistantPages(pool) ) return 5;
     return 0;
 }

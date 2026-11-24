@@ -95,7 +95,7 @@ public:
     /// @param start_frame 每声道缓存起始帧，不修改音轨或调用方节点的播放游标。
     /// @param frame_count 请求帧数，超出目标可写容量时返回零。
     /// @return 解码器报告的区间帧数；额外声道及尾部可能保持原内容。
-    /// 流式缺页返回值包含静音帧，不能据此断定对应 PCM 已从文件读取。
+    /// 流式缺页时只返回可读前缀，调用方可在下个音频块重试剩余区间。
     /// @warning 音频逐块读取入口：须预先完成缓存准备，不允许新增
     /// IO、分配或阻塞。
     size_t read(AudioBuffer& buffer, size_t start_frame,

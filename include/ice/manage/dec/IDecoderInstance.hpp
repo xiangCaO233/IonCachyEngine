@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 
 namespace ice
 {
@@ -36,5 +37,10 @@ public:
     /// @brief 查询实例报告的总帧数估计，不等同于累计 read 返回值。
     /// @return 后端定义的长度；采样率单位及未知长度表示应按具体实现解释。
     virtual size_t get_source_total_frames() const = 0;
+
+    /// @brief 尝试定位到目标采样率下的绝对帧；成功后下一次读取从该帧开始。
+    /// @return 未支持时返回空且不改变状态；失败返回 false，须用 seek(0) 恢复。
+    /// @warning 由解码工作线程串行调用；默认实现不支持随机精确定位。
+    virtual std::optional<bool> seek_exact(size_t) { return std::nullopt; }
 };
 }  // namespace ice
