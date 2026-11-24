@@ -1,5 +1,7 @@
 #include <ice/out/play/openal/ALPlayer.hpp>
 
+#include "ALPlayerPlatform.h"
+
 #include <ice/core/IAudioNode.hpp>
 #include <ice/manage/AudioBuffer.hpp>
 
@@ -16,7 +18,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -25,16 +26,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#ifdef _WIN32
-#    ifndef WIN32_LEAN_AND_MEAN
-#        define WIN32_LEAN_AND_MEAN
-#    endif
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    include <windows.h>
-#endif
 
 #if defined(ICE_OPENALSOFT_STATIC_LINKAGE)
 // 日志钩子属于静态 OpenAL Soft 包的额外入口，并非通用 OpenAL ABI。
@@ -107,47 +98,6 @@ struct ALSpatialState {
     /// @brief 距离衰减倍率。
     float rolloffFactor{ 1.0f };
 };
-
-/// @brief 在未提供非空配置时设置进程环境默认值。
-/// @param name 环境变量名。
-/// @param value 后端首次初始化前使用的默认值。
-/// @warning 仅在控制侧初始化期间调用；不得与环境配置写入并发执行。
-void setEnvironmentDefault(const char* name, const char* value)
-{
-    // 非空的外部设置优先，允许使用者选择驱动或诊断级别。
-    const char* currentValue = std::getenv(name);
-    if ( currentValue && *currentValue ) {
-        return;
-    }
-
-#ifdef _WIN32
-    _putenv_s(name, value);
-#else
-    // POSIX 分支禁止覆盖已存在项，因此已存在的空值也会保留。
-    setenv(name, value, 0);
-#endif
-}
-
-/// @brief 在实际打开设备前准备 OpenAL Soft 驱动顺序与日志级别。
-/// 环境设置不验证驱动可用性，设备失败仍由 open 的回退路径处理。
-void configureOpenALSoftEnvironment()
-{
-#ifdef _WIN32
-    // 驱动顺序影响默认打开尝试；外部显式 ALSOFT_DRIVERS 会优先保留。
-    setEnvironmentDefault("ALSOFT_DRIVERS", "winmm,dsound,wasapi");
-#endif
-    setEnvironmentDefault("ALSOFT_LOGLEVEL", "2");
-}
-
-/// @brief 在 Windows 提升供数线程优先级以减少调度欠载。
-/// @warning 每次启动线程只调用一次；禁止加入逐块日志或阻塞操作。
-/// 设置失败时保留系统原优先级，不能据此承诺硬实时调度。
-void configureOpenALThreadPriority()
-{
-#ifdef _WIN32
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-#endif
-}
 
 /// @brief 将日志片段截断追加到固定缓冲区。
 /// @param text 可读取至少 length 字节的文本。
@@ -568,7 +518,7 @@ ALPlayer::~ALPlayer()
 /// @pre 调用方在创建播放实例前串行执行初始化。
 bool ALPlayer::init_backend()
 {
-    configureOpenALSoftEnvironment();
+    OpenALPlatform::configure_environment();
     installOpenALSoftLogCallback();
     al_inited.store(true);
     return true;
@@ -1186,7 +1136,7 @@ void ALPlayer::set_spatial_parameters(float directionX, float directionY,
 /// @pre 只能由 start 创建一次；设备资源须保持有效直到线程退出。
 void ALPlayer::audio_thread_loop()
 {
-    configureOpenALThreadPriority();
+    OpenALPlatform::configure_feed_thread();
 
     // 启动前已准备两种输出存储；线程只借用，不在入口分配或退出时回收容量。
     // 块契约检查限制后续 resize 长度，停止并等待结束后控制侧才可再次准备。
