@@ -6,6 +6,7 @@
 /// 堆操作计数不测量回调耗时、锁竞争或调度抖动，零计数不能证明满足实时截止期限。
 /// 本文件定义全局分配替换入口，应独立链接，不能与另一组全局替换定义合并。
 #include "ice/core/IAudioNode.hpp"
+#include "ice/core/effect/Clipper.hpp"
 #include "ice/core/effect/Compresser.hpp"
 #include "ice/core/effect/PitchAlter.hpp"
 #include "ice/core/effect/TimeStretcher.hpp"
@@ -2125,6 +2126,105 @@ int testPitchAlterPreparedCapacity()
                "disconnected pitch preserves the mix");
 }
 
+/// @brief 验证削波覆盖已使用的平面缓冲，并且只处理本块的活动帧。
+/// @return PCM、非活动尾部或实时分配断言的失败数量。
+/// @details 通过公开节点入口拉取真实上游，覆盖基类准备和派生处理的边界。
+/// 本用例比较确定的浮点 PCM 值，不依赖播放设备、时间或分配器地址。
+/// 确切的期望值还可发现把硬削波误实现为整体归一化或软饱和。
+int testClipperOverwritesActiveSamples()
+{
+    // 分别覆盖阈值内、等于阈值、超限和异常浮点输入。
+    // 正负无穷分别检查两个方向的饱和；NaN 需要独立的静音分支。
+    // 注入左右两路相反索引的同一图案，交换声道或复用左样本都会失败。
+    using Samples = std::array<float, 9U>;
+    constexpr Samples input{
+        -2.0F,
+        -1.0F,
+        -0.25F,
+        0.5F,
+        1.0F,
+        2.0F,
+        -std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+    };
+    // 独立列出阈值参考值，不重用生产侧算法或比较时再裁剪。
+    // 这些值都能精确表示为 float，逐样本等值足以判定正确性。
+    constexpr Samples expected{
+        -1.0F, -1.0F, -0.25F, 0.5F, 1.0F, 1.0F, -1.0F, 0.0F, 1.0F,
+    };
+
+    /// @brief 以上游测试数据逐块填充，各声道使用相反索引排除串线。
+    class PatternNode final : public ice::IAudioNode
+    {
+    public:
+        /// @brief 预先借用测试栈上样本，生命周期覆盖所有调用。
+        /// @param samples 数据在测试函数中先于节点构造、晚于节点销毁。
+        explicit PatternNode(const Samples& samples) : m_samples(samples) {}
+
+        /// @brief 写满有效输入，不接触零长度或非活动帧。
+        /// @warning 每块测试回调，不分配、不跨线程共享。
+        /// @pre 测试已将上游预备为双声道，活动长度不可能超过图案。
+        void process(ice::AudioBuffer& buffer) override
+        {
+            const auto frames = buffer.num_frames();
+            if ( frames == 0U ) return;
+            // 右侧从图案尾部向前写，保证短块也存在声道差异。
+            auto* const* planes = buffer.raw_ptrs();
+            std::copy_n(m_samples.begin(), frames, planes[0]);
+            std::copy_n(m_samples.rbegin(), frames, planes[1]);
+        }
+
+    private:
+        /// @brief 当前测试函数内不可变的合成 PCM。
+        const Samples& m_samples;
+    };
+
+    const ice::AudioDataFormat format{ 2U, 48000U };
+    // 选在有效幅度内且与任何参考输出不同，误保留或当作混音源都会失败。
+    constexpr float oldSample = 0.75F;
+    ice::Clipper    clipper;
+    // 夹具分配及所有权交接安排在控制侧，不记作实时线程事件。
+    clipper.prepare(format, input.size());
+    clipper.set_inputnode(std::make_shared<PatternNode>(input));
+    ice::AudioBuffer output(format, input.size());
+    int              failures = 0;
+    // 满块、短块、空块后再处理满块，确认节点不借用上一次活动长度。
+    // 四次共用同一块输出存储，只调整活动帧数以复现回调中的复用方式。
+    // 空块应完全保留哨兵，即使短块的上游数据仍驻留在物理容量中。
+    for ( auto frames : { input.size(),
+                          input.size() / 2U,
+                          std::size_t{ 0U },
+                          input.size() } ) {
+        // 保留非零目标哨兵用于捕获空实现，也检查未激活的尾部保持原值。
+        for ( auto channel = 0U; channel < format.channels; ++channel )
+            std::fill_n(output.raw_ptrs()[channel], input.size(), oldSample);
+        output.set_active_frames(frames);
+        // 计数窗口只包围节点处理，断言和诊断都会在窗口结束后执行。
+        beginHeapTracking();
+        clipper.process(output);
+        endHeapTracking();
+        failures += expectNoHeapAllocation("clipper callback");
+        // 恢复物理容量对应的活动长度用于检查处理范围以外的原始样本。
+        // 此次恢复不重新分配或清零，因此可以看到节点是否提前覆盖了尾部。
+        output.set_active_frames(input.size());
+        for ( auto channel = 0U; channel < format.channels; ++channel ) {
+            for ( auto frame = 0U; frame < input.size(); ++frame ) {
+                // 两路参考均在同一份手工输出表中，右侧使用源图案的逆序。
+                // 非活动帧应保留哨兵，活动帧则不能残留以前的目标数据。
+                const auto index =
+                    channel == 0U ? frame : input.size() - 1U - frame;
+                failures += expectTrue(
+                    output.raw_ptrs()[channel][frame] ==
+                        (frame < frames ? expected[index] : oldSample),
+                    "clipper overwrites active samples and preserves the tail");
+            }
+        }
+    }
+    // 与其他实时场景累加失败数，让分配和 PCM 断言均能报告结果。
+    return failures;
+}
+
 /// @brief 串行执行实时处理回归用例并汇总退出状态。
 /// @return 全部断言通过返回零，否则返回一，供 CTest 判断成功与失败。
 /// @details 失败数不会作为退出码直接返回，防止多个失败在进程退出码中截断为零。
@@ -2135,6 +2235,7 @@ int main()
 {
     int failures = 0;
     failures += testPitchAlterPreparedCapacity();
+    failures += testClipperOverwritesActiveSamples();
     failures += testCompressorChannelReprepare();
     failures += testCompressorGainChangeBetweenBlocks();
     failures += testRealtimeStateAndReset();
