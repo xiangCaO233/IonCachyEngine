@@ -25,6 +25,16 @@ size_t AudioTrack::num_frames() const
     return m_decoder ? m_decoder->num_frames() : 0;
 }
 
+/// @brief 由完整缓存策略交付帧数与错误，保持流式状态查询协议独立。
+/// @warning 可能等待缓存首次完成；不得用在设备回调中。
+std::optional<CachedDecodeResult> AudioTrack::cached_decode_result() const
+{
+    // 创建后不会更换策略，只有完整缓存对象定义这项准备结果。
+    if ( m_strategy != CachingStrategy::CACHY || !m_decoder )
+        return std::nullopt;
+    return static_cast<const CachyDecoder&>(*m_decoder).cached_decode_result();
+}
+
 /// @brief 将流式末尾与暂定长度区分开，完整缓存仍以实际 PCM 帧数为准。
 /// @warning 流式路径只读取后台发布的边界，完整缓存首次查询可能等待。
 std::optional<size_t> AudioTrack::end_frame() const

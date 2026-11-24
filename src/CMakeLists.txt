@@ -69,6 +69,18 @@ if(ICE_BUILD_TESTS)
   endif()
   # 只登记自动化用例，示例播放器不参与无人值守测试；此处没有设置 CTest 超时。
   add_test(NAME IonTimeStretcherRealtimeTest COMMAND TimeStretcherRealtimeTest)
+  # 完整缓存回归使用短小的 WAVE 样本与可控后台任务，覆盖合法空轨和各阶段错误。 测试输入只生成在构建目录，避免污染源码或依赖音频设备。
+  add_executable(
+    CachedDecodeResultTest
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/CachedDecodeResultTest.cpp")
+  # 直接使用本次编译的库，验证新增准备结果与真实后端实现同时可用。
+  target_link_libraries(CachedDecodeResultTest PRIVATE ${ICE_LIBRARY_TARGET})
+  # 输出样本由命令参数指定，运行目录变化不会覆盖其他测试的文件。
+  add_test(NAME IonCachedDecodeResultTest
+           COMMAND CachedDecodeResultTest
+                   "${CMAKE_CURRENT_BINARY_DIR}/cached-decode-test")
+  # 测试池的任务没有固定延时；超时用来发现意外的后台等待。
+  set_tests_properties(IonCachedDecodeResultTest PROPERTIES TIMEOUT 30)
   # 独立验证流式估值、后台读取和实际结束帧，完全使用可控的内存后端。 测试直接复用当前引擎目标，不依赖宿主应用或录制设备。
   # 超时只约束测试同步失败时的退出，不进入正式播放。
   add_executable(
@@ -95,6 +107,8 @@ if(ICE_BUILD_TESTS)
     # 每个可执行文件分别部署运行时，单独启动测试也能找到动态依赖。
     ice_prebuilt_copy_runtime_files(testIonCachyEngin)
     ice_prebuilt_copy_runtime_files(TimeStretcherRealtimeTest)
+    # 合法空轨由 FFmpeg 实际解析，共享模式须随测试部署依赖。
+    ice_prebuilt_copy_runtime_files(CachedDecodeResultTest)
     ice_prebuilt_copy_runtime_files(StreamingDecoderLengthTest)
     ice_prebuilt_copy_runtime_files(AudioPoolConcurrencyTest)
   endif()

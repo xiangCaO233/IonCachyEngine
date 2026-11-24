@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ice/manage/AudioFormat.hpp>
+#include <ice/manage/dec/CachedDecodeResult.hpp>
 #include <ice/manage/dec/IDecoder.hpp>
 
 #include <cstddef>
@@ -34,7 +35,7 @@ public:
     /// @param target_format
     /// 非零目标格式；后端须匹配采样率和声道数，允许单声道复制扩展。
     /// @param thread_pool 接收任务的后台线程池，停止时创建失败。
-    /// @param factory 解码工厂，任务共享持有；空值或已知加载失败产生空缓存。
+    /// @param factory 解码工厂，任务共享持有；已知失败保留为可查询诊断。
     /// @return 路径、目标格式无效或提交被拒绝时返回空指针；非空不代表解码成功。
     /// @warning 低频创建涉及分配与队列锁；历史提交/构造失败仍可能抛出异常。
     [[nodiscard]] static std::unique_ptr<CachyDecoder> create(
@@ -49,6 +50,10 @@ public:
         const auto& data = get_data();
         return data.pcm_data.empty() ? 0 : data.pcm_data[0].size();
     }
+    /// @brief 查询完整解码帧数或稳定的失败诊断。
+    /// @warning 仅用于控制侧准备，首次访问可能等待工作线程。
+    [[nodiscard]] CachedDecodeResult cached_decode_result() const;
+
     /// @brief 复制缓存切片，返回本次可用切片的帧数。
     /// 多余声道及未写入的尾部不由此接口清零。
     /// @param buffer 可写声道指针表，需覆盖 num_channels 个有效声道。
@@ -76,6 +81,8 @@ private:
         AudioDataFormat format;
         /// @brief 各声道独立连续存储，发布后不再改变容量或内容。
         std::vector<std::vector<float>> pcm_data;
+        /// @brief 错误与数据共同发布；失败结果不向调用方暴露部分 PCM。
+        std::optional<CachedDecodeError> failure;
     };
 
     /// @brief 只允许工厂生成的构造凭据，供 make_unique 调用公开构造函数。
@@ -98,11 +105,10 @@ public:
                           std::future<DecodedData> future_data);
 
 private:
-    /// @brief 使用一次性初始化发布结果，失败后缓存为空数据且不自动重试。
+    /// @brief 发布一次解码结果，失败原因保留到该缓存策略销毁。
     /// @return 由解码器拥有的稳定缓存引用，不可跨越解码器析构。
-    /// @warning 首次调用包含 call_once 与 future.get 等待；后续调用也经过
-    /// call_once。 历史处理仅捕获
-    /// std::exception，不能据此承诺所有异常都折叠为空数据。
+    /// @warning 首次调用包含 call_once 与 future.get 等待；后续也经过
+    /// call_once。
     const DecodedData& get_data() const;
 
     /// @brief 由 call_once 内部唯一消费的后台结果句柄；get 后不再有效。

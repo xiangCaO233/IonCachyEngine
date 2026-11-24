@@ -46,8 +46,12 @@ public:
     /// 返回短读可能代表 EOF 或错误，未写入的尾部由调用方处理。
     /// @warning 解码可能扩容和读取文件，不可在实时设备回调直接调用。
     /// EOF 排尾复用普通 PCM 余量缓存，超出本次请求的帧留给后续 read。
-    /// 短读仍不区分正常排尾结束与后端错误，不能作为完整文件已解码的证明。
+    /// 短读原因须以 last_read_error 查询，不能仅凭长度判断完整解码。
     size_t read(float** buffer, size_t chunksize) override;
+
+    /// @brief 最近一次读取的致命 FFmpeg 错误，成功或正常排尾返回零。
+    /// @warning 读取诊断与 read 使用同一解码线程。
+    int last_read_error() const noexcept override;
 
     /// @brief 返回实例报告的 PCM 输出格式，不是压缩包的编码格式。
     const AudioDataFormat& get_source_format() const override;
