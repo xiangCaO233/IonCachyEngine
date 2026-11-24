@@ -92,6 +92,10 @@ public:
     std::optional<size_t> end_frame() const;
 
 
+    /// @brief 查询不可恢复的流式读取错误，零表示尚未出错或不使用流式策略。
+    /// @warning 可在设备短读分支调用，仅借用不变策略和读取独立错误码。
+    int streaming_decode_error() const noexcept;
+
     /// @brief 返回创建时确定的解码策略，便于上层选择 PCM 视图或分块读取。
     CachingStrategy cachingStrategy() const noexcept { return m_strategy; }
 

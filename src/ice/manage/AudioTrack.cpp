@@ -45,6 +45,14 @@ std::optional<size_t> AudioTrack::end_frame() const
     return num_frames();
 }
 
+/// @brief 仅流式策略拥有后台页读取错误状态。
+int AudioTrack::streaming_decode_error() const noexcept
+{
+    if ( m_strategy != CachingStrategy::STREAMING || !m_decoder ) return 0;
+    return static_cast<const StreamingDecoder&>(*m_decoder)
+        .streaming_decode_error();
+}
+
 /// @brief 转发区间读取，不推进节点游标或调整目标容量。
 /// @param buffer 调用方已准备的目标平面缓冲。
 /// @param start_frame 请求区间起点。
