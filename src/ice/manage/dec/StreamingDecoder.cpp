@@ -224,9 +224,12 @@ struct StreamingDecoder::State {
                 }
             }
             if ( !alreadyRead && (m_cursor == EMPTY || target < m_cursor) ) {
-                // 定位失败时保留已发布页，下一次请求重新尝试恢复游标。
+                // 连已知起点都无法恢复时，将故障交给音源，禁止重复解码请求。
                 m_cursor = EMPTY;
-                if ( !m_instance->seek(0) ) continue;
+                if ( !m_instance->seek(0) ) {
+                    m_error.store(-ESPIPE, std::memory_order_relaxed);
+                    return;
+                }
                 m_cursor = 0;
             }
             // 分块丢弃保持有界内存，并允许析构在块间取消长距离跳转。
@@ -399,7 +402,7 @@ std::optional<size_t> StreamingDecoder::end_frame() const noexcept
     return end == State::EMPTY ? std::nullopt : std::optional{ end };
 }
 
-/// @brief 获取后台读取终止原因，不把它合并为正常 EOF。
+/// @brief 获取后台读取或定位的终止原因，不把它合并为正常 EOF。
 int StreamingDecoder::streaming_decode_error() const noexcept
 {
     return m_state ? m_state->m_error.load(std::memory_order_relaxed) : 0;

@@ -46,6 +46,10 @@ struct LengthInput {
     bool exactSeek{};
     /// @brief 单次供数上限，小于页容量时模拟成功的有限读。
     std::size_t maxRead{ PAGE_FRAMES };
+    /// @brief 请求回退后注入无法回到已知起点的错误。
+    std::atomic<bool> failSeek{};
+    /// @brief 精确和普通回跳次数，用于确认终止后没有再次定位。
+    std::atomic<size_t> failedSeeks{};
     /// @brief 工作线程统计实际供数，测试读取只用于核对解码工作量。
     std::atomic<size_t> decodedFrames{};
     /// @brief 仅统计非顺序定位，与正常首块读取区分。
@@ -76,6 +80,11 @@ public:
     {
         // 普通定位只承诺可用起点，覆盖没有精确定位能力的媒体后端。
         if ( frame != 0 ) return false;
+        // 仅运行中显式开启此标志，首次创建音轨时寻址仍然应当成功。
+        if ( m_input.failSeek.load(std::memory_order_relaxed) ) {
+            m_input.failedSeeks.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         m_cursor = 0;
         return true;
     }
@@ -86,6 +95,11 @@ public:
         // 空值表示不支持当前位置，false 才表示已尝试但没有成功。
         // 分出两类结果可验证失败时确实调到从头复位的另一条路径。
         if ( !m_input.exactSeek || frame >= m_input.total ) return std::nullopt;
+        // 失败只增加诊断计数，模拟游标未知而非已经完成位置变更。
+        if ( m_input.failSeek.load(std::memory_order_relaxed) ) {
+            m_input.failedSeeks.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         m_cursor = frame;
         m_input.exactSeeks.fetch_add(1, std::memory_order_relaxed);
         return true;
@@ -464,6 +478,61 @@ bool stopsAfterFailedRewind(ice::ThreadPool& pool)
     source.process(block);
     return !source.isplaying() && source.get_playpos() == 0;
 }
+/// @brief 页缓存淘汰后同时拒绝两种回跳，并检查音源不发正常完成事件。
+bool rejectsUnrecoverableSeek(ice::ThreadPool& pool)
+{
+    // 特意远离首页与相邻预读区，保证回跳前缓存已走过淘汰循环。
+    constexpr size_t tail = 6U * PAGE_FRAMES;
+    LengthInput      input{ PAGE_FRAMES, tail + 5 };
+    input.exactSeek = true;
+    auto track = ice::AudioTrack::create("unseekable",
+                                         pool,
+                                         std::make_shared<LengthFactory>(input),
+                                         ice::CachingStrategy::STREAMING);
+    // 两页缓存读到尾页后，首页必被后续发布淘汰。
+    input.prefetch.release();
+    ice::AudioBuffer block;
+    // 两个条件同时需要：真实尾页已得到确认，且创建时已有可用首页。
+    if ( !track || !block.resize(ice::ICEConfig::internal_format, 8U) ||
+         !awaitCondition([&] {
+             track->read(block, tail, 8U);
+             return track->end_frame() == input.total;
+         }) )
+        return false;
+
+    // 注册最小监听器，只统计错误路径误发的正常完成。
+    struct Completion final : ice::PlayCallBack {
+        mutable int count{};  ///< 正常完成次数，定位失败时必须保持零。
+        void        play_done(bool) const override { ++count; }
+        void        frameplaypos_updated(size_t) override {}
+        void        timeplaypos_updated(std::chrono::nanoseconds) override {}
+    };
+    auto            callback = std::make_shared<Completion>();
+    ice::SourceNode source(track);
+    source.add_playcallback(callback);
+    // 精确定位和从头恢复均失败；让播放节点走真实缺页请求。
+    // 失败开关在音轨已成功创建和播过尾块后才打开，隔离启动检查。
+    input.failSeek.store(true, std::memory_order_relaxed);
+    source.play();
+    // 处理真实设备块会再次请求首页，只有明确定位错误才能终止等待。
+    if ( !awaitCondition([&] {
+             source.process(block);
+             return track->streaming_decode_error() == -ESPIPE;
+         }) )
+        return false;
+
+    // 即使重新请求相同位置，错误状态也会阻止后台再次定位。
+    // 处理器停止后也从控制侧请求已缺失范围，证明请求进入门禁而非只停止音源。
+    for ( int blockIndex = 0; blockIndex < 8; ++blockIndex ) {
+        source.process(block);
+        // 直接请求轨道可排除仅靠 SourceNode 停止造成的表面通过。
+        track->read(block, 0U, 8U);
+    }
+    // 两次尝试分别对应精确回跳及已知起点复位，之后的读取不能增加计数。
+    return !source.isplaying() && source.get_playpos() == 0 &&
+           callback->count == 0 &&
+           input.failedSeeks.load(std::memory_order_relaxed) == 2U;
+}
 }  // namespace
 
 /// @brief 覆盖一页估值、零估值、整页 EOF 以及短文件。
@@ -491,5 +560,7 @@ int main()
         return 9;
     // 同一短读契约在精确跳页后也必须成立，不能只修顺序预读。
     if ( !seeksDistantPages(pool, 17U) ) return 10;
+    // 双重定位失败后持续请求缺页，必须只有第一次定位尝试且没有正常完成通知。
+    if ( !rejectsUnrecoverableSeek(pool) ) return 11;
     return 0;
 }
