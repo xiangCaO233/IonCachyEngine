@@ -42,5 +42,9 @@ public:
     /// @return 未支持时返回空且不改变状态；失败返回 false，须用 seek(0) 恢复。
     /// @warning 由解码工作线程串行调用；默认实现不支持随机精确定位。
     virtual std::optional<bool> seek_exact(size_t) { return std::nullopt; }
+
+    /// @brief 查询最近一次 read 的不可恢复错误，零表示未报告错误。
+    /// @warning 与 read 串行访问；旧后端默认无法区分零帧和失败。
+    virtual int last_read_error() const noexcept { return 0; }
 };
 }  // namespace ice

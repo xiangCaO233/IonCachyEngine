@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <expected>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -32,7 +33,7 @@ CachyDecoder::CachyDecoder(ConstructionKey,
 /// @param path 提交时复制的非空路径，不允许嵌入空字符。
 /// @param target_format 交给实例的输出格式请求，不是缓存格式已满足的证明。
 /// @param thread_pool 负责最终执行任务的外部线程池。
-/// @param factory 在后台创建解码实例的工厂，空值产生空缓存。
+/// @param factory 在后台创建解码实例的工厂，空值产生打开阶段诊断。
 /// @return 路径、目标格式无效或提交被拒绝时返回空指针，媒体结果仍异步确定。
 /// @warning 文件访问和内存增长发生在工作线程，首次消费仍可能等待。
 std::unique_ptr<CachyDecoder> CachyDecoder::create(
@@ -53,12 +54,11 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
     auto decode_task = [target_format,
                         factory,
                         path_str = std::string(path)]() -> DecodedData {
-        // 已知加载失败直接发布空结果，不通过 packaged_task 再次传递异常。
-        if ( !factory ) return {};
+        // 已知加载失败直接标明阶段，不通过 packaged_task 构造额外异常。
+        using Stage = CachedDecodeError::Stage;
+        if ( !factory ) return { .failure = CachedDecodeError{ Stage::Open } };
         auto worker = factory->create_instance(path_str, target_format);
-        if ( !worker ) {
-            return {};
-        }
+        if ( !worker ) return { .failure = CachedDecodeError{ Stage::Open } };
 
         // 使用实例报告的输出格式分配平面缓冲，不能只按目标声道数猜测。
         // 缓存只做复制，不能修正采样率；不匹配时拒绝以免改变实际播放速度。
@@ -66,10 +66,10 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
         // 无效输出格式不能建立可供逐声道拷贝的缓存，拒绝后端半成品。
         if ( format.channels == 0 ||
              format.samplerate != target_format.samplerate )
-            return {};
+            return { .failure = CachedDecodeError{ Stage::Format } };
         // 仅保留既有单声道复制扩展，其他声道变换需要后端真正完成混音。
         if ( format.channels != target_format.channels && format.channels != 1 )
-            return {};
+            return { .failure = CachedDecodeError{ Stage::Format } };
 
         // 容器时长只是元信息，不能据此在读到 PCM 前申请整段缓存。
         // 各声道随实际追加按 vector 增长策略扩容，错误估计不会直接耗尽内存。
@@ -90,18 +90,23 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
 
         // 创建流程强制 seek(0)，即使实例从起点开始也要求其支持此定位操作。
         if ( !worker->seek(0) ) {
-            // 定位失败尚未发布 PCM，保持与实例创建失败一致的空结果语义。
-            return {};
+            // 输入首帧尚不可读，不能将定位失败报告为合法空音轨。
+            return { .failure = CachedDecodeError{ Stage::Seek } };
         }
 
         // 只追加实际读出的部分，最后一块不足 CHUNK_SIZE 时不补齐缓存。
-        // read 返回零就结束，没有独立错误码区分正常 EOF 与解码失败。
-        // 在构造迭代器区间前复查后端返回值，不能信任越过请求容量的帧数。
-        size_t frames_read = 0;
-        while ( (frames_read = worker->read(chunk_ptrs.data(), CHUNK_SIZE)) >
-                0 ) {
-            // 后端违约时丢弃整次缓存，避免从临时块外读取或发布不完整声道。
-            if ( frames_read > CHUNK_SIZE ) return {};
+        // 每次读取后先查询诊断：致命错误可携带有效前缀，不能当作完整缓存发布。
+        // 支持诊断的后端以零帧且无错误明确表示 EOF；旧后端保持原有契约。
+        for ( ;; ) {
+            const auto frames_read =
+                worker->read(chunk_ptrs.data(), CHUNK_SIZE);
+            const auto error = worker->last_read_error();
+            if ( error != 0 )
+                return { .failure = CachedDecodeError{ Stage::Read, error } };
+            if ( frames_read == 0 ) break;
+            // 在构造迭代器前验证容量，拒绝覆盖边界的后端返回值。
+            if ( frames_read > CHUNK_SIZE )
+                return { .failure = CachedDecodeError{ Stage::FrameCount } };
             for ( uint16_t ch = 0; ch < format.channels; ++ch ) {
                 pcm[ch].insert(pcm[ch].end(),
                                chunk_buffer[ch].begin(),
@@ -123,7 +128,7 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
         }
 
         // 连同格式一次性移交最终存储，不让消费侧观察仍在增长的中间缓存。
-        return { format, std::move(pcm) };
+        return { format, std::move(pcm), std::nullopt };
     };
 
     // 使用调用方线程池；返回后不能假设后台任务已完成。
@@ -141,27 +146,41 @@ std::unique_ptr<CachyDecoder> CachyDecoder::create(
 
 /// @brief 首次取得任务结果，后续访问复用缓存。
 /// @warning call_once 与 future.get 均可能等待，只可在准备阶段首次调用。
-/// 当前历史错误处理将 std::exception 折叠为空缓存，调用方无法据此区分具体错误。
+/// 已知错误和任务异常沿同一路径发布，后续查询不会触发重新解码。
 const CachyDecoder::DecodedData& CachyDecoder::get_data() const
 {
     std::call_once(m_dataReadyFlag, [this]() {
         // 提交被拒绝时没有共享状态，禁止调用 get 制造 future_error。
         if ( !m_futureData.valid() ) {
-            m_dataCache = DecodedData{};
+            m_dataCache.emplace(
+                DecodedData{ .failure = CachedDecodeError{
+                                 CachedDecodeError::Stage::BackgroundTask } });
             return;
         }
         try {
             // call_once 确保仅一个线程消费
             // future，其余首次读取者等待同一结果发布。
             m_dataCache = m_futureData.get();
-        } catch ( const std::exception& e ) {
-            // 固定为空结果后不重新读取 future，也不会自动重试文件。
-            // 异常未逃出初始化函数时 once_flag
-            // 视作完成，后续调用不会再次尝试任务。
-            m_dataCache = DecodedData{};
+        } catch ( ... ) {
+            // future 已消费。保留原异常供控制侧诊断，旧的帧接口仍返回零。
+            // 在 call_once 内记录结果，所有等待者取得同一个失败原因。
+            m_dataCache.emplace(DecodedData{
+                .failure =
+                    CachedDecodeError{ CachedDecodeError::Stage::BackgroundTask,
+                                       0,
+                                       std::current_exception() } });
         }
     });
     return *m_dataCache;
+}
+
+/// @brief 完整缓存准备侧查询；复制失败诊断不会进入逐帧读取路径。
+CachedDecodeResult CachyDecoder::cached_decode_result() const
+{
+    const auto& data = get_data();
+    if ( data.failure ) return std::unexpected{ *data.failure };
+    // 保持零帧与非零帧具有相同的成功状态。
+    return data.pcm_data.empty() ? 0 : data.pcm_data.front().size();
 }
 
 /// @brief 从不可变缓存复制指定帧区间。
@@ -183,7 +202,7 @@ size_t CachyDecoder::decode(float** buffer, uint16_t num_channels,
     // 正常播放前应已提取结果；未预备的读取会在这里承受整文件解码延迟。
     const auto& data = get_data();
 
-    // 空缓存可能是零长度媒体，也可能是后台失败；此接口不区分二者。
+    // 读取仍只返回帧数；具体失败原因由控制侧 cached_decode_result 查询。
     if ( data.pcm_data.empty() ) return 0;
 
     // 各声道等长是构建缓存时维持的不变量，此处只用首声道计算统一切片范围。

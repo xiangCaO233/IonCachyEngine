@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <ice/config/config.hpp>
 #include <ice/manage/AudioFormat.hpp>
+#include <ice/manage/dec/CachedDecodeResult.hpp>
 #include <ice/manage/dec/MediaInfo.hpp>
 #include <memory>
 #include <optional>
@@ -79,6 +80,12 @@ public:
     /// @brief 查询解码策略报告的帧数，完全缓存为实际长度，流式为可修正估算。
     /// @warning 完全缓存策略首次查询可能等待后台任务，须在播放前完成。
     size_t num_frames() const;
+
+    /// @brief 获取完整缓存的准备结果，成功的零帧仍属于有效结果。
+    /// @return 流式音轨返回空 optional；完整缓存返回帧数或准备错误。
+    /// @warning 首次访问可能等待后台完成，仅供非实时侧准备与诊断。
+    [[nodiscard]] std::optional<CachedDecodeResult>
+    cached_decode_result() const;
     /// @brief 获取音轨确认的排除结束帧。
     /// @return 流式音轨尚未到末尾时返回空值，未加载时返回零。
     /// @warning 完整缓存的首次读取仍可能等待；流式只读取原子帧边界。
