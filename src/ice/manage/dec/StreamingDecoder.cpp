@@ -67,6 +67,7 @@ struct StreamingDecoder::State {
     /// @brief 下一被替换页，顺序淘汰避免热路径排序。
     size_t m_victim{ 0 };
     /// @brief 当前后端的精确目标帧游标，仅工作线程修改。
+    /// EMPTY 表示上次精确跳转失败或未读取到样本，须从头恢复位置。
     size_t m_cursor{ 0 };
     /// @brief 长度提示，由创建阶段初始化，后台按完整读取扩大。
     /// @warning 回调按块 relaxed 读取供时间线推进，PCM 仍由缓存锁发布。
@@ -131,8 +132,8 @@ struct StreamingDecoder::State {
         m_wake.fetch_add(1, std::memory_order_release);
         m_wake.notify_one();
     }
-    /// @brief 后台按请求解码页，精确跳转通过从头顺序丢弃样本实现。
-    /// 后端 seek 只保证关键帧定位，不能直接把任意 seek 后样本当作目标帧。
+    /// @brief 后台按请求解码页，仅在后端保证精确位置时跳过顺序读取。
+    /// 普通 seek 只保证关键帧定位，因此作为从头重放的兼容入口。
     /// @warning 非实时线程允许 IO；倒退及远距离定位成本与跳过长度有关。
     void run()
     {
@@ -161,11 +162,24 @@ struct StreamingDecoder::State {
             }
             // 末尾可能在请求入队之后才确定，跳过已经确认越界的请求。
             if ( target >= m_end.load(std::memory_order_relaxed) ) continue;
-            // 已消费游标之后的请求可以直接顺序推进，不重启重采样器。
-            // 倒退请求不能复用旧滤波历史，因此必须明确从文件头重置。
-            if ( target < m_cursor ) {
-                // seek 失败时不谎报页已就绪，缓存中其他页仍然可用。
-                // 不用忙等重试后端错误；后续消费者可再次提交请求。
+            // 相邻预读沿用现有后端历史；远处缺页或回跳才尝试精确定位。
+            // 空读不能用来确认远处 EOF，回到已知起点重走后才发布末尾。
+            size_t got = 0;
+            if ( m_cursor != EMPTY &&
+                 (target < m_cursor || target - m_cursor >= 2 * PAGE_FRAMES) ) {
+                const auto positioned = m_instance->seek_exact(target);
+                // 不支持时保留现有游标，向前仍可从上一次读取的位置继续。
+                if ( positioned ) {
+                    const auto wanted = std::min(PAGE_FRAMES, EMPTY - target);
+                    if ( *positioned )
+                        got = m_instance->read(scratch.raw_ptrs(), wanted);
+                    m_cursor = got > 0 && got <= wanted ? target : EMPTY;
+                    if ( m_cursor == EMPTY ) got = 0;
+                }
+            }
+            if ( got == 0 && (m_cursor == EMPTY || target < m_cursor) ) {
+                // 定位失败保留已发布页。下一次请求可再次恢复解码游标。
+                m_cursor = EMPTY;
                 if ( !m_instance->seek(0) ) continue;
                 m_cursor = 0;
             }
@@ -193,7 +207,7 @@ struct StreamingDecoder::State {
             if ( m_cursor != target ) continue;
             // 最后一个可表示区间也受整数剩余范围限制，游标累加不能回绕。
             const size_t wanted = std::min(PAGE_FRAMES, EMPTY - m_cursor);
-            const size_t got    = m_instance->read(scratch.raw_ptrs(), wanted);
+            if ( got == 0 ) got = m_instance->read(scratch.raw_ptrs(), wanted);
             if ( got > wanted ) {
                 // 不发布违约页的帧数，否则消费者可能按虚假长度读取未填充样本。
                 m_end.store(m_cursor, std::memory_order_relaxed);
@@ -326,7 +340,7 @@ std::optional<size_t> StreamingDecoder::end_frame() const noexcept
     return end == State::EMPTY ? std::nullopt : std::optional{ end };
 }
 
-/// @brief 按请求区间填充输出，静音也计入已推进的时间线帧数。
+/// @brief 返回从请求起点连续可读的前缀；缺页时等待后续回调重试。
 /// @param buffer 各声道容量至少为 frames 的调用方存储。
 /// @param channels 目标声道数，多余声道保留本次清零结果。
 /// @param start 目标采样率下的绝对帧，不改变任一播放节点的游标。
@@ -344,13 +358,13 @@ size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
     // 先验证整张输出表，后续声道无效时也不能改写前面有效声道的样本。
     for ( uint16_t channel = 0; channel < channels; ++channel )
         if ( !buffer[channel] ) return 0;
-    // 清零发生在验证之后，缓存竞争和缺页仍保持连续时间推进。
+    // 清零发生在验证之后；缺页或锁竞争时返回的静音不推进源游标。
     for ( uint16_t channel = 0; channel < channels; ++channel ) {
         std::fill_n(buffer[channel], wanted, 0.0F);
     }
     std::unique_lock lock(m_state->m_mutex, std::try_to_lock);
-    // 未取得锁也无法修改请求环；本次只推进静音，依赖后续调用再次请求。
-    if ( !lock.owns_lock() ) return wanted;
+    // 未取得锁也无法修改请求环；保持游标，下个回调会重新请求同一位置。
+    if ( !lock.owns_lock() ) return 0;
     if ( wanted == 0 ) {
         // 只有长度提示用完，尚未遇到实际末尾。请求目标页后暂停当前游标，
         // 避免把后台尚未确认存在的尾部推进成永久静音。
@@ -367,10 +381,11 @@ size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
         const size_t offset = position - pageStart;
         const size_t length =
             std::min(wanted - copied, State::PAGE_FRAMES - offset);
+        size_t available = 0;
         for ( const auto& page : m_state->m_pages ) {
             if ( page.m_start != pageStart || offset >= page.m_frames )
                 continue;
-            const size_t available = std::min(length, page.m_frames - offset);
+            available = std::min(length, page.m_frames - offset);
             for ( uint16_t channel = 0;
                   channel < std::min(channels, m_state->m_format.channels);
                   ++channel ) {
@@ -384,9 +399,11 @@ size_t StreamingDecoder::decode(float** buffer, uint16_t channels, size_t start,
         // 每个消费位置预读下一页，支持相互独立的多个播放节点。
         if ( pageStart <= State::EMPTY - State::PAGE_FRAMES )
             m_state->request(pageStart + State::PAGE_FRAMES);
-        copied += length;
+        // 只消费连续前缀；跨页缺口后的采样由后续块从正确位置读取。
+        copied += available;
+        if ( available < length ) break;
     }
-    return wanted;
+    return copied;
 }
 
 /// @brief 明确拒绝稳定视图请求，防止调用方保留会被淘汰的 PCM 地址。

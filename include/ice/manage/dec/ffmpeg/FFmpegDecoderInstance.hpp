@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <ice/manage/dec/IDecoderInstance.hpp>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace ice
@@ -37,6 +38,10 @@ public:
     /// 重采样重启失败后实例失效，后续读取返回零，须重新创建实例。
     /// @warning 仅在非实时解码侧串行调用，可能进行文件 IO 与重采样状态重建。
     bool seek(size_t pos) override;
+
+    /// @brief 仅对可寻址、同采样率的定宽 PCM WAVE 承诺逐帧定位。
+    /// @warning 与 read 串行调用；其他容器和重采样沿用从头顺序定位。
+    std::optional<bool> seek_exact(size_t pos) override;
     /// @brief 读取至多 chunksize 帧，buffer 为调用方预分配的声道指针表。
     /// 返回短读可能代表 EOF 或错误，未写入的尾部由调用方处理。
     /// @warning 解码可能扩容和读取文件，不可在实时设备回调直接调用。
