@@ -2,6 +2,7 @@
 #include <ice/manage/AudioTrack.hpp>
 #include <limits>
 #include <memory>
+#include <optional>
 
 #include "ice/config/config.hpp"
 #include "ice/manage/AudioBuffer.hpp"
@@ -22,6 +23,16 @@ size_t AudioTrack::num_frames() const
 {
     // 音轨不缓存第二份长度，保留流式策略修正估算后的最新结果。
     return m_decoder ? m_decoder->num_frames() : 0;
+}
+
+/// @brief 将流式末尾与暂定长度区分开，完整缓存仍以实际 PCM 帧数为准。
+/// @warning 流式路径只读取后台发布的边界，完整缓存首次查询可能等待。
+std::optional<size_t> AudioTrack::end_frame() const
+{
+    // 策略在创建时唯一决定具体解码器类型，播放期间不可能切换。
+    if ( m_strategy == CachingStrategy::STREAMING && m_decoder )
+        return static_cast<const StreamingDecoder&>(*m_decoder).end_frame();
+    return num_frames();
 }
 
 /// @brief 转发区间读取，不推进节点游标或调整目标容量。
