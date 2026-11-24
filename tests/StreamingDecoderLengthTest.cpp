@@ -44,6 +44,8 @@ struct LengthInput {
     std::binary_semaphore prefetch{ 0 };
     /// @brief 开启后按目标帧精确寻址，模拟能直接按 PCM 帧定位的后端。
     bool exactSeek{};
+    /// @brief 单次供数上限，小于页容量时模拟成功的有限读。
+    std::size_t maxRead{ PAGE_FRAMES };
     /// @brief 工作线程统计实际供数，测试读取只用于核对解码工作量。
     std::atomic<size_t> decodedFrames{};
     /// @brief 仅统计非顺序定位，与正常首块读取区分。
@@ -72,6 +74,7 @@ public:
     /// 测试门闩只激活一次，故定位后保留已经累计的读取次数。
     bool seek(std::size_t frame) override
     {
+        // 普通定位只承诺可用起点，覆盖没有精确定位能力的媒体后端。
         if ( frame != 0 ) return false;
         m_cursor = 0;
         return true;
@@ -80,6 +83,8 @@ public:
     /// @brief 模拟逐帧定位，不遍历任何中间 PCM。
     std::optional<bool> seek_exact(size_t frame) override
     {
+        // 空值表示不支持当前位置，false 才表示已尝试但没有成功。
+        // 分出两类结果可验证失败时确实调到从头复位的另一条路径。
         if ( !m_input.exactSeek || frame >= m_input.total ) return std::nullopt;
         m_cursor = frame;
         m_input.exactSeeks.fetch_add(1, std::memory_order_relaxed);
@@ -89,13 +94,19 @@ public:
     /// @brief 按真实长度返回 PCM，后台首次读取由测试控制。
     /// @param output 引擎准备的平面缓冲，从每个声道的第零帧开始写入。
     /// @param frames 请求容量；不得根据元信息调整真实样本生成范围。
-    /// @return 本次实际有效帧数，只有末尾允许短读。
+    /// @return 最多 maxRead 帧，直到末尾才返回零；错误另经诊断方法提供。
     std::size_t read(float** output, std::size_t frames) override
     {
-        // 首次读取同步执行；门闩只阻挡第二次读取，便于稳定复现估值耗尽。
-        if ( ++m_reads == 2U &&
-             !m_input.prefetch.try_acquire_for(std::chrono::seconds(5)) )
-            return 0;
+        // 错误注入依据实际后端调用次数，多个有限读合成一页时仍可区分。
+        ++m_reads;
+        // 首块可由多次调用组成；门闩只拦住第一次从第二页开始的读取。
+        if ( !m_waitedForPrefetch && m_cursor >= PAGE_FRAMES ) {
+            // 置位发生在等待前，之后的顺序读、回跳和空读都不能重复阻塞。
+            m_waitedForPrefetch = true;
+            // 超时仅避免测试环境中失配的门闩卡住线程回收。
+            if ( !m_input.prefetch.try_acquire_for(std::chrono::seconds(5)) )
+                return 0;
+        }
 
         // 该开关在预读线程确认曲尾后才会发布，独立于首次读取的故障计数。
         if ( m_input.failAfterEof.load(std::memory_order_relaxed) ) {
@@ -103,7 +114,10 @@ public:
             return 0;
         }
         // 由真实长度裁剪最后一页，精确整页的结束通过下一次读返回零体现。
-        const auto count = std::min(frames, m_input.total - m_cursor);
+        // 既遵守调用者容量也遵守测试供给上限，有限读可在曲中任何位置发生。
+        const auto count =
+            std::min({ frames, m_input.total - m_cursor, m_input.maxRead });
+        // 同一个绝对帧在不同调用划分下产出相同，便于确认拼接位置。
         for ( std::size_t channel = 0; channel < m_format.channels;
               ++channel ) {
             for ( std::size_t frame = 0; frame < count; ++frame )
@@ -112,6 +126,7 @@ public:
         // 统计后端读取实际交付的帧，兼容页尾短读和探测后的 EOF。
         m_input.decodedFrames.fetch_add(count, std::memory_order_relaxed);
         m_cursor += count;
+        // 帧数与诊断独立。允许测试后端同时交付有效数据并报告错误。
         m_error = m_reads == m_input.failingRead ? -EIO : 0;
         return count;
     }
@@ -141,6 +156,8 @@ private:
     std::size_t m_cursor{ 0U };
     /// @brief 区分同步首块和异步预读。
     std::size_t m_reads{ 0U };
+    /// @brief 仅第一次读到第二页时同步测试门闩，后续回跳不再等待。
+    bool m_waitedForPrefetch{};
     /// @brief 与该实例最近一次 read 同步更新，不需要原子。
     int m_error{};
 };
@@ -185,6 +202,7 @@ private:
 bool matches(const ice::AudioBuffer& buffer, std::size_t start,
              std::size_t frames)
 {
+    // 多声道分别比较，避免写入指针偏移正确但只有首个平面同步。
     for ( std::size_t channel = 0; channel < buffer.num_channels();
           ++channel ) {
         for ( std::size_t frame = 0; frame < frames; ++frame ) {
@@ -195,6 +213,7 @@ bool matches(const ice::AudioBuffer& buffer, std::size_t start,
             if ( !(error < 1.0e-6F) ) return false;
         }
     }
+    // 无有效帧时匹配为空，这一分支只由显式空轨场景使用。
     return true;
 }
 
@@ -204,6 +223,7 @@ bool matches(const ice::AudioBuffer& buffer, std::size_t start,
 /// 让出调度的地方只在测试线程，后台读取不会依赖固定延迟。
 template<typename Condition> bool awaitCondition(Condition condition)
 {
+    // 只轮询可观测条件，不以等待固定时长隐式假定文件线程已经就绪。
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     do {
@@ -217,25 +237,31 @@ template<typename Condition> bool awaitCondition(Condition condition)
 /// @param pool 创建音轨共用的任务池，流式预读不占用此池。
 /// @param estimate 短于真实数据的容器估值。
 /// @param total 实际帧数，分别覆盖尾页短读和整页后的零帧读取。
+/// @param maximumRead 后端单次能返回的最大帧数，独立于页容量。
 /// @return 估值位置继续播放且确认末尾后精确停止时返回 true。
 bool playsThroughEstimate(ice::ThreadPool& pool, std::size_t estimate,
-                          std::size_t total)
+                          std::size_t total, size_t maximumRead = PAGE_FRAMES)
 {
     LengthInput input{ estimate, total };
-    auto        track = ice::AudioTrack::create("stream",
+    // 估值、真实曲长和读取上限相互独立，可检验反复短读不会改写估值。
+    input.maxRead = maximumRead;
+    auto track = ice::AudioTrack::create("stream",
                                          pool,
                                          std::make_shared<LengthFactory>(input),
                                          ice::CachingStrategy::STREAMING);
     if ( !track ) return false;
 
+    // 八帧读块可以跨页且远小于单页，便于定位填充边界。
     ice::AudioBuffer block;
     if ( !block.resize(ice::ICEConfig::internal_format, 8U) ) {
+        // 初始缓冲失败也要放开后台线程，避免阻塞 track 的正常析构。
         input.prefetch.release();
         return false;
     }
     ice::SourceNode source(track);
     // 测试直接对照后端生成的样本，不叠加播放器的默认音量。
     source.setvolume(1.0F);
+    // 直接推进到估值边界，确定缺页行为不会被首页已缓存样本遮蔽。
     source.set_playpos(PAGE_FRAMES);
     source.play();
 
@@ -247,6 +273,7 @@ bool playsThroughEstimate(ice::ThreadPool& pool, std::size_t estimate,
                              source.get_playpos() == PAGE_FRAMES;
     // 无论断言是否通过都解除后台门闩，保证音轨可立即析构并回收工作线程。
     input.prefetch.release();
+    // 仍在播放和位置未修改两项都成立才属于正确的后台等待。
     if ( !keptPlaying ) return false;
 
     // 先读跨页块，确保第二页实际播放并推动第三页预读；直接读取末页
@@ -279,13 +306,17 @@ bool playsThroughEstimate(ice::ThreadPool& pool, std::size_t estimate,
            track->read(block, total, 8U) == 0U;
 }
 
-/// @brief 首次短读已经确定长度，零估值不能阻止短轨及空轨建立。
+/// @brief 首页读到无错零帧可确定长度，零估值不妨碍短轨和空轨创建。
+/// @param maximumRead 用来模拟首页在真正曲尾之前连续多次交付有效前缀。
 /// @param total 首块能完整覆盖的真实长度；零表示空轨。
 /// @return 无需释放后台门闩即可读取所有有效样本时返回 true。
-bool acceptsUnknownShortFile(ice::ThreadPool& pool, std::size_t total)
+bool acceptsUnknownShortFile(ice::ThreadPool& pool, std::size_t total,
+                             size_t maximumRead = PAGE_FRAMES)
 {
     LengthInput input{ 0U, total };
-    auto        track = ice::AudioTrack::create("stream",
+    // 连续受限读取累计到零帧才结束，即使估值是零也不能提前关闭首块。
+    input.maxRead = maximumRead;
+    auto track = ice::AudioTrack::create("stream",
                                          pool,
                                          std::make_shared<LengthFactory>(input),
                                          ice::CachingStrategy::STREAMING);
@@ -293,6 +324,7 @@ bool acceptsUnknownShortFile(ice::ThreadPool& pool, std::size_t total)
     // 空轨同样能够返回确定的零帧，由调用方决定它是否能加入播放队列。
     if ( !track || track->end_frame() != total ) return false;
 
+    // 回读样本而非仅比较长度，能发现累积写入一直覆盖声道开头的错误。
     ice::AudioBuffer block;
     return block.resize(ice::ICEConfig::internal_format, 8U) &&
            track->read(block, 0U, 8U) == total && matches(block, 0U, total);
@@ -300,12 +332,15 @@ bool acceptsUnknownShortFile(ice::ThreadPool& pool, std::size_t total)
 /// @brief 验证大跨度前跳和回跳，在首目标页就恢复正确样本。
 /// 曲长以合成帧计算，不产生大文件；页数限制直接检测是否仍在顺序追赶。
 /// @param pool 音轨创建共用任务池，模拟的流式后端另有预读线程。
-bool seeksDistantPages(ice::ThreadPool& pool)
+bool seeksDistantPages(ice::ThreadPool& pool, size_t maximumRead = PAGE_FRAMES)
 {
+    // 足够长的合成轨让跳过一整段音频的回退方案明显超出预期工作量。
     constexpr auto pages = 400U;
     LengthInput    input{ pages * PAGE_FRAMES, pages * PAGE_FRAMES };
     input.exactSeek = true;
-    auto track      = ice::AudioTrack::create("long-stream",
+    // 同样的跨页目标在不同非零读取上限下应当得到完全相同的样本。
+    input.maxRead = maximumRead;
+    auto track = ice::AudioTrack::create("long-stream",
                                          pool,
                                          std::make_shared<LengthFactory>(input),
                                          ice::CachingStrategy::STREAMING);
@@ -315,10 +350,12 @@ bool seeksDistantPages(ice::ThreadPool& pool)
         input.prefetch.release();
         return false;
     }
+    // 两个位置都落在页中部，检验精确定位后还能正确处理缓存内偏移。
     constexpr auto forward         = 350U * PAGE_FRAMES + 37U;
     constexpr auto backward        = 25U * PAGE_FRAMES + 19U;
     const auto     before          = std::chrono::steady_clock::now();
     const bool     stalledAtTarget = track->read(block, forward, 8U) == 0U;
+    // 先记录缺页返回，再允许实际解码，保证目标页此前没有被偶然填满。
     input.prefetch.release();
     if ( !stalledAtTarget ) return false;
 
@@ -331,6 +368,7 @@ bool seeksDistantPages(ice::ThreadPool& pool)
             return false;
     }
     // 包含首块、后台预读及两次目标跳转，最多允许十页；原先需读数百页。
+    // 合成样本生成次数包含短读保持的数据，不按接口调用数推断工作量。
     const auto totalDecoded =
         input.decodedFrames.load(std::memory_order_relaxed);
     return input.exactSeeks.load(std::memory_order_relaxed) >= 2U &&
@@ -340,6 +378,7 @@ bool seeksDistantPages(ice::ThreadPool& pool)
 /// @brief 区分首读失败、后台短读失败和正常曲尾。
 bool preservesReadFailure(ice::ThreadPool& pool)
 {
+    // 初始化路径必须拒绝整条轨，不能发布带错误的首块。
     LengthInput first{ 0U, 3U };
     first.failingRead = 1U;
     if ( ice::AudioTrack::create("broken-first",
@@ -348,6 +387,7 @@ bool preservesReadFailure(ice::ThreadPool& pool)
                                  ice::CachingStrategy::STREAMING) )
         return false;
 
+    // 另一次失败发生在第一页已发布后，此时有效的三帧可以被播放。
     LengthInput second{ PAGE_FRAMES, PAGE_FRAMES + 3U };
     second.failingRead = 2U;
     auto track =
@@ -357,6 +397,7 @@ bool preservesReadFailure(ice::ThreadPool& pool)
                                 ice::CachingStrategy::STREAMING);
     // 放开后端后等待明确失败状态，不能把暂时缺页误当作故障。
     second.prefetch.release();
+    // 等待明确的读取错误；拒绝把只观察到未初始化当作成功。
     if ( !track || !awaitCondition([&] {
              return track->streaming_decode_error() == -EIO;
          }) ||
@@ -370,10 +411,12 @@ bool preservesReadFailure(ice::ThreadPool& pool)
         void        frameplaypos_updated(size_t) override {}
         void        timeplaypos_updated(std::chrono::nanoseconds) override {}
     };
+    // 完成回调由真实 SourceNode 发送，错误路径不能伪造一个普通的结束事件。
     auto            callback = std::make_shared<Completion>();
     ice::SourceNode source(track);
     source.add_playcallback(callback);
     source.setvolume(1.0F);
+    // 循环模式使错误后的 EOF 混淆尤其明显：旧实现可能会直接回跳。
     source.setloop(true);
     source.set_playpos(PAGE_FRAMES);
     source.play();
@@ -391,14 +434,16 @@ bool stopsAfterFailedRewind(ice::ThreadPool& pool)
     constexpr size_t tail = 4U * PAGE_FRAMES;
     LengthInput      input{ PAGE_FRAMES, tail + 3U };
     input.exactSeek = true;
-    auto track      = ice::AudioTrack::create("rewind-failure",
+    auto track = ice::AudioTrack::create("rewind-failure",
                                          pool,
                                          std::make_shared<LengthFactory>(input),
                                          ice::CachingStrategy::STREAMING);
+    // 给后端完成初始预读的机会，后续失败只针对已经确认 EOF 的旧页。
     input.prefetch.release();
     ice::AudioBuffer block;
     if ( !track || !block.resize(ice::ICEConfig::internal_format, 8U) )
         return false;
+    // 请求远处尾页，一边确认长度一边挤出最早驻留的首页。
     if ( !awaitCondition([&] {
              track->read(block, tail, 8U);
              return track->end_frame() == input.total;
@@ -406,6 +451,7 @@ bool stopsAfterFailedRewind(ice::ThreadPool& pool)
         return false;
 
     // 正常曲尾已经被确认。回跳重新读取是另一项操作，可能遇到真实 IO 错误。
+    // 此处只注入读取故障，和下面两个定位入口均失败的场景独立。
     input.failAfterEof.store(true, std::memory_order_relaxed);
     ice::SourceNode source(track);
     source.play();
@@ -437,5 +483,13 @@ int main()
     if ( !seeksDistantPages(pool) ) return 5;
     if ( !preservesReadFailure(pool) ) return 6;
     if ( !stopsAfterFailedRewind(pool) ) return 7;
+    // 每次 17 帧覆盖首块、后台跨页与精确跳页。
+    // 首块请求内多次成功读应拼出完整的七帧，即使容器没有提供估值。
+    if ( !acceptsUnknownShortFile(pool, 7U, 2U) ) return 8;
+    // 通常走后台连续读的三页音轨，按样本检查跨页拼接及末页曲尾。
+    if ( !playsThroughEstimate(pool, PAGE_FRAMES, 3U * PAGE_FRAMES - 31U, 17U) )
+        return 9;
+    // 同一短读契约在精确跳页后也必须成立，不能只修顺序预读。
+    if ( !seeksDistantPages(pool, 17U) ) return 10;
     return 0;
 }
