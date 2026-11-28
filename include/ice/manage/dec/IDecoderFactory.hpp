@@ -8,7 +8,7 @@ namespace ice
 struct AudioDataFormat;
 
 class IDecoderInstance;
-class MediaInfo;
+struct MediaInfo;
 
 /// @brief 把媒体探测与有状态解码实例创建隔离，工厂本身不承载播放游标。
 /// 具体工厂负责适配媒体后端，调用方不应直接访问后端上下文。
